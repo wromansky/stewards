@@ -986,6 +986,13 @@ The main agent never reads a brief or a card; every brief path is one line;
   for ACP sessions. `borg ask` has no cwd flag: workspace is the daemon cwd
   unless `-w <worktree>` or `borg acp`. Settings are DB-only (`borg settings`).
   Does not read `.claude/agents/`.
+- Third-party subagent plugins (searched 2026-10-21, bar: ≥200 stars and
+  maintained): none for Hermes or ZeroClaw. Hermes candidates are role prose
+  or profiles, not runtime agents (`rlaope/oh-my-hermes` 3.5k stars,
+  `witt3rd/oh-my-hermes` 370, `magnus919/hermes-profiles` 336,
+  `Hermes-Bot-Mode` archived). ZeroClaw's official `zeroclaw-plugins` are
+  WASM channel tools and `zeroclaw-skills` are prompt skills. Pi's
+  `pi-subagents` remains the only plugin that adds file-defined agents.
 - BAML Rust (0.221.0): cold debug build 10.8 s, binary 468 KB. The crate
   `dlopen`s `libbaml_cffi`, downloaded on first LLM use from
   `https://github.com/boundaryml/baml/releases/download/<version>/<prefix>baml_cffi-<target-triple>.<ext>`

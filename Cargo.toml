@@ -1,0 +1,9 @@
+[package]
+name = "stewards"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+description = "A team of agents that already knows your repo, for any coding-agent harness"
+license = "MIT"
+repository = "https://github.com/wromansky/stewards"

@@ -64,13 +64,19 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   brief elsewhere. Renderers in v1: Claude Code `.claude/agents/*.md` (Cursor
   reads it), Codex `.codex/agents/*.toml`, Copilot `.github/agents/*.agent.md`,
   Gemini CLI `.gemini/agents/*.md`, OpenCode `.opencode/agents/*.md`, Pi via
-  `pi-subagents` at `.pi/agents/*.md`. Hermes, ZeroClaw, and Borg have no
-  file-defined subagents (verified in source, see Facts) and use briefs: the
-  brief carries the role text, and their native spawn tool is told to read
-  the brief path. An optional ZeroClaw renderer (a `config.toml` fragment
-  with `[agents.<role>]` entries plus per-role workspace dirs holding the
-  role prompt as `AGENTS.md`) may follow in stage 3; Borg roles live only in
-  its database, so none is planned.
+  `pi-subagents` at `.pi/agents/*.md`. Two categories, by whether a
+  per-role file exists, not by subagent capability: **rendered** harnesses
+  (the six above) get role files; **briefed** harnesses (Hermes, ZeroClaw,
+  Borg; verified in source, see Facts) have no file format for a role, so
+  the brief carries the role text and their native spawn tool is told to
+  read the brief path. Borg's `spawn_agent` is a full subagent (fresh
+  context, per-call model and toolsets, parallel children) whose roles live
+  only in its database; ZeroClaw's `spawn_subagent` is the same agent in a
+  fresh session; Hermes's `delegate_task` is the weakest (no model or
+  toolset choice, `role` ignored). Stage 3 may add a ZeroClaw renderer (a
+  `config.toml` fragment with `[agents.<role>]` entries plus per-role
+  workspace dirs holding the role prompt as `AGENTS.md`) and a documented
+  one-time `manage_roles` setup for Borg.
 - **Render target:** user-level dirs with model pins from
   `~/.stewards/config.toml` (`~/.claude/agents/`, `~/.codex/agents/`,
   `~/.pi/agent/agents/`, `~/.gemini/agents/`, `~/.config/opencode/agents/`).

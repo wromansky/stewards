@@ -25,9 +25,16 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 
 ### Shape
 
-- **Harnesses:** Claude Code, Codex CLI, Cursor, Copilot, Gemini CLI,
-  OpenCode, Pi, Hermes, ZeroClaw, Borg (adelphidata/borg). All must behave
-  the same.
+- **Harness contract.** stewards depends on three things a harness must
+  provide: it reads the repo's `AGENTS.md`; its agent can run shell in the
+  repo cwd; it can start a fresh-context child that can also run shell.
+  Three more are used when present: a file format for a reusable role (then
+  `render` writes one), a per-call or per-file model pin (then roles run on
+  the right tier), parallel children (then `next`'s jobs overlap). Any
+  harness meeting the required three is supported; the per-harness facts
+  (paths, spawn tool, env detection, last-verified date) live in one
+  `harness.rs` table and in Facts, never in the rules. The harnesses used
+  to validate the contract are listed in Facts.
 - **Stack:** a Rust CLI that agents call through their shell tool. No MCP
   server. Rust owns facts (units, anchors, packs, staleness, debt,
   rendering). BAML defines each role's prompt and typed answer schema, so
@@ -40,9 +47,10 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Delivery:** the repo's `AGENTS.md` block is the one truth: the ritual,
   the roles, the editing rules, how to delegate. Every harness reads it with
   no install. User-level hooks and instructions are optional accelerators.
-  ZeroClaw gets the same block in its workspace `AGENTS.md`. `init` places
-  the block at the top of `AGENTS.md`: Borg truncates project docs at 32 KiB
-  across the tree and Hermes takes only the first matching context file.
+  A harness that reads instructions from its own workspace rather than the
+  repo gets the same block there. `init` places the block at the top of
+  `AGENTS.md`, because some harnesses truncate project docs or take only
+  the first matching file.
 - **Efficiency:** three numbers go down (main context per task, total tokens
   per task, repeated work across sessions), and each agent gets the exact
   context its job needs: no more, no less.
@@ -58,30 +66,18 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   unit's card), validator (judges a bug from its reproduction, severity from
   evidence only), architect (plans changes that cross units, records flows
   and decisions, proposes unit boundaries).
-- **Team member, physically:** native subagent files where the harness
-  supports them, one file per role per harness, generated from one source by
-  `render`; the delegation message carries the unit's pack. A handed-over
-  brief elsewhere. Renderers in v1: Claude Code `.claude/agents/*.md` (Cursor
-  reads it), Codex `.codex/agents/*.toml`, Copilot `.github/agents/*.agent.md`,
-  Gemini CLI `.gemini/agents/*.md`, OpenCode `.opencode/agents/*.md`, Pi via
-  `pi-subagents` at `.pi/agents/*.md`. Two categories, by whether a
-  per-role file exists, not by subagent capability: **rendered** harnesses
-  (the six above) get role files; **briefed** harnesses (Hermes, ZeroClaw,
-  Borg; verified in source, see Facts) have no file format for a role, so
-  the brief carries the role text and their native spawn tool is told to
-  read the brief path. Borg's `spawn_agent` is a full subagent (fresh
-  context, per-call model and toolsets, parallel children) whose roles live
-  only in its database; ZeroClaw's `spawn_subagent` is the same agent in a
-  fresh session; Hermes's `delegate_task` is the weakest (no model or
-  toolset choice, `role` ignored). Stage 3 may add a ZeroClaw renderer (a
-  `config.toml` fragment with `[agents.<role>]` entries plus per-role
-  workspace dirs holding the role prompt as `AGENTS.md`) and a documented
-  one-time `manage_roles` setup for Borg.
-- **Render target:** user-level dirs with model pins from
-  `~/.stewards/config.toml` (`~/.claude/agents/`, `~/.codex/agents/`,
-  `~/.pi/agent/agents/`, `~/.gemini/agents/`, `~/.config/opencode/agents/`).
-  `--repo-level` writes the repo-level dirs with no `model` field. Copilot
-  is repo-level only (no verified user path).
+- **Team member, physically:** the same in every harness: a fresh-context
+  child that reads a brief by path and runs shell. Where the harness has a
+  file format for a reusable role, `render` writes one file per role from
+  one source (a **rendered** harness) and the delegation message carries
+  only the brief path. Where it has none (a **briefed** harness), the brief
+  also carries the role text and the harness's own spawn tool is told to
+  read the brief path. The split is about file formats, not subagent
+  capability: most briefed harnesses have full subagents.
+- **Render target:** the harness's user-level agent dir with model pins
+  from `~/.stewards/config.toml`; `--repo-level` writes the repo-level dir
+  with no `model` field, for teams. A harness with no verified user-level
+  dir is repo-level only.
 - **Model per role:** `~/.stewards/config.toml` maps role → model alias per
   harness; `render` writes the pin; `--direct` builds a BAML `ClientRegistry`
   from the same table. Repo files never name a model.
@@ -470,13 +466,12 @@ route; group per unit.
   file list only, never the PR title, body, or comments. Telemetry stores
   sizes and counts. Tracker export sends only fields the tool composed.
   No secrets in any stewards file; tracker auth from CLIs and env.
-- **Harness command gates.** Hermes auto-denies "dangerous" child commands
-  unless `delegation.subagent_auto_approve: true`; Borg applies a hardcoded
-  catastrophic-command deny list with no prompts. Every command stewards
-  asks a subagent to run (`stewards submit`, the allowlisted test and lint
+- **Harness command gates.** Some harnesses auto-deny child commands they
+  classify as dangerous, with no prompt. Every command stewards asks a
+  subagent to run (`stewards submit`, the allowlisted test and lint
   commands) must be ordinary argv with no pipes, redirects, or network, so
-  it passes both. A fixture scenario covers this once a Hermes or Borg
-  driver exists.
+  it passes such gates. A fixture scenario covers this once a driver for
+  such a harness exists.
 
 ## Agent-facing contracts
 
@@ -633,22 +628,11 @@ flows[], decisions[], unit_proposals[], explanation`. All carry
 
 `guide` prints the long form: the ritual, the roles, the editing rules, the
 hygiene rules, and the delegation paragraph for the harness detected from
-env (`CLAUDE_CODE`, `CODEX_*`, `PI_*`, `HERMES_*`, Borg: env var
-unverified, else generic); `--harness <name>` forces one, `--all` prints
-every variant. Delegation paragraphs for the brief-only harnesses:
-
-- Hermes: `delegate_task(tasks=[{goal: "Read <absolute brief path> and
-  follow it", context: "<repo path>"}])`. Children run in the background by
-  default; wait for the completion message before running `stewards next`
-  again. `role` is ignored by the source; the brief carries the role.
-- ZeroClaw: `spawn_subagent{prompt: "Read <absolute brief path> and follow
-  it"}` (same agent, fresh session, blocks until done; the risk profile must
-  not exclude `spawn_subagent`), or `delegate{agent, prompt, context}` to a
-  same-profile agent in bounded mode.
-- Borg: `spawn_agent(role="coder", blocking=true, message="Read <absolute
-  brief path> and follow it", context="<task>")`; or, headless, a fresh
-  `borg ask` session per brief. Run inside the repo workspace (`-w` or
-  `borg acp`), because `borg ask` defaults to the daemon's cwd.
+env; `--harness <name>` forces one, `--all` prints every variant. The
+detection rule and the paragraph text per harness come from the
+`harness.rs` table (the current entries are in Facts); the generic paragraph
+says: start a fresh-context subagent that can run shell, give it the
+absolute brief path and nothing else, wait for its one-line summary.
 
 ## Docs templates
 
@@ -854,7 +838,7 @@ dir, `git init`, committed, stamped, committed again. One behavior per test.
 | # | Risk | Signal | Mitigation | Kill criterion |
 |---|---|---|---|---|
 | 1 | BAML Rust client immature | `cargo update` breaks the generated client; runtime download fails | Pin `baml` exactly; vendor the lib in releases; every LLM step behind `llm.rs` so templates + serde is a one-module swap | Two consecutive BAML releases break the client with no fix in 30 days → templates + serde |
-| 2 | Harness drift across ten targets | Agent dirs, subagent tools, or env vars change | Per-harness facts in one `harness.rs` table with a last-verified date; evals on three; spot-check list for the rest per release | A harness drops repo AGENTS.md or shell → drop it |
+| 2 | Harness drift across the supported harnesses | Agent dirs, subagent tools, or env vars change | Per-harness facts in one `harness.rs` table with a last-verified date; evals on three; spot-check list for the rest per release | A harness drops repo AGENTS.md or shell → drop it |
 | 3 | Subagents ignore the pack | `pulled_anchors` large; tokens per job far above pack size | Pull rule stated twice; budget shown; token grader | Two prompt-tuning rounds after the first eval; still missing the 20% main-context criterion → reopen delegation before further stage 3 work |
 | 4 | Cards rot despite `check` | Many `card_patch: null` while anchors drift; prose contradicts code | Fingerprint staleness; docs-accuracy grader; `sync` | Docs-accuracy fails two releases running → regen-only cards |
 | 5 | Prompt injection through cards or reports | A brief makes a subagent act outside its role | Data fencing, caps, allowlist, writes boundary; a red-team task in the fixture | Any confirmed escape → stop-ship until fixed |
@@ -916,6 +900,44 @@ The main agent never reads a brief or a card; every brief path is one line;
 `check`.
 
 ## Facts
+
+### Harness table (the contract, checked per harness; last verified 2026-10-21)
+
+| harness | role-file format (rendered) | spawn tool / fresh child | model pin | parallel | env detection |
+|---|---|---|---|---|---|
+| Claude Code | `.claude/agents/*.md`, `~/.claude/agents/` | Agent tool | per file | yes (20) | `CLAUDE_CODE` |
+| Cursor | reads `.claude/agents/`, `.codex/agents/`, `.cursor/agents/` | Task tool | per file | yes | UNVERIFIED |
+| Codex CLI | `.codex/agents/*.toml`, `~/.codex/agents/` | spawn tool | per file | yes | `CODEX_*` |
+| Copilot | `.github/agents/*.agent.md` (repo-level only) | `runSubagent` | per file | yes | UNVERIFIED |
+| Gemini CLI | `.gemini/agents/*.md`, `~/.gemini/agents/` | `@name` | per file | yes | UNVERIFIED |
+| OpenCode | `.opencode/agents/*.md`, `~/.config/opencode/agents/` | Task tool | per file | yes | UNVERIFIED |
+| Pi + pi-subagents | `.pi/agents/*.md`, `~/.pi/agent/agents/` | `subagent` tool | per file | yes | `PI_*` |
+| Hermes | none (briefed) | `delegate_task` | no | yes (10, background) | `HERMES_*` |
+| ZeroClaw | none (briefed; stage 3 may render `[agents.<role>]` TOML) | `spawn_subagent`, `delegate` | per agent alias | `delegate` only | UNVERIFIED |
+| Borg | none (briefed; roles in its database) | `spawn_agent` | per call | yes (3) | UNVERIFIED |
+
+Delegation text per briefed harness, as `guide` prints it:
+
+- Hermes: `delegate_task(tasks=[{goal: "Read <absolute brief path> and
+  follow it", context: "<repo path>"}])`; children run in the background by
+  default, wait for the completion message; `role` is ignored by the
+  source.
+- ZeroClaw: `spawn_subagent{prompt: "Read <absolute brief path> and follow
+  it"}` (same agent, fresh session, blocks; the risk profile must not
+  exclude it), or `delegate{agent, prompt, context}` to a same-profile agent
+  in bounded mode.
+- Borg: `spawn_agent(role="coder", blocking=true, message="Read <absolute
+  brief path> and follow it", context="<task>")`, or a fresh `borg ask`
+  session per brief; run inside the repo workspace (`-w` or `borg acp`),
+  because `borg ask` defaults to the daemon's cwd.
+
+Command gates: Hermes auto-denies dangerous child commands unless
+`delegation.subagent_auto_approve: true`; Borg has a hardcoded deny list.
+Instruction-file limits: Borg truncates project docs at 32 KiB across the
+tree; Hermes takes only the first matching context file; ZeroClaw reads
+`AGENTS.md` from its own agent workspace, not the repo.
+
+### Per-harness detail
 
 - 6 of 7 mainstream harnesses support file-defined subagents with fresh
   context and a model pin: Claude Code (`.claude/agents/*.md`), Codex

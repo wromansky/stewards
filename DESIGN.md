@@ -26,7 +26,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 ### Shape
 
 - **Harnesses:** Claude Code, Codex CLI, Cursor, Copilot, Gemini CLI,
-  OpenCode, Pi, Hermes, ZeroClaw. All must behave the same.
+  OpenCode, Pi, Hermes, ZeroClaw, Borg (adelphidata/borg). All must behave
+  the same.
 - **Stack:** a Rust CLI that agents call through their shell tool. No MCP
   server. Rust owns facts (units, anchors, packs, staleness, debt,
   rendering). BAML defines each role's prompt and typed answer schema, so
@@ -39,7 +40,9 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Delivery:** the repo's `AGENTS.md` block is the one truth: the ritual,
   the roles, the editing rules, how to delegate. Every harness reads it with
   no install. User-level hooks and instructions are optional accelerators.
-  ZeroClaw gets the same block in its workspace `AGENTS.md`.
+  ZeroClaw gets the same block in its workspace `AGENTS.md`. `init` places
+  the block at the top of `AGENTS.md`: Borg truncates project docs at 32 KiB
+  across the tree and Hermes takes only the first matching context file.
 - **Efficiency:** three numbers go down (main context per task, total tokens
   per task, repeated work across sessions), and each agent gets the exact
   context its job needs: no more, no less.
@@ -61,7 +64,13 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   brief elsewhere. Renderers in v1: Claude Code `.claude/agents/*.md` (Cursor
   reads it), Codex `.codex/agents/*.toml`, Copilot `.github/agents/*.agent.md`,
   Gemini CLI `.gemini/agents/*.md`, OpenCode `.opencode/agents/*.md`, Pi via
-  `pi-subagents` at `.pi/agents/*.md`. Hermes and ZeroClaw use briefs.
+  `pi-subagents` at `.pi/agents/*.md`. Hermes, ZeroClaw, and Borg have no
+  file-defined subagents (verified in source, see Facts) and use briefs: the
+  brief carries the role text, and their native spawn tool is told to read
+  the brief path. An optional ZeroClaw renderer (a `config.toml` fragment
+  with `[agents.<role>]` entries plus per-role workspace dirs holding the
+  role prompt as `AGENTS.md`) may follow in stage 3; Borg roles live only in
+  its database, so none is planned.
 - **Render target:** user-level dirs with model pins from
   `~/.stewards/config.toml` (`~/.claude/agents/`, `~/.codex/agents/`,
   `~/.pi/agent/agents/`, `~/.gemini/agents/`, `~/.config/opencode/agents/`).
@@ -455,6 +464,13 @@ route; group per unit.
   file list only, never the PR title, body, or comments. Telemetry stores
   sizes and counts. Tracker export sends only fields the tool composed.
   No secrets in any stewards file; tracker auth from CLIs and env.
+- **Harness command gates.** Hermes auto-denies "dangerous" child commands
+  unless `delegation.subagent_auto_approve: true`; Borg applies a hardcoded
+  catastrophic-command deny list with no prompts. Every command stewards
+  asks a subagent to run (`stewards submit`, the allowlisted test and lint
+  commands) must be ordinary argv with no pipes, redirects, or network, so
+  it passes both. A fixture scenario covers this once a Hermes or Borg
+  driver exists.
 
 ## Agent-facing contracts
 
@@ -611,8 +627,22 @@ flows[], decisions[], unit_proposals[], explanation`. All carry
 
 `guide` prints the long form: the ritual, the roles, the editing rules, the
 hygiene rules, and the delegation paragraph for the harness detected from
-env (`CLAUDE_CODE`, `CODEX_*`, `PI_*`, `HERMES_*`, else generic);
-`--harness <name>` forces one, `--all` prints every variant.
+env (`CLAUDE_CODE`, `CODEX_*`, `PI_*`, `HERMES_*`, Borg: env var
+unverified, else generic); `--harness <name>` forces one, `--all` prints
+every variant. Delegation paragraphs for the brief-only harnesses:
+
+- Hermes: `delegate_task(tasks=[{goal: "Read <absolute brief path> and
+  follow it", context: "<repo path>"}])`. Children run in the background by
+  default; wait for the completion message before running `stewards next`
+  again. `role` is ignored by the source; the brief carries the role.
+- ZeroClaw: `spawn_subagent{prompt: "Read <absolute brief path> and follow
+  it"}` (same agent, fresh session, blocks until done; the risk profile must
+  not exclude `spawn_subagent`), or `delegate{agent, prompt, context}` to a
+  same-profile agent in bounded mode.
+- Borg: `spawn_agent(role="coder", blocking=true, message="Read <absolute
+  brief path> and follow it", context="<task>")`; or, headless, a fresh
+  `borg ask` session per brief. Run inside the repo workspace (`-w` or
+  `borg acp`), because `borg ask` defaults to the daemon's cwd.
 
 ## Docs templates
 
@@ -818,7 +848,7 @@ dir, `git init`, committed, stamped, committed again. One behavior per test.
 | # | Risk | Signal | Mitigation | Kill criterion |
 |---|---|---|---|---|
 | 1 | BAML Rust client immature | `cargo update` breaks the generated client; runtime download fails | Pin `baml` exactly; vendor the lib in releases; every LLM step behind `llm.rs` so templates + serde is a one-module swap | Two consecutive BAML releases break the client with no fix in 30 days → templates + serde |
-| 2 | Harness drift across nine targets | Agent dirs, subagent tools, or env vars change | Per-harness facts in one `harness.rs` table with a last-verified date; evals on three; spot-check list for the rest per release | A harness drops repo AGENTS.md or shell → drop it |
+| 2 | Harness drift across ten targets | Agent dirs, subagent tools, or env vars change | Per-harness facts in one `harness.rs` table with a last-verified date; evals on three; spot-check list for the rest per release | A harness drops repo AGENTS.md or shell → drop it |
 | 3 | Subagents ignore the pack | `pulled_anchors` large; tokens per job far above pack size | Pull rule stated twice; budget shown; token grader | Two prompt-tuning rounds after the first eval; still missing the 20% main-context criterion → reopen delegation before further stage 3 work |
 | 4 | Cards rot despite `check` | Many `card_patch: null` while anchors drift; prose contradicts code | Fingerprint staleness; docs-accuracy grader; `sync` | Docs-accuracy fails two releases running → regen-only cards |
 | 5 | Prompt injection through cards or reports | A brief makes a subagent act outside its role | Data fencing, caps, allowlist, writes boundary; a red-team task in the fixture | Any confirmed escape → stop-ship until fixed |
@@ -897,15 +927,59 @@ The main agent never reads a brief or a card; every brief path is one line;
   `description`, `model`, `tools`, `excludeTools`, `inheritProjectContext`,
   `defaultContext` (`fresh`|`fork`), `memory`; clean system prompt by
   default; no ad-hoc launch without a definition.
-- Hermes (Python): first match of `.hermes.md` > `AGENTS.override.md` >
-  `AGENTS.md` > `CLAUDE.md`; skills from `~/.hermes/skills/`,
-  `.agents/skills/` (after `hermes skills trust`); ad-hoc `delegate_task`
-  only; shell hook `hooks.on_session_start[].command` in
-  `~/.hermes/config.yaml`; shell yes.
-- ZeroClaw (Rust): general agent runtime. Reads AGENTS.md only from its own
-  agent workspace; `SKILL.md`/`SKILL.toml` in the workspace; ephemeral
-  `spawn_subagent` or `delegate` to another configured agent; no shell hook
-  found; shell yes, policy-gated.
+- Hermes (Python; source read 2026-10-21, `tools/delegate_tool.py`):
+  project context is the first match of `.hermes.md` > `AGENTS.override.md`
+  > `AGENTS.md` > `CLAUDE.md`; skills from `~/.hermes/skills/`,
+  `.agents/skills/` (after `hermes skills trust`); shell hook
+  `hooks.on_session_start[].command` in `~/.hermes/config.yaml`.
+  `delegate_task` schema: `tasks[] {goal, context, output_schema, images}`,
+  `action spawn|list|steer|stop`, `subagent_id`, `message`; no `model` or
+  `toolsets`; `role` is accepted but ignored (depth-derived leaf or
+  orchestrator). The child is a fresh agent (`skip_context_files`,
+  `skip_memory`) whose system prompt is "focused subagent" + `context` +
+  workspace path + the repo's `AGENTS.md`/`CLAUDE.md`; it inherits the
+  parent's toolsets (terminal, file, web by default) and never gains more;
+  shell in the repo; text result, `output_schema` validated with one retry;
+  background by default. Config `delegation:` keys: `max_concurrent_children`
+  10, `max_spawn_depth` 1, `subagent_auto_approve` false (dangerous commands
+  auto-denied), `model`, `provider`, `worktree_isolation`, `child_timeout_seconds`.
+  No file-defined subagents; does not read `.claude/agents/`.
+- ZeroClaw (Rust; source read 2026-10-21, `crates/zeroclaw-runtime/src/tools/`):
+  `spawn_subagent{prompt}` only; depth cap 1; the child is the same agent
+  alias (same identity files, risk profile, workspace), fresh session,
+  blocks the parent, returns text. `delegate{action, agent, prompt, context,
+  background, parallel, task_id(s), timeout_ms ≤ 120000}` to an
+  `[agents.<alias>]` entry (`model_provider`, `risk_profile`,
+  `runtime_profile`, `skill_bundles`, `workspace {path, access}`,
+  `delegates`, `identity`); no inline system prompt, persona = the agent
+  workspace's `AGENTS.md`/`SOUL.md`/`IDENTITY.md`. Gated by
+  `[risk_profiles.<name>] delegation_policy.mode = "allow"` (default
+  forbidden); `bounded` inherits the caller's tool ceiling and, for a
+  same-profile target, its workspace; `independent` uses the target's own
+  workspace, jailed under `<install>/agents/<alias>/workspace/` unless
+  `workspace.path` points at the repo. Reads `AGENTS.md` only from the agent
+  workspace. No per-role file; `zeroclaw agents export` bundles config.
+- Borg (adelphidata/borg, Rust; source read 2026-10-21): a personal-assistant
+  daemon (`borgd`, gRPC over `~/.borg/borgd.sock`) with a `borg` CLI/TUI,
+  channels, scheduler, memory, WASM plugins, an MCP client, and a coding
+  side (worktrees, `apply_patch`, goals). Headless: `borg ask "<msg>" --json`,
+  `borg send`, `borg acp`. Reads `AGENTS.md` then `CLAUDE.md` per directory
+  from the session workspace up to the git root (`crates/cortex/src/project_doc.rs:17`),
+  one file per dir, 32 KiB total budget with truncation; injected as
+  `<project_instructions trust="stored">`. No user-level `AGENTS.md`; persona
+  `~/.borg/IDENTITY.md`. Subagents: `spawn_agent{message, context, role,
+  role_kind, toolsets, model, thinking, fork_context (default false = fresh),
+  blocking, timeout_secs, tasks[]}`; built-in roles `researcher`, `coder`
+  (`run_shell`, `apply_patch`, `read_memory`), `writer`; custom roles via the
+  `manage_roles` tool, stored in sqlite `agent_roles`, no file format; depth
+  1, 5 children per agent, 3 concurrent. Skills: `SKILL.md` from
+  `~/.borg/skills/`, `<workspace>/.borg/skills/`, `<workspace>/.agents/skills/`,
+  bodies injected by relevance under 4000 tokens. Hooks: `~/.borg/hooks.json`,
+  Claude Code-compatible schema with `SessionStart`. Shell: `run_shell` in
+  the session workspace, hardcoded deny list, no prompts, OS sandbox only
+  for ACP sessions. `borg ask` has no cwd flag: workspace is the daemon cwd
+  unless `-w <worktree>` or `borg acp`. Settings are DB-only (`borg settings`).
+  Does not read `.claude/agents/`.
 - BAML Rust (0.221.0): cold debug build 10.8 s, binary 468 KB. The crate
   `dlopen`s `libbaml_cffi`, downloaded on first LLM use from
   `https://github.com/boundaryml/baml/releases/download/<version>/<prefix>baml_cffi-<target-triple>.<ext>`

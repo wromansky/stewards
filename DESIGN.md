@@ -165,9 +165,10 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Validation:** a bug report must carry a repro command; `validate` runs
   it through the allowlist; a failing run is proof; the validator assigns
   severity from evidence, and judges `real` by reasoning only when no
-  runnable repro exists. `--export` creates an issue on GitHub, GitLab, or
-  Jira (`repo.toml` `[tracker]`; auth from `gh`, `glab`, `JIRA_URL` and
-  `JIRA_TOKEN`), deduped by repro string.
+  runnable repro exists. `--export` creates an issue on GitHub, GitLab,
+  Jira, or Linear (`repo.toml` `[tracker]`; auth from `gh`, `glab`,
+  `JIRA_URL` and `JIRA_TOKEN`, `LINEAR_API_KEY`; Jira and Linear through
+  their REST and GraphQL APIs), deduped by repro string.
 - **Git and PR:** `init --hooks` installs a pre-push hook running `check`;
   `next --pr <n>` posts the jobs as a PR or MR comment updated in place;
   `review --pr <n>` runs maintainer review briefs on the diff and posts
@@ -247,8 +248,8 @@ entry = "src/api/items.py::create_item"
 title = "store has no HTTP knowledge"
 why = "..."
 [tracker]                                # optional
-kind = "github"                          # github | gitlab | jira
-project = "owner/repo"
+kind = "github"                          # github | gitlab | jira | linear
+project = "owner/repo"                   # gitlab: group/project; jira: project key; linear: team key
 ```
 
 `units.toml` (boundaries and purpose; the user-edited proposal, one truth)
@@ -506,7 +507,7 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `workspace_repo_missing` | `stewards.toml` lists a path that doesn't exist | fix `repos` in `<path>` |
 | `baml_runtime_unavailable` | the native lib can't load | set `BAML_LIBRARY_PATH` or allow the download |
 | `no_api_key` | `--direct` with no provider key | export `ANTHROPIC_API_KEY` (or the configured provider's key) |
-| `tracker_auth` | `gh`/`glab` not logged in or Jira env missing | `gh auth login` / `glab auth login` / set `JIRA_URL`, `JIRA_TOKEN` |
+| `tracker_auth` | `gh`/`glab` not logged in, or Jira or Linear env missing | `gh auth login` / `glab auth login` / set `JIRA_URL`, `JIRA_TOKEN` / set `LINEAR_API_KEY` |
 | `harness_unknown` | unsupported harness name | one of the listed harnesses |
 
 ## AGENTS.md block
@@ -706,7 +707,7 @@ build time. Checklist in `RELEASING.md`.
    steps on stewards itself (first committed `.stewards/`); `sync`, `docs`,
    `guide`, memory, telemetry. Dogfood from here.
 3. **Depth** (`feat/stage-3-depth`): architect and plans in `next`;
-   `validate` and export (GitHub, then GitLab, Jira); tree-sitter static
+   `validate` and export (GitHub, then GitLab, Jira, Linear); tree-sitter static
    grammars, then runtime extras; `render` for six harnesses.
 4. **Edges** (`feat/stage-4-edges`): fixture repo, mechanical graders, Claude
    Code driver; LLM graders, Codex and Pi drivers; git hooks, PR and MR

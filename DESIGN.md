@@ -900,6 +900,60 @@ The main agent never reads a brief or a card; every brief path is one line;
 `next` runs twice because the finding changed the unit; done is a green
 `check`.
 
+## Handoff (for a new session)
+
+Read this section, then the Build order, then start.
+
+**State (2026-11-03).** Design complete; every section above is settled.
+No code: `src/main.rs` is the `cargo init` hello-world. Repo
+`wromansky/stewards` (private), `main` only, CI green, auto-delete of
+merged branches on. Memory for this project is in Claude's memory dir
+(`project-stewards`, `feedback-plan-mode-exit-only-on-request`).
+
+**Next action.** Stage 1 of the Build order on a fresh
+`feat/stage-1-core` off `main`: schemas, workspace, `route`, `check`,
+`stamp`, `status`, `debt`, `pack`, `next`, fixture tests. Four checkpoints,
+one commit each, one PR. The stage 1 module API and the fixture/test list
+above are the spec. Stage 1 verification uses a hand-written, uncommitted
+`.stewards/` for this repo (units in "stewards' own units").
+
+**How we work.**
+- Clean room: no text from the adelphi-adlc-plugin repo, ever.
+- Never work on `main` for code; branch, PR, squash merge. Docs-only edits
+  to `DESIGN.md` may go to `main` directly when the user says so.
+- The user runs `git push` and `gh pr merge` themselves (Claude's pushes
+  and merges are denied by permission settings); Claude does everything
+  else, including commits when asked.
+- In plan mode, keep grilling until the user says done in their own words.
+- Each later stage gets its own plan pass against this document before
+  code. Dogfood from stage 2: every change runs stewards' own ritual.
+
+**Local environment facts.**
+- Toolchain: cargo 1.96, `baml-cli` 0.221.0 (matches the `baml` crate to
+  pin), `gh` logged in as wromansky, `glab` not checked.
+- Pi 1.4.0 installed (`@earendil-works/pi-coding-agent`, at
+  `/opt/homebrew/bin/pi`) with `pi-subagents` installed; Anthropic OAuth
+  (subscription) credential in `~/.pi/agent/auth.json`. One-shot JSON mode
+  verified: `pi --mode json --no-session "<prompt>"` returns usage and
+  text on `anthropic/claude-opus-4-8`. The `pi-subagents` spawn test
+  (`.pi/agents/echo.md` in `/private/tmp/pi-probe`) was started but
+  stopped before completing: unverified. Note: on a fresh session
+  `pi-subagents` exposes only a `subagents_enable` loader tool; set
+  `toolActivation: "eager"` or pass `--exclude-tools subagents_enable` to
+  have `subagent` active from the first request (eval driver detail).
+- Codex CLI 0.154.0 under a ChatGPT-account login rejects `gpt-5.5` and
+  the other pinned ids with 400 "not supported when using Codex with a
+  ChatGPT account"; the account's offered model changed since June 2026.
+  Fix: pick an offered model via interactive `/model`, or API-key auth for
+  the eval runner. User said not to worry about it for now.
+- Cost note: Pi runs on the subscription too, so all three eval harnesses
+  can run unmetered; only `--direct` graders are metered (≈ $0.20 per full
+  eval on Haiku). The cost estimate above still assumes Pi is API-billed.
+
+**Open questions none.** Deferred ideas: a ZeroClaw renderer
+(`[agents.<role>]` TOML), a documented one-time Borg `manage_roles` setup,
+a Hermes eval driver if briefed-harness performance needs measuring.
+
 ## Facts
 
 ### Harness table (the contract, checked per harness; last verified 2026-10-21)

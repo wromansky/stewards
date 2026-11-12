@@ -1044,7 +1044,7 @@ fn no_developers_replaces_both_developer_lines_of_the_block() {
     let block = stewards::guide::block();
     let off = without_developers(block).unwrap();
     assert!(off.contains("- Changing: make the edits yourself.\n"));
-    assert!(off.contains("A review that returns findings: fix them yourself. Done means no jobs."));
+    assert!(off.contains("A review that returns findings: fix them yourself. Done means no jobs; a change with jobs still listed is not done."));
     assert!(!off.contains("--role developer"));
     assert_eq!(off.lines().count(), block.lines().count());
     assert!(without_developers("no block").is_err());

@@ -727,10 +727,10 @@ Written by `init`, upserted between the markers.
 This repo has a team of agents that already know it. Use them.
 
 Ritual
-- Entering: run `stewards status`. It lists the units, who owns what, and what is stale.
+- Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
 - Before a change: run `stewards route <files>`; brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`) to explain the area and plan the change. Two or more units, or no owner: brief the architect first (`stewards brief --role architect --task "<the change>"`).
-- Changing: run `stewards brief <unit> --role developer` and dispatch every brief it writes, together when there are several. A small edit you may make yourself.
-- Before reporting done: run `stewards next`. Dispatch every brief it writes to a subagent that can run shell, wait for each summary, and repeat until `stewards next` lists no jobs. A review that returns findings: run `stewards brief <unit> --role developer` again to fix them. Done means no jobs.
+- Changing: run `stewards brief <unit> --role developer` and dispatch every brief it writes, together when there are several. A small edit you may make yourself; it is reviewed like any other.
+- Before reporting done: after any edit, however small and whoever made it, run `stewards next`. Dispatch every brief it writes to a subagent that can run shell, wait for each summary, and repeat until `stewards next` lists no jobs. A review that returns findings: run `stewards brief <unit> --role developer` again to fix them. Done means no jobs; a change with jobs still listed is not done.
 
 Roles (one per unit; the tool packs their context, you only hand over the brief path)
 - maintainer: explains, plans, reviews the diff, keeps the unit's card current.

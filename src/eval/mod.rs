@@ -1100,7 +1100,7 @@ fn commit_adopted(dir: &Path) -> Result<()> {
 }
 
 /// The developer lines of the AGENTS.md block, and their `--no-developers` replacements.
-const DEVELOPER_LINE: &str = "- Changing: run `stewards brief <unit> --role developer` and dispatch every brief it writes, together when there are several. A small edit you may make yourself.";
+const DEVELOPER_LINE: &str = "- Changing: run `stewards brief <unit> --role developer` and dispatch every brief it writes, together when there are several. A small edit you may make yourself; it is reviewed like any other.";
 const NO_DEVELOPER_LINE: &str = "- Changing: make the edits yourself.";
 const DEVELOPER_FIX: &str = "run `stewards brief <unit> --role developer` again to fix them.";
 const NO_DEVELOPER_FIX: &str = "fix them yourself.";

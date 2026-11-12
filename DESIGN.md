@@ -1264,7 +1264,7 @@ workspace, git snapshots, anchors, `route`, `check`, `stamp`, `debt`,
 `feat/stage-2-roles` holds the harness table and `guide`, user config and
 memory, `docs`, `init` step 1, and the BAML schemas with `llm.rs`;
 `feat/stage-2b-proof` holds the eval fixture. Nothing is merged to `main`
-but this document. Repo `wromansky/stewards` (private), auto-delete of
+but this document. Repo `wromansky/stewards` (public since 2026-11-12), auto-delete of
 merged branches on.
 
 **Next action.** The stage-1 gate, then the stage-2 chain on

@@ -1,6 +1,6 @@
 --- a/cli/src/main.rs
 +++ b/cli/src/main.rs
-@@ -37,7 +37,10 @@
+@@ -59,7 +59,10 @@
  
      match sub.as_str() {
          "create" => {
@@ -9,6 +9,6 @@
 +                usage();
 +                exit(2);
 +            };
-             exit(run_api(vec!["create".to_string(), name]));
+             exit(run_client(vec!["create-item".to_string(), name]));
          }
          "list" => {

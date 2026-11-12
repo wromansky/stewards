@@ -1,6 +1,6 @@
-Command (run from `evals/fixture/client`):
+Command (run from `evals/fixture/cli`):
 
-    node client.ts create-item widget
+    cargo run --quiet -- create widget
 
 Expected failing output (stdout): the created item has no `name` field
 

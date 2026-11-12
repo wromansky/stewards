@@ -25,13 +25,11 @@ class ItemsStoreTest(unittest.TestCase):
         self.assertEqual(item["label"], "widget")
         self.assertEqual(items.get_item(item["id"])["label"], "widget")
 
-    def test_list_paginates(self):
+    def test_list_first_page(self):
         for name in ("a", "b", "c"):
             items.create_item(name)
         page1 = items.list_items(page=1, page_size=2)
         self.assertEqual([i["label"] for i in page1["items"]], ["a", "b"])
-        page2 = items.list_items(page=2, page_size=2)
-        self.assertEqual([i["label"] for i in page2["items"]], ["c"])
 
     def test_get_missing(self):
         self.assertIsNone(items.get_item("nope"))

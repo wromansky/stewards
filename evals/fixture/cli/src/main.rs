@@ -10,6 +10,14 @@ fn api_script() -> PathBuf {
         .join("items.py")
 }
 
+fn client_script() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli has a parent directory")
+        .join("client")
+        .join("client.ts")
+}
+
 fn run_api(args: Vec<String>) -> i32 {
     match Command::new("python3")
         .arg(api_script())
@@ -19,6 +27,20 @@ fn run_api(args: Vec<String>) -> i32 {
         Ok(status) => status.code().unwrap_or(1),
         Err(err) => {
             eprintln!("items-cli: failed to run api: {err}");
+            1
+        }
+    }
+}
+
+fn run_client(args: Vec<String>) -> i32 {
+    match Command::new("node")
+        .arg(client_script())
+        .args(args)
+        .status()
+    {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(err) => {
+            eprintln!("items-cli: failed to run client: {err}");
             1
         }
     }
@@ -38,7 +60,7 @@ fn main() {
     match sub.as_str() {
         "create" => {
             let name = args.next().unwrap();
-            exit(run_api(vec!["create".to_string(), name]));
+            exit(run_client(vec!["create-item".to_string(), name]));
         }
         "list" => {
             let mut api_args = vec!["list".to_string()];

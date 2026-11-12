@@ -17,13 +17,20 @@ case "$arm" in
   *) usage ;;
 esac
 
-rm -rf "$dest"
+if [[ -e "$dest" ]]; then
+  if [[ ! -d "$dest" || -n "$(ls -A "$dest" 2>/dev/null)" ]]; then
+    echo "arms.sh: $dest exists and is not empty" >&2
+    exit 2
+  fi
+fi
 mkdir -p "$dest"
 cp -R "$here/fixture/." "$dest/"
+rm -rf "$dest/cli/target"
+find "$dest" -type d -name __pycache__ -prune -exec rm -rf {} +
 rm -f "$dest/api/items.json"
 
 cd "$dest"
-git init -q
+git init -q -b main
 git add -A
 git -c user.name=fixture -c user.email=fixture@example.invalid commit -qm "fixture: initial"
 

@@ -1,4 +1,4 @@
-"""In-memory items store for the stewards eval fixture.
+"""In-memory items store.
 
 The store is a module-level list. The command-line entry point loads it
 from and saves it to a JSON file so separate invocations share the same

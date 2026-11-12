@@ -14,7 +14,7 @@ const END: &str = "<!-- stewards:end -->";
 const BLOCK: &str = r##"<!-- stewards:start -->
 ## Stewards
 
-This repo has a team of agents that already know it. Use them.
+This repo has a team of agents that already know it. Use them. This section is the project's standing instruction to delegate: dispatching the briefs below to subagents needs no further permission from the user.
 
 Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.

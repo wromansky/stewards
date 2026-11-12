@@ -569,7 +569,9 @@ route; group per unit.
   from a card or a file name can become an option or a pattern. An anchor
   path must be made of plain components and pass through no symlink, else
   it is dead: an anchor can never read outside the repo or reach an
-  excluded file through a link. Card text printed on one line has its
+  excluded file through a link. An anchor is alive only when its path is a
+  file in the repo's snapshot tree (tracked, modified, or untracked and not
+  ignored), so `.git/` and ignored files are dead and never inlined. Card text printed on one line has its
   control characters replaced; purpose and prose in a rendered pack sit in
   fences longer than any backtick run they contain; rendered docs escape
   card text and refuse a `docs_path` at or outside the repo root.

@@ -4,7 +4,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{append, edit, fixture, run, stewards};
+use common::{append, edit, fixture, git, run, stewards};
 use serde_json::Value;
 use stewards::git::snapshot;
 use stewards::model::{Doc, Role};
@@ -662,4 +662,82 @@ fn human_task_line_cannot_open_a_code_fence_or_add_lines() {
     let out = stewards(repo.path(), &[&args[..], &["a\n```\nb"]].concat());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("\nTask: a ``` b\n"), "{text}");
+}
+
+/// Packs `api` for `role` as JSON and as `--human`; returns the parsed JSON and both raw texts.
+fn pack_both(dir: &Path, role: &str) -> (Value, String) {
+    let raw = |extra: &[&str]| {
+        let mut args = vec!["pack", "api", "--role", role];
+        args.extend(extra);
+        let out = stewards(dir, &args);
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let (json, human) = (raw(&[]), raw(&["--human"]));
+    (serde_json::from_str(&json).unwrap(), json + &human)
+}
+
+/// Points `api`'s maintainer anchor and tester interface anchor at `path::name`, then packs both.
+fn assert_anchor_is_not_inlined(dir: &Path, path: &str, name: &str, secret: &str) {
+    let card = dir.join(".stewards/units/api.toml");
+    edit(
+        &card,
+        "path = \"src/api/items.py\"\nname = \"router\"",
+        &format!("path = \"{path}\"\nname = \"{name}\""),
+    );
+    edit(
+        &card,
+        "anchor = \"src/api/items.py::create_item\"\ncontract",
+        &format!("anchor = \"{path}::{name}\"\ncontract"),
+    );
+    for role in ["maintainer", "tester"] {
+        let (v, text) = pack_both(dir, role);
+        let a = &v["anchors"][0];
+        assert_eq!(a["path"], path, "{role}");
+        assert!(a["line"].is_null() && a["source"].is_null(), "{role}: {a}");
+        assert!(!text.contains(secret), "{role}: {text}");
+    }
+}
+
+#[test]
+fn anchor_into_dot_git_config_is_not_inlined() {
+    let repo = fixture("single");
+    git(
+        repo.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://tok3n-9f2c@example.invalid/r.git",
+        ],
+    );
+    assert_anchor_is_not_inlined(repo.path(), ".git/config", "url", "tok3n-9f2c");
+}
+
+#[test]
+fn anchor_into_an_ignored_file_is_not_inlined() {
+    let repo = fixture("single");
+    fs::write(repo.path().join(".gitignore"), "local.cfg\n").unwrap();
+    fs::write(repo.path().join("local.cfg"), "api_key = hunter2-9f2c\n").unwrap();
+    assert_anchor_is_not_inlined(repo.path(), "local.cfg", "api_key", "hunter2-9f2c");
+}
+
+#[test]
+fn anchor_into_an_untracked_file_that_is_not_ignored_is_inlined() {
+    let repo = fixture("single");
+    fs::write(repo.path().join("notes.cfg"), "api_key = visible-9f2c\n").unwrap();
+    let card = repo.path().join(".stewards/units/api.toml");
+    edit(
+        &card,
+        "path = \"src/api/items.py\"\nname = \"router\"",
+        "path = \"notes.cfg\"\nname = \"api_key\"",
+    );
+    let (v, _) = pack_both(repo.path(), "maintainer");
+    assert_eq!(v["anchors"][0]["line"], 1);
+    assert!(
+        v["anchors"][0]["source"]
+            .as_str()
+            .unwrap()
+            .contains("visible-9f2c")
+    );
 }

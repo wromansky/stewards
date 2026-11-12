@@ -89,6 +89,12 @@ pub struct CheckReport {
     pub warnings: Vec<Finding>,
 }
 
+/// True when `path` is a file of the snapshot `entries`: tracked, modified, or untracked but
+/// not ignored. Anchors may read only these, never `.git/` or ignored files.
+pub fn in_snapshot(entries: &[(String, String)], path: &str) -> bool {
+    entries.iter().any(|(p, _)| p == path)
+}
+
 /// Files changed since `tree`; every file `unit` owns when there is no tree or git has pruned it.
 pub fn changed_since(
     root: &Path,
@@ -207,8 +213,10 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
                         .map(|a| (format!("{}::{}", a.path, a.name), Some(a.clone()))),
                 );
             for (text, anchor) in targets {
-                let dead =
-                    anchor.is_none_or(|a| !matches!(resolve(root, &a), Resolution::Found { .. }));
+                let dead = anchor.is_none_or(|a| {
+                    !in_snapshot(&entries, &a.path)
+                        || !matches!(resolve(root, &a), Resolution::Found { .. })
+                });
                 if dead {
                     report.failures.push(finding(
                         "dead_anchor",

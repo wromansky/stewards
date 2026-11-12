@@ -7,7 +7,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 
 use crate::anchors::{self, Resolution};
-use crate::check::{one_line, stale_files};
+use crate::check::{in_snapshot, one_line, stale_files};
 use crate::git;
 use crate::model::{
     Anchor, CommandEntry, Decision, Doc, Flow, Gap, GapKind, Interface, Role, Scenario,
@@ -86,8 +86,19 @@ fn is_excluded(exclude: &GlobSet, path: &str) -> bool {
             .is_some_and(|n| exclude.is_match(n))
 }
 
-fn window(root: &Path, a: Anchor, exclude: &GlobSet, dropped: &mut Vec<String>) -> PackAnchor {
-    let line = match anchors::resolve(root, &a) {
+fn window(
+    root: &Path,
+    entries: &[(String, String)],
+    a: Anchor,
+    exclude: &GlobSet,
+    dropped: &mut Vec<String>,
+) -> PackAnchor {
+    let resolution = if in_snapshot(entries, &a.path) {
+        anchors::resolve(root, &a)
+    } else {
+        Resolution::DeadPath
+    };
+    let line = match resolution {
         Resolution::Found { line } => Some(line),
         Resolution::DeadPath | Resolution::DeadName => None,
     };
@@ -321,12 +332,15 @@ pub fn pack(
             p.other_changed_files = Some(other);
         }
     }
-    p.anchors = anchor_specs.map(|specs| {
-        specs
-            .into_iter()
-            .map(|a| window(root, a, &exclude, &mut p.dropped))
-            .collect()
-    });
+    if let Some(specs) = anchor_specs {
+        let entries = git::ls_tree(root, snapshot)?;
+        p.anchors = Some(
+            specs
+                .into_iter()
+                .map(|a| window(root, &entries, a, &exclude, &mut p.dropped))
+                .collect(),
+        );
+    }
     p.fit(budget);
     Ok(p)
 }

@@ -383,3 +383,47 @@ how_to_change = "tab\there\nback\\slash \"\"\" triple\n"
 fn one_line_replaces_unicode_line_and_paragraph_separators() {
     assert_eq!(one_line("a\u{2028}b\u{2029}c\nd"), "a b c d");
 }
+
+/// Anchors reported as `dead_anchor` after appending `[[anchor]] path/name` to the api card.
+fn dead_anchors_after_adding(dir: &Path, path: &str, name: &str) -> Vec<String> {
+    common::append(
+        &dir.join(".stewards/units/api.toml"),
+        &format!("\n[[anchor]]\npath = \"{path}\"\nname = \"{name}\"\n"),
+    );
+    let (_, v) = run(dir, &["check"]);
+    v["failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["kind"] == "dead_anchor")
+        .map(|f| f["anchor"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn anchor_into_dot_git_config_is_dead() {
+    let repo = fixture("single");
+    assert!(repo.path().join(".git/config").exists());
+    assert_eq!(
+        dead_anchors_after_adding(repo.path(), ".git/config", "core"),
+        [".git/config::core"]
+    );
+}
+
+#[test]
+fn anchor_into_an_ignored_file_is_dead() {
+    let repo = fixture("single");
+    fs::write(repo.path().join(".gitignore"), "local.cfg\n").unwrap();
+    fs::write(repo.path().join("local.cfg"), "api_key = x\n").unwrap();
+    assert_eq!(
+        dead_anchors_after_adding(repo.path(), "local.cfg", "api_key"),
+        ["local.cfg::api_key"]
+    );
+}
+
+#[test]
+fn anchor_into_an_untracked_file_that_is_not_ignored_resolves() {
+    let repo = fixture("single");
+    fs::write(repo.path().join("notes.cfg"), "api_key = x\n").unwrap();
+    assert!(dead_anchors_after_adding(repo.path(), "notes.cfg", "api_key").is_empty());
+}

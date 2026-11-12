@@ -2,8 +2,12 @@ Answer in JSON using this schema:
 {
   real: bool,
   severity: 'critical' or 'medium' or 'low',
+  // max 2000 chars
   reason: string,
+  // max 200 items, each max 2000 chars
   evidence: string[],
+  // max 200 items, each max 300 chars
   pulled_anchors: string[],
+  // max 2000 chars
   notes: string,
 }

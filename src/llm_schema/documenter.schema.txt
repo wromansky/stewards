@@ -1,10 +1,15 @@
 Answer in JSON using this schema:
 {
   doc: {
+    // max 2000 chars
     overview: string,
+    // max 2000 chars
     how_it_works: string,
+    // max 2000 chars
     how_to_change: string,
   },
+  // max 200 items, each max 300 chars
   pulled_anchors: string[],
+  // max 2000 chars
   notes: string,
 }

@@ -27,169 +27,169 @@ enum Severity {
 }
 
 class Finding {
-  file string
+  file string @description("max 300 chars")
   line int
   rung Rung
-  cut string
-  replace_with string
+  cut string @description("max 2000 chars")
+  replace_with string @description("max 2000 chars")
 }
 
 class Interface {
-  id string
-  anchor string @description("path::Name, the bare identifier with no keyword")
-  contract string
+  id string @description("max 120 chars")
+  anchor string @description("path::Name, the bare identifier with no keyword; max 300 chars")
+  contract string @description("max 300 chars")
 }
 
 class Anchor {
-  path string
-  name string @description("the bare identifier with no keyword")
+  path string @description("max 300 chars")
+  name string @description("the bare identifier with no keyword; max 300 chars")
 }
 
 class Gap {
   kind GapKind
-  title string
-  anchor string? @description("path::Name, the bare identifier with no keyword")
-  note string
-  repro string?
+  title string @description("max 120 chars")
+  anchor string? @description("path::Name, the bare identifier with no keyword; max 300 chars")
+  note string @description("max 2000 chars")
+  repro string? @description("max 300 chars")
 }
 
 // Lists upsert by key (interface id, anchor path and name, gap title); removal is only through the
 // remove lists. Absent or null leaves that part unchanged.
 class CardPatch {
-  interface Interface[]? @description("entries to add or update, by id; the rest of the card is kept")
-  anchors Anchor[]? @description("entries to add, by path and name; the rest of the card is kept")
-  gaps Gap[]? @description("entries to add or update, by title; the rest of the card is kept")
-  remove_interface string[]? @description("ids of interface entries to remove")
-  remove_anchors string[]? @description("path::name of anchors to remove")
-  remove_gaps string[]? @description("titles of gaps to remove")
+  interface Interface[]? @description("entries to add or update, by id; the rest of the card is kept; max 200 items")
+  anchors Anchor[]? @description("entries to add, by path and name; the rest of the card is kept; max 200 items")
+  gaps Gap[]? @description("entries to add or update, by title; the rest of the card is kept; max 200 items")
+  remove_interface string[]? @description("ids of interface entries to remove; max 200 items, each max 120 chars")
+  remove_anchors string[]? @description("path::name of anchors to remove; max 200 items, each max 300 chars")
+  remove_gaps string[]? @description("titles of gaps to remove; max 200 items, each max 120 chars")
 }
 
 class MaintainerReviewAnswer {
   verdict Verdict
-  findings Finding[]
+  findings Finding[] @description("max 200 items; all cut and replace_with together max 20000 chars")
   card_patch CardPatch?
   tester_needed bool
-  pulled_anchors string[]
-  notes string
+  pulled_anchors string[] @description("max 200 items, each max 300 chars")
+  notes string @description("max 2000 chars")
 }
 
 class Task {
-  title string
-  change string
-  files string[]
-  check string?
+  title string @description("max 120 chars")
+  change string @description("max 20000 chars")
+  files string[] @description("max 200 items, each max 300 chars")
+  check string? @description("max 300 chars")
 }
 
 class MaintainerExplainAnswer {
-  explanation string
-  tasks Task[]
+  explanation string @description("max 4000 chars")
+  tasks Task[] @description("max 200 items")
   card_patch CardPatch?
-  pulled_anchors string[]
-  notes string
+  pulled_anchors string[] @description("max 200 items, each max 300 chars")
+  notes string @description("max 2000 chars")
 }
 
 class CheckRun {
-  command string
+  command string @description("max 300 chars")
   pass bool
-  output string
+  output string @description("max 2000 chars")
 }
 
 class DeveloperAnswer {
   check CheckRun?
-  summary string
-  blocked_on string?
-  pulled_anchors string[]
-  notes string
+  summary string @description("max 2000 chars")
+  blocked_on string? @description("max 2000 chars")
+  pulled_anchors string[] @description("max 200 items, each max 300 chars")
+  notes string @description("max 2000 chars")
 }
 
 class Scenario {
-  id string
-  interface string
-  given string
-  expect string
-  level string
-  command string?
+  id string @description("max 120 chars")
+  interface string @description("max 120 chars")
+  given string @description("max 300 chars")
+  expect string @description("max 300 chars")
+  level string @description("max 120 chars")
+  command string? @description("max 300 chars")
 }
 
 class ScenarioResult {
-  scenario string
+  scenario string @description("max 120 chars")
   pass bool
-  output string
+  output string @description("max 2000 chars")
 }
 
 class Bug {
-  title string
-  repro string
-  evidence string
-  interface string?
+  title string @description("max 120 chars")
+  repro string @description("max 300 chars")
+  evidence string @description("max 2000 chars")
+  interface string? @description("max 120 chars")
 }
 
 class TesterAnswer {
-  scenario_patch Scenario[]
-  results ScenarioResult[]
-  bugs Bug[]
-  tests_written string[]
-  pulled_anchors string[]
-  notes string
+  scenario_patch Scenario[] @description("max 200 items")
+  results ScenarioResult[] @description("max 200 items")
+  bugs Bug[] @description("max 200 items")
+  tests_written string[] @description("max 200 items, each max 300 chars")
+  pulled_anchors string[] @description("max 200 items, each max 300 chars")
+  notes string @description("max 2000 chars")
 }
 
 class Doc {
-  overview string
-  how_it_works string
-  how_to_change string
+  overview string @description("max 2000 chars")
+  how_it_works string @description("max 2000 chars")
+  how_to_change string @description("max 2000 chars")
 }
 
 class DocumenterAnswer {
   doc Doc
-  pulled_anchors string[]
-  notes string
+  pulled_anchors string[] @description("max 200 items, each max 300 chars")
+  notes string @description("max 2000 chars")
 }
 
 class ValidatorAnswer {
   real bool
   severity Severity
-  reason string
-  evidence string[]
-  pulled_anchors string[]
-  notes string
+  reason string @description("max 2000 chars")
+  evidence string[] @description("max 200 items, each max 2000 chars")
+  pulled_anchors string[] @description("max 200 items, each max 300 chars")
+  notes string @description("max 2000 chars")
 }
 
 class PlanStep {
-  unit string
-  change string
-  interfaces string[]
-  check string
+  unit string @description("max 120 chars")
+  change string @description("max 2000 chars")
+  interfaces string[] @description("max 200 items, each max 120 chars")
+  check string @description("max 300 chars")
 }
 
 class Plan {
-  title string
-  steps PlanStep[]
+  title string @description("max 120 chars")
+  steps PlanStep[] @description("max 200 items")
 }
 
 class Flow {
-  name string
-  units string[]
-  entry string @description("path::Name, the bare identifier with no keyword")
-  check string?
+  name string @description("max 120 chars")
+  units string[] @description("max 200 items, each max 120 chars")
+  entry string @description("path::Name, the bare identifier with no keyword; max 300 chars")
+  check string? @description("max 300 chars")
 }
 
 class Decision {
-  title string
-  why string
+  title string @description("max 120 chars")
+  why string @description("max 2000 chars")
 }
 
 class UnitProposal {
-  name string
-  purpose string
-  paths string[]
+  name string @description("max 120 chars")
+  purpose string @description("max 300 chars")
+  paths string[] @description("max 200 items, each max 300 chars")
 }
 
 class ArchitectAnswer {
   plan Plan?
-  flows Flow[]
-  decisions Decision[]
-  unit_proposals UnitProposal[]
-  explanation string
-  pulled_anchors string[]
-  notes string
+  flows Flow[] @description("max 200 items")
+  decisions Decision[] @description("max 200 items")
+  unit_proposals UnitProposal[] @description("max 200 items")
+  explanation string @description("max 4000 chars")
+  pulled_anchors string[] @description("max 200 items, each max 300 chars")
+  notes string @description("max 2000 chars")
 }

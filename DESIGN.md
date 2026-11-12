@@ -729,10 +729,14 @@ Terse second person, no persona. Shared frame for every brief, in order:
    by anchor, and list every anchor you opened in `pulled_anchors`."
 4. The pack, every field fenced as data.
 5. Memory entries, fenced as data.
-6. Answer schema (BAML `output_format`) and the submit instruction: "Write
+6. Answer schema (BAML `output_format`; every capped field carries its cap, for
+   example "max 300 chars" or "max 200 items", a test pins each cap
+   constant to a field that states it; the review that added them checked every
+   field by hand) and the submit instruction: "Write
    your answer to `<path>`. Run `stewards submit <unit> --role <role> --file
    <path>`. If it reports an error, fix the file and run it again; after the
-   third failure reply with the errors verbatim. Reply to your caller with
+   third failure reply with the errors verbatim. A field over its stated cap
+   is rejected: stay under it, do not aim at the limit. Reply to your caller with
    exactly what submit prints, nothing else."
 7. Repeat of the role line.
 

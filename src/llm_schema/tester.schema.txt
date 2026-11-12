@@ -1,31 +1,49 @@
 Answer in JSON using this schema:
 {
+  // max 200 items
   scenario_patch: [
     {
+      // max 120 chars
       id: string,
+      // max 120 chars
       interface: string,
+      // max 300 chars
       given: string,
+      // max 300 chars
       expect: string,
+      // max 120 chars
       level: string,
+      // max 300 chars
       command: string or null,
     }
   ],
+  // max 200 items
   results: [
     {
+      // max 120 chars
       scenario: string,
       pass: bool,
+      // max 2000 chars
       output: string,
     }
   ],
+  // max 200 items
   bugs: [
     {
+      // max 120 chars
       title: string,
+      // max 300 chars
       repro: string,
+      // max 2000 chars
       evidence: string,
+      // max 120 chars
       interface: string or null,
     }
   ],
+  // max 200 items, each max 300 chars
   tests_written: string[],
+  // max 200 items, each max 300 chars
   pulled_anchors: string[],
+  // max 2000 chars
   notes: string,
 }

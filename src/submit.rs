@@ -22,22 +22,22 @@ use crate::telemetry;
 use crate::workspace::{Repo, here, safe_path};
 
 /// Ids and titles.
-const ID_CAP: usize = 120;
+pub const ID_CAP: usize = 120;
 /// Contracts, anchors, paths, and commands.
-const LINE_CAP: usize = 300;
+pub const LINE_CAP: usize = 300;
 /// Notes, cut, replace_with, gap notes, and every other prose field but explanations and task
 /// changes.
-const PROSE_CAP: usize = 2000;
+pub const PROSE_CAP: usize = 2000;
 /// A task's change: larger than the prose cap, since the fix task of a `changes` review joins
 /// every finding.
-const TASK_CHANGE_CAP: usize = 20_000;
-const EXPLANATION_CAP: usize = 4000;
+pub const TASK_CHANGE_CAP: usize = 20_000;
+pub const EXPLANATION_CAP: usize = 4000;
 /// How much of an explanation submit prints.
 const EXPLANATION_SHOWN: usize = 2000;
 /// The largest answer file read.
 const ANSWER_BYTES: u64 = 256 * 1024;
 /// Entries in any one list of an answer.
-const LIST_CAP: usize = 200;
+pub const LIST_CAP: usize = 200;
 /// How much of an error's field and problem is reported.
 const ERROR_SHOWN: usize = 200;
 /// How much of an error's example is reported.

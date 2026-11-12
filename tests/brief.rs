@@ -77,6 +77,7 @@ fn sections_appear_in_frame_order() {
         "Memory:\n<<<DATA\n- maintainers prefer small diffs\nDATA>>>",
         "Answer in JSON using this schema:",
         "Write your answer to",
+        "A field over its stated cap is rejected: stay under it, do not aim at the limit.",
     ];
     let mut at = 0;
     for m in marks {

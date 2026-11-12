@@ -858,6 +858,95 @@ stewards' own ritual with briefs dispatched to the harness's subagents (Pi
 with `pi-subagents` on the Linux machine, Claude Code on the macOS one).
 stewards itself is the real-repo eval target once the fixture eval passes.
 
+## Build cycle
+
+How the build itself is run: one orchestrating session and a roster of
+subagents, tuned for wall-clock speed. Settled 2026-11-11.
+
+### Roster
+
+Built-in `pi-subagents` agents with the model set per call as
+`provider/model`; no agent files in the repo.
+
+| build role | agent | model | used for |
+|---|---|---|---|
+| orchestrator | the parent session | `anthropic/claude-fable-5-2` | briefs, applying patches, gates, checkpoint commits, triage |
+| senior writer | `worker` | `anthropic/claude-opus-5-5` | contract-heavy or cross-cutting tasks |
+| standard writer | `worker` | `anthropic/claude-sonnet-5-5` | one well-specified module |
+| mechanical writer | `worker` | `deepseek/deepseek-v4-pro` | fixtures, templates, packaging; off the subscription's limits |
+| scout | `scout` | `anthropic/claude-haiku-5-5` | what-exists summaries for plan passes; transcript recon |
+| researcher | `researcher` | `anthropic/claude-sonnet-5-5` | current docs before code depends on them |
+| fact auditor | `evidence-auditor` | `anthropic/claude-opus-5-5` | a researcher's claims, before they enter Facts |
+| spec reviewer | `reviewer` | `anthropic/claude-opus-5-5` | merged diff against this document |
+| simplicity reviewer | `reviewer` + `ponytail-review` skill | `anthropic/claude-sonnet-5-5` | over-building, untraced lines, missing checks |
+| security reviewer | `reviewer` | `anthropic/claude-opus-5-5` | trust-boundary tasks only, before merge |
+| second-family reviewer | `reviewer` | `deepseek/deepseek-v4-pro` | each stage's whole diff, once, at the gate |
+| second-harness check | `claude-code` | Claude Code's own | from stage 2: the ritual run from another harness |
+| oracle | `oracle` | `anthropic/claude-opus-5-5` | rare: a reported conflict with this document |
+
+The parent session is the project's only `claude-fable-5-2` use. Every
+launch names its model: a child with no model inherits the parent's, so an
+unpinned launch is a mistake, and `delegate` (which always inherits) is not
+used. One resolved model per launch. On a quota or availability failure the lane
+stops and is reported; the orchestrator never swaps a model silently. A
+mechanical writer that fails its gate twice hands its task to a standard
+writer, and the user is told.
+
+### Wave loop
+
+1. Start from a clean checkout at the last checkpoint commit.
+2. Launch the wave as one async workflow: each writer in a managed worktree
+   (`worktree: true`), briefed from its todo task: goal, cwd and ref, owned
+   files, spec sections, tests, validation, what to return, and to stop and
+   ask the parent on any conflict with this document.
+3. Each writer gates itself in its worktree: fmt, clippy, tests. Writers do
+   not commit; the worktree hands back a patch.
+4. A task flagged for security is reviewed on its patch before it merges.
+5. The parent applies the patches in dependency order, runs the full suite,
+   and commits a checkpoint (covered by the user's go-ahead for the stage).
+6. Review fan-out on the wave's merged diff, in parallel, fresh context,
+   read-only: spec and simplicity.
+7. The parent classifies every finding (blocker, defer, stale, invalid, out
+   of scope, speculative). Accepted fixes go to the original writer,
+   resumed; two fix rounds at most, then the user decides.
+8. Commit, close the todos, next wave.
+
+A stage gate adds: the second-family review of the whole stage diff, the
+second-harness check from stage 2 on, and the gate task's own checks.
+
+### Pace
+
+- No cap on writers: a wave is as wide as the dependency graph allows.
+- A task starts when the tasks it truly depends on are checkpointed, not
+  when its stage opens. It lands on its own stage's branch, which is
+  stacked on the previous stage's and rebased when that one moves
+  (`git rebase --onto main <old tip>` after a squash merge). So the
+  stage-2 tasks that need only the skeleton run during stage 1, and the
+  eval fixture is written early.
+- The one hold: nothing from stage 3 or 4 starts before the thin-eval gate
+  says delegation pays.
+- Reviewers, scouts, researchers, and the auditor run beside the writers.
+- Research look-ahead is one stage: BAML during stage 1; Pi transcript
+  recon during stage 2; tree-sitter, the HTTP client, and harness rows
+  during 2b; driver verification during stage 3. Further ahead, facts go
+  stale.
+- Security-flagged tasks: maintainer submit and fencing, the allowlist
+  runner, both tracker tasks, hooks and PR comments, the release pipeline.
+
+### Waves
+
+| stage | waves (‖ = together, → = then) |
+|---|---|
+| 0 | rehearsal in a scratch repo |
+| 1 | skeleton ‖ BAML spike ‖ eval fixture → git ‖ workspace ‖ anchors ‖ route ‖ docs ‖ guide ‖ user config → check ‖ debt ‖ init step 1 ‖ BAML schemas → pack ‖ status → next → gate |
+| 2 | plan → brief → maintainer submit → other submits → developer → init --draft → gate |
+| 2b | runner and Pi driver → thin-eval gate |
+| 3 | plan → allowlist runner and plans ‖ tree-sitter ‖ render → validate ‖ runtime grammars ‖ flow checks → other trackers → gate |
+| 4 | plan → hooks and PR glue ‖ plugin shell ‖ judges ‖ drivers ‖ release → full eval and gate |
+
+Stage 2's first five tasks and the fixture appear in stage 1's row because
+that is when they run; they still land on their own stage's branch.
+
 ## stewards' own units
 
 | unit | paths | interface ids |
@@ -1069,7 +1158,8 @@ above are the spec. Stage 1 verification uses a hand-written, uncommitted
   (`pi-subagents` `worktree: true`, which needs a clean checkout). Workers
   do not commit; the parent applies each patch in dependency order, runs
   the full suite, and commits a checkpoint on the stage branch. The user's
-  go-ahead for a stage covers those commits; the PR is squash merged.
+  go-ahead for a stage covers those commits; the PR is squash merged. The
+  roster, the wave loop, and the pace are in Build cycle.
 - Each later stage gets its own plan pass against this document before
   code. Dogfood from stage 2: every change runs stewards' own ritual.
 

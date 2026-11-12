@@ -1,4 +1,5 @@
 /target
 .DS_Store
 /evals/results/
-/.stewards/telemetry/
+.stewards/briefs/
+.stewards/telemetry/

@@ -1,0 +1,9 @@
+unit = "next"
+
+[[scenario]]
+id = "never-stamped-units-get-only-maintainer-and-validator-jobs"
+interface = "next"
+given = "single fixture: store has an interface, no docs and a bug gap; api's interface file counts as changed; neither unit has a [reviewed] stamp"
+expect = "jobs are api maintainer, store maintainer, store validator; no tester or documenter job; exit 1"
+level = "integration"
+command = "cargo test --test next never_stamped_units_get_only_maintainer_and_validator_jobs"

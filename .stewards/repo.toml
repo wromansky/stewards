@@ -1,0 +1,59 @@
+schema = 1
+name = "stewards"
+test_roots = ["tests"]
+
+[commands]
+test = ["cargo test"]
+lint = ["cargo clippy", "cargo fmt"]
+
+[[flow]]
+name = "brief-submit-cycle"
+units = ["jobs", "pack", "llm", "model", "git", "analysis"]
+entry = "src/brief.rs::build"
+check = "cargo test --test submit approve_stamps_the_brief_snapshot_so_a_later_edit_stays_stale"
+
+[[flow]]
+name = "next-job-scheduling"
+units = ["next", "analysis", "git", "model", "jobs"]
+entry = "src/next.rs::next"
+check = "cargo test --test next interface_file_edit_gives_maintainer_tester_documenter"
+
+[[flow]]
+name = "documenter-card-to-docs-page"
+units = ["jobs", "setup"]
+entry = "src/submit.rs::documenter"
+check = "cargo test --test submit_roles documenter_writes_the_doc_renders_the_page_and_sets_its_mark"
+
+[[flow]]
+name = "maintainer-card-patch"
+units = ["llm", "jobs", "model"]
+entry = "src/submit.rs::maintainer"
+check = "cargo test --test submit one_interface_entry_updates_it_and_keeps_the_others_unchanged_in_order"
+
+[[decision]]
+title = "Docs fixtures route to setup through a narrower glob than model's tests/fixtures/**"
+why = "tests/fixtures/docs/** only feeds the docs renderer tests, so setup lists it and the more specific glob wins routing; edits there review the unit that renders docs, not the model unit."
+
+[[decision]]
+title = "Stewards adopts itself with checked-in .stewards cards and generated docs/units pages"
+why = "Running the tool on its own repo exercises every role on real code; docs/units is rendered from cards so it stays in the repo as generated output, and the AGENTS.md block is the init-written one."
+
+[[decision]]
+title = "A card patch upserts by key and removes only through explicit remove lists"
+why = "A present list used to replace that whole part of the card, so a maintainer who sent the one interface it changed deleted the rest. interface, anchors, and gaps now upsert by id, path::name, and title and keep every entry not named; remove_interface, remove_anchors, and remove_gaps are the only removal, and each removal must name a key the card has and the patch does not also upsert, so a typo or a contradictory patch is rejected rather than silently dropping entries."
+
+[[decision]]
+title = "Tester and documenter jobs wait for a unit's first stamp"
+why = "Their marks live in the card's [reviewed] block and they measure from the stamp, so before the first maintainer review there is nothing to measure from and every file would look changed. A never-stamped unit gets its maintainer job first; a validator job for an unjudged bug does not wait, since it judges a reproduction, not a diff."
+
+[[decision]]
+title = "The docs index is not part of the documenter's lost-update check"
+why = "docs/units/README.md is rendered from every card, so documenters of two units in one round both rewrite it; refusing the second as a lost update would block a correct submit. The unit's card and its own page stay checked."
+
+[[decision]]
+title = "A task's change has its own cap above the prose cap"
+why = "A changes review joins every finding into one fix task, so with several findings the 2000-byte prose cap made a valid review impossible to submit. TASK_CHANGE_CAP (20000) applies to task changes only; other prose keeps the 2000 cap."
+
+[[decision]]
+title = "A tester's bug takes the anchor of the interface it names"
+why = "The anchor shows the validator where the bug is. A bug naming an interface takes that interface's anchor; one naming none keeps the anchor it had, and a repeated bug keeps its severity and issue so a tester's rerun does not undo the validator's judgment."

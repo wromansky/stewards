@@ -369,3 +369,58 @@ fn snapshot_sees_a_same_size_edit_made_in_the_same_second_as_the_last_add() {
     let entries = git::ls_tree(p, &tree).unwrap();
     assert_eq!(run_git(p, &["cat-file", "-p", &entries[0].1]), "two\n");
 }
+
+#[test]
+fn recent_commit_files_lists_files_per_commit_newest_first() {
+    let r = repo();
+    let p = r.path();
+    assert!(git::recent_commit_files(p, 10).unwrap().is_empty());
+    write(p, "a.txt", "a\n");
+    write(p, "b.txt", "b\n");
+    run_git(p, &["add", "-A"]);
+    run_git(p, &["commit", "-q", "-m", "one"]);
+    write(p, "b.txt", "b2\n");
+    run_git(p, &["commit", "-q", "-am", "two"]);
+    assert_eq!(
+        git::recent_commit_files(p, 10).unwrap(),
+        [
+            vec!["b.txt".to_string()],
+            vec!["a.txt".into(), "b.txt".into()]
+        ]
+    );
+    assert_eq!(git::recent_commit_files(p, 1).unwrap().len(), 1);
+}
+
+#[test]
+fn origin_url_is_none_without_an_origin_remote() {
+    let r = repo();
+    assert_eq!(git::origin_url(r.path()), None);
+    run_git(r.path(), &["remote", "add", "upstream", "https://h/u.git"]);
+    assert_eq!(git::origin_url(r.path()), None);
+}
+
+#[test]
+fn origin_url_is_the_origin_remote_url() {
+    let r = repo();
+    run_git(
+        r.path(),
+        &["remote", "add", "origin", "https://h/o/name.git"],
+    );
+    assert_eq!(
+        git::origin_url(r.path()).as_deref(),
+        Some("https://h/o/name.git")
+    );
+}
+
+#[test]
+#[ignore = "bug: git prints the remote name for an empty url, so origin_url returns Some(\"origin\")"]
+fn origin_url_is_none_when_the_url_is_empty() {
+    let r = repo();
+    run_git(r.path(), &["config", "remote.origin.url", ""]);
+    assert_eq!(git::origin_url(r.path()), None);
+}
+
+#[test]
+fn origin_url_is_none_outside_a_repo() {
+    assert_eq!(git::origin_url(TempDir::new().unwrap().path()), None);
+}

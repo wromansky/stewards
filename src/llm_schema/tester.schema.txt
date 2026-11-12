@@ -1,0 +1,31 @@
+Answer in JSON using this schema:
+{
+  scenario_patch: [
+    {
+      id: string,
+      interface: string,
+      given: string,
+      expect: string,
+      level: string,
+      command: string or null,
+    }
+  ],
+  results: [
+    {
+      scenario: string,
+      pass: bool,
+      output: string,
+    }
+  ],
+  bugs: [
+    {
+      title: string,
+      repro: string,
+      evidence: string,
+      interface: string or null,
+    }
+  ],
+  tests_written: string[],
+  pulled_anchors: string[],
+  notes: string,
+}

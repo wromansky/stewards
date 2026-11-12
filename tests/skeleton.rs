@@ -135,6 +135,20 @@ fn bad_unit_name_is_invalid_toml() {
 }
 
 #[test]
+fn duplicate_unit_name_is_invalid_toml() {
+    let repo = fixture("single");
+    std::fs::write(
+        repo.path().join(".stewards/units.toml"),
+        "[[unit]]\nname = \"api\"\npaths = []\n\n[[unit]]\nname = \"api\"\npaths = []\n",
+    )
+    .unwrap();
+    let e = load_err(repo.path());
+    assert_eq!(e.code, "invalid_toml");
+    assert!(e.message.contains(".stewards/units.toml"), "{}", e.message);
+    assert!(e.message.contains("`api`"), "{}", e.message);
+}
+
+#[test]
 fn anchor_parse_splits_at_the_first_double_colon() {
     let a = Anchor::parse("a.rs::m::f").unwrap();
     assert_eq!((a.path.as_str(), a.name.as_str()), ("a.rs", "m::f"));
@@ -289,5 +303,44 @@ fn every_command_parses_its_flags() {
         let v: Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");
         // Built commands answer for real (run from `/` they mostly error); the point is that clap accepted the flags.
         assert_ne!(v["error"]["code"], "usage", "{args:?}: {v}");
+    }
+}
+
+#[test]
+fn output_into_a_pipe_closed_early_does_not_panic() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let repo = fixture("single");
+    let home = tempfile::TempDir::new().unwrap();
+    // ~120 KB of output: more than a pipe buffer, so the write meets the closed pipe.
+    let paths: Vec<String> = (0..3000).map(|n| format!("src/api/f{n}.py")).collect();
+    let route: Vec<&str> = std::iter::once("route")
+        .chain(paths.iter().map(String::as_str))
+        .collect();
+    let task = "x".repeat(120_000);
+    let brief = [
+        "brief",
+        "api",
+        "--role",
+        "maintainer",
+        "--task",
+        &task,
+        "--stdout",
+    ];
+    for args in [&route[..], &[&route[..], &["--human"]].concat(), &brief] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_stewards"))
+            .args(args)
+            .current_dir(repo.path())
+            .env("STEWARDS_HOME", home.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut byte = [0u8; 1];
+        child.stdout.take().unwrap().read_exact(&mut byte).unwrap();
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        assert_eq!(out.status.code(), Some(0), "{stderr}");
     }
 }

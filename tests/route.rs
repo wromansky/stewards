@@ -73,6 +73,24 @@ fn tool_owned_paths_have_no_owner() {
 }
 
 #[test]
+fn git_dirs_and_tool_dirs_in_any_ascii_case_have_no_owner() {
+    let r = router(&[unit("all", &["**"])]);
+    for path in [
+        ".git/config",
+        ".git/hooks/pre-commit",
+        "sub/.git/config",
+        ".GIT/config",
+        ".STEWARDS/units/api.toml",
+        "Docs/Units/api.md",
+    ] {
+        assert_eq!(r.owner(path), None, "{path}");
+    }
+    assert_eq!(r.owner(".gitignore"), Some("all"));
+    assert_eq!(r.owner("sub/.github/ci.yml"), Some("all"));
+    assert_eq!(r.owner(".stewardsx/a"), Some("all"));
+}
+
+#[test]
 fn dot_slash_and_backslashes_are_normalised() {
     let r = router(&[unit("api", &["src/api/**"])]);
     assert_eq!(r.owner("./src/api/a.py"), Some("api"));

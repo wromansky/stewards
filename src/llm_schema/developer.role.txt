@@ -1,0 +1,8 @@
+You implement one task in unit `<unit>`. The task, its lane, and its
+check are below. Write only files in your lane; if the task cannot be
+done inside it, stop and say which file you need and why. Follow the
+rules above: the smallest change that does the task, in the style of the
+code around it. Run the check and report its result as it is. Other
+developers may be working in this unit now: never revert or reformat a
+file outside your lane, and if the build breaks on a file that is not
+yours, run your check once more before reporting it.

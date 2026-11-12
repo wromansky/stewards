@@ -9,10 +9,11 @@ use serde::Serialize;
 use crate::anchors::{self, Resolution};
 use crate::check::{in_snapshot, one_line, stale_files};
 use crate::git;
+use crate::llm::types::Task;
 use crate::model::{
     Anchor, CommandEntry, Decision, Doc, Flow, Gap, GapKind, Interface, Role, Scenario,
 };
-use crate::output::{CliError, Global, Human, emit, not_implemented};
+use crate::output::{CliError, Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, here};
 
@@ -20,6 +21,8 @@ use crate::workspace::{Repo, here};
 const WINDOW: usize = 20;
 const HUNK_LINES: usize = 40;
 const HALVED: &str = "source windows halved";
+/// Owned files rendered in a first review's list; the JSON carries them all.
+const OWNED_SHOWN: usize = 200;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Pack {
@@ -30,6 +33,8 @@ pub struct Pack {
     pub bytes: usize,
     pub over_budget: bool,
     pub purpose: Option<String>,
+    /// The unit's globs from units.toml.
+    pub paths: Option<Vec<String>>,
     pub interface: Option<Vec<Interface>>,
     pub anchors: Option<Vec<PackAnchor>>,
     pub scenarios: Option<Vec<Scenario>>,
@@ -65,6 +70,9 @@ pub struct UnitSummary {
     pub name: String,
     pub purpose: String,
     pub interface_ids: Vec<String>,
+    pub paths: Vec<String>,
+    /// How many files the unit owns in the snapshot.
+    pub files: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,7 +127,8 @@ fn window(
     }
 }
 
-/// The pack for `unit` in `role`; `--diff` hunks run from the stamped tree to `snapshot`.
+/// The pack for `unit` in `role`; `--diff` hunks run from the stamped tree to `snapshot`. The
+/// developer's pack needs its task, so it comes from `developer`.
 pub fn pack(
     repo: &Repo,
     unit: Option<&str>,
@@ -127,6 +136,38 @@ pub fn pack(
     task: &str,
     diff: bool,
     snapshot: &str,
+) -> Result<Pack> {
+    assemble(repo, unit, role, task, diff, snapshot, None)
+}
+
+/// The developer's pack for task `n` of `unit`'s task list.
+pub fn developer(
+    repo: &Repo,
+    unit: &str,
+    task: &str,
+    n: usize,
+    dev: &Task,
+    snapshot: &str,
+) -> Result<Pack> {
+    assemble(
+        repo,
+        Some(unit),
+        Role::Developer,
+        task,
+        false,
+        snapshot,
+        Some((n, dev)),
+    )
+}
+
+fn assemble(
+    repo: &Repo,
+    unit: Option<&str>,
+    role: Role,
+    task: &str,
+    diff: bool,
+    snapshot: &str,
+    dev: Option<(usize, &Task)>,
 ) -> Result<Pack> {
     match (role, unit) {
         (Role::Architect, Some(u)) => bail!(usage(
@@ -170,6 +211,7 @@ pub fn pack(
         bytes: 0,
         over_budget: false,
         purpose: None,
+        paths: None,
         interface: None,
         anchors: None,
         scenarios: None,
@@ -192,6 +234,8 @@ pub fn pack(
     };
 
     let Some(name) = unit else {
+        let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+        let entries = git::ls_tree(root, snapshot)?;
         p.units = Some(
             loaded
                 .units
@@ -202,6 +246,11 @@ pub fn pack(
                     interface_ids: loaded.cards.get(&u.name).map_or(vec![], |c| {
                         c.interface.iter().map(|i| i.id.clone()).collect()
                     }),
+                    paths: u.paths.clone(),
+                    files: entries
+                        .iter()
+                        .filter(|(path, _)| router.owner(path) == Some(u.name.as_str()))
+                        .count(),
                 })
                 .collect(),
         );
@@ -212,6 +261,7 @@ pub fn pack(
     };
 
     let def = loaded.unit(name)?;
+    p.paths = Some(def.paths.clone());
     let card = loaded.cards.get(name);
     let test = loaded.tests.get(name);
     let interface = card.map_or(vec![], |c| c.interface.clone());
@@ -227,8 +277,27 @@ pub fn pack(
 
     let mut anchor_specs = match role {
         Role::Developer => {
-            not_implemented("pack --role developer")?;
-            unreachable!("not_implemented always errs")
+            let Some((n, t)) = dev else {
+                bail!(usage(
+                    "the developer pack is built by `brief`, from the unit's task list".into(),
+                    &format!("stewards brief {name} --role developer"),
+                ));
+            };
+            p.purpose = Some(def.purpose.clone());
+            p.gaps = Some(card.map_or(vec![], |c| c.gaps.clone()));
+            p.flows = Some(flows);
+            p.dev_task = Some(
+                serde_json::json!({"n": n, "title": t.title, "change": t.change,
+                                                 "files": t.files, "check": t.check}),
+            );
+            // a developer sees only the anchors in its lane
+            let anchors = card.map_or(vec![], |c| c.anchors.clone());
+            Some(
+                anchors
+                    .into_iter()
+                    .filter(|a| t.files.contains(&a.path))
+                    .collect(),
+            )
         }
         Role::Maintainer => {
             p.purpose = Some(def.purpose.clone());
@@ -331,6 +400,14 @@ pub fn pack(
             other.sort();
             p.other_changed_files = Some(other);
         }
+    } else if diff && role == Role::Maintainer {
+        // A first review: every file the unit owns, as `next` lists for a never-stamped unit.
+        let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+        let entries = git::ls_tree(root, snapshot)?;
+        let mut owned =
+            stale_files(root, snapshot, &entries, &router, name, None)?.unwrap_or_default();
+        owned.sort();
+        p.changed_files = Some(owned);
     }
     if let Some(specs) = anchor_specs {
         let entries = git::ls_tree(root, snapshot)?;
@@ -382,6 +459,16 @@ fn fenced(lang: &str, body: &str) -> String {
     format!("{fence}{lang}\n{body}\n{fence}\n")
 }
 
+fn bullets(items: &[String]) -> String {
+    if items.is_empty() {
+        return "(none)\n".into();
+    }
+    items
+        .iter()
+        .map(|i| format!("- {}\n", one_line(i)))
+        .collect()
+}
+
 fn paths_table(paths: &[String]) -> String {
     table(&["path"], paths.iter().map(|p| vec![p.clone()]).collect())
 }
@@ -400,6 +487,29 @@ impl Pack {
         };
         if let Some(purpose) = &self.purpose {
             section("Purpose", fenced("", purpose));
+        }
+        if let Some(list) = &self.paths {
+            section("Paths", bullets(list));
+        }
+        if let Some(t) = &self.dev_task {
+            let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+            let files = t["files"]
+                .as_array()
+                .map_or(vec![], |f| f.iter().map(text).collect());
+            let check = t["check"].as_str().map(|c| vec![c.to_string()]);
+            section(
+                "Developer task",
+                format!(
+                    "{}\n### Change\n\n{}\n### Lane\n\n{}\n### Check\n\n{}",
+                    table(
+                        &["n", "title"],
+                        vec![vec![t["n"].to_string(), text(&t["title"])]]
+                    ),
+                    fenced("", &text(&t["change"])),
+                    paths_table(&files),
+                    table(&["command"], check.into_iter().collect())
+                ),
+            );
         }
         if let Some(list) = &self.interface {
             let rows = list
@@ -502,10 +612,13 @@ impl Pack {
                         u.name.clone(),
                         u.purpose.clone(),
                         u.interface_ids.join(", "),
+                        u.paths.join(", "),
+                        u.files.to_string(),
                     ]
                 })
                 .collect();
-            section("Units", table(&["name", "purpose", "interface ids"], rows));
+            let headers = ["name", "purpose", "interface ids", "paths", "files"];
+            section("Units", table(&headers, rows));
         }
         if let Some(doc) = &self.doc {
             section(
@@ -518,8 +631,18 @@ impl Pack {
                 ),
             );
         }
-        if let Some(list) = &self.changed_files {
-            section("Changed files", paths_table(list));
+        match (&self.changed_files, &self.hunks) {
+            (Some(list), Some(_)) => section("Changed files", paths_table(list)),
+            (Some(list), None) => {
+                let mut body = "This unit has not been reviewed yet: these are all its files.\n\n"
+                    .to_string()
+                    + &bullets(&list[..list.len().min(OWNED_SHOWN)]);
+                if list.len() > OWNED_SHOWN {
+                    body += &format!("(+{} more)\n", list.len() - OWNED_SHOWN);
+                }
+                section("Owned files", body);
+            }
+            (None, _) => {}
         }
         if let Some(list) = &self.hunks {
             let mut body = String::new();
@@ -587,6 +710,10 @@ impl Pack {
         }
         if !fits(self) && self.flows.take().is_some() {
             self.dropped.push("flows".into());
+        }
+        // a first review's owned-files list; a re-review's changed files stay with their hunks
+        if !fits(self) && self.hunks.is_none() && self.changed_files.take().is_some() {
+            self.dropped.push("owned files".into());
         }
         let long = |h: &Hunk| {
             h.diff

@@ -1,0 +1,65 @@
+unit = "llm"
+
+[[scenario]]
+id = "role-text-matches-design"
+interface = "role-text"
+given = "each role/mode"
+expect = "text is the rendered baml_src role text with <unit> placeholder"
+level = "unit"
+command = "cargo test --test llm role_text_is_the_design_text"
+
+[[scenario]]
+id = "output-format-names-every-field"
+interface = "output-format"
+given = "each role/mode shape"
+expect = "schema text names every answer field; non-maintainer roles ignore mode"
+level = "unit"
+command = "cargo test --test llm output_format_names_every_field"
+
+[[scenario]]
+id = "parse-accepts-every-shape"
+interface = "parse-answer"
+given = "a valid answer for each of the 7 role/mode shapes"
+expect = "parse returns Ok"
+level = "unit"
+command = "cargo test --test llm every_answer_shape_parses"
+
+[[scenario]]
+id = "parse-rejects-unknown-field"
+interface = "parse-answer"
+given = "an answer with an extra field"
+expect = "FieldError naming the field"
+level = "unit"
+command = "cargo test --test llm unknown_field_is_rejected"
+
+[[scenario]]
+id = "prepare-env-disables-baml-logging-and-download"
+interface = "prepare-baml-env"
+given = "a child process calling prepare_baml_env"
+expect = "BAML_LOG off, download disabled, BOUNDARY_* removed"
+level = "integration"
+command = "cargo test --test llm prepared_env_turns_off_baml_logging_and_download_before_direct"
+
+[[scenario]]
+id = "direct-guards-no-model"
+interface = "direct-guards"
+given = "no [models.direct] entry for the role"
+expect = "no_direct_model error with fix naming [models.direct] <role>"
+level = "integration"
+command = "cargo test --test llm direct_without_a_configured_model_is_no_direct_model"
+
+[[scenario]]
+id = "direct-guards-no-key"
+interface = "direct-guards"
+given = "a valid model but no API key"
+expect = "no_api_key error"
+level = "integration"
+command = "cargo test --test llm direct_without_a_key_is_no_api_key"
+
+[[scenario]]
+id = "schema-freshness-generated-client"
+interface = "schema-freshness"
+given = "baml_src and the generated client and rendered text"
+expect = "client embeds baml_src, hash matches, enums renamed snake_case"
+level = "unit"
+command = "cargo test --test llm generated_client_and_rendered_text_match_baml_src"

@@ -120,6 +120,11 @@ pub fn has_object(root: &Path, sha: &str) -> bool {
         && run(root, &["cat-file", "-e", &format!("{sha}^{{tree}}")], None).is_ok()
 }
 
+/// True when `sha` names a tree object itself; a commit, a blob, or an unknown name is false.
+pub fn is_tree(root: &Path, sha: &str) -> bool {
+    run(root, &["cat-file", "-t", "--end-of-options", sha], None).is_ok_and(|t| t.trim() == "tree")
+}
+
 const DIFF: [&str; 4] = ["diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/"];
 
 pub fn diff_names(root: &Path, from: &str, to: &str) -> Result<Vec<String>> {
@@ -209,6 +214,12 @@ pub fn head_commit(root: &Path) -> Result<Option<String>> {
     }
 }
 
+/// The URL of the `origin` remote; `None` when there is none.
+pub fn origin_url(root: &Path) -> Option<String> {
+    let url = run(root, &["remote", "get-url", "origin"], None).ok()?;
+    Some(url.trim().to_string()).filter(|u| !u.is_empty())
+}
+
 /// Current branch name (`HEAD` when detached), then the last commit subject on the next line
 /// (none before the first commit).
 pub fn task_text(root: &Path) -> Result<String> {
@@ -220,4 +231,34 @@ pub fn task_text(root: &Path) -> Result<String> {
     };
     let branch = if branch.is_empty() { "HEAD" } else { branch };
     Ok(format!("{branch}\n{}", subject.trim()).trim().to_string())
+}
+
+/// The files each of the last `n` commits touched (merge commits list none); empty with no commits.
+pub fn recent_commit_files(root: &Path, n: usize) -> Result<Vec<Vec<String>>> {
+    if run(root, &["rev-parse", "--verify", "-q", "HEAD"], None).is_err() {
+        return Ok(vec![]);
+    }
+    let limit = format!("-{n}");
+    // \x01 on its own line starts each commit; no path is named that
+    let out = run(
+        root,
+        &[
+            "log",
+            &limit,
+            "--no-renames",
+            "--name-only",
+            "--format=%x01",
+        ],
+        None,
+    )?;
+    Ok(out
+        .split('\x01')
+        .skip(1)
+        .map(|c| {
+            c.lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .collect())
 }

@@ -1,0 +1,88 @@
+unit = "analysis"
+
+[reviewed]
+commit = "e68ec0e8d29e804bf3091e0216bb44f63665e6b9"
+fingerprint = "sha256:ac72eac81e267e72f773f86a9ac5d8a919b97a3a996e92191dd59263b5b04ab5"
+tree = "f1cda9ed982949caf35f104e87c550cbc0de8c64"
+tester = "f9f09c9794ea5c5518d56c7d23907e3e4709c39b"
+documenter = "b5aac691e13728b706ac9f594cb55b6404e53032"
+
+[[interface]]
+id = "route-owner"
+anchor = "src/route.rs::owner"
+contract = "owner(path): unit with the most specific matching glob (longest literal prefix, then fewest wildcards; ties by units.toml order). Normalizes ./ and backslashes. .stewards/**, docs_path/** and .git paths (any ASCII case) have no owner. Bad glob: invalid_toml."
+
+[[interface]]
+id = "route-overlaps"
+anchor = "src/route.rs::overlaps"
+contract = "Router::overlaps(files) lists each file two or more units match at equal top specificity, with those units; a strictly more specific match is not an overlap."
+
+[[interface]]
+id = "route-command"
+anchor = "src/route.rs::run"
+contract = "`stewards route <paths>` maps each path to its owning unit (repo-prefixed in a workspace) or null. Outside every repo: path_outside_repo. Uninitialized sibling repo in a workspace owns nothing; a lone uninitialized repo errors."
+
+[[interface]]
+id = "anchor-resolve"
+anchor = "src/anchors.rs::resolve"
+contract = "resolve: first case-sensitive whole-word match of name -> Found{line} (1-based); no match or empty name -> DeadName; absolute, ./.. components, symlinked or unreadable path -> DeadPath. Invalid UTF-8 never panics."
+
+[[interface]]
+id = "anchor-source-window"
+anchor = "src/anchors.rs::source_window"
+contract = "source_window(root, anchor, before, after) returns the matched line plus `before` lines above and `after` below, clamped to the file; None for a dead anchor."
+
+[[interface]]
+id = "check-fingerprint"
+anchor = "src/check.rs::fingerprint"
+contract = "fingerprint(tree, unit, router) is `sha256:<hex>` over the sorted `path blob` lines of the files the unit owns (not merely matches) in the snapshot; is_stale is true with no [reviewed] or a differing fingerprint."
+
+[[interface]]
+id = "check-stamp"
+anchor = "src/check.rs::stamp"
+contract = "stamp writes [reviewed] {commit, fingerprint, tree, tester, documenter} to the unit's card, creating it if missing and keeping the rest; unmarked roles take the old stamp's tree; no commits -> empty commit; unknown unit errors."
+
+[[interface]]
+id = "check-report"
+anchor = "src/check.rs::check_at"
+contract = "check fails on unreviewed, stale, dead_anchor (outside snapshot or unresolved), unknown_interface; warns overlap, one anchorless uncovered_interface per unit and one unowned (each: 10 sorted + count). A unit filter drops overlap/unowned. `stewards check` exits 1 on failures."
+
+[[interface]]
+id = "debt-scan"
+anchor = "src/debt.rs::scan"
+contract = "scan(repo) returns `simplified:` debt lines (case-insensitive, a comment marker # // -- ; /* * <!-- earlier on the line) of tracked regular, non-binary files outside .stewards/, keyed by owning unit (None = unowned); tracked-but-deleted files are skipped. `stewards debt` prints them per unit."
+
+[[anchor]]
+path = "src/route.rs"
+name = "tool_owned"
+
+[[anchor]]
+path = "src/check.rs"
+name = "stale_files"
+
+[[anchor]]
+path = "src/check.rs"
+name = "reviewed_at"
+
+[[anchor]]
+path = "src/check.rs"
+name = "one_line"
+
+[[anchor]]
+path = "src/check.rs"
+name = "invisible"
+
+[[anchor]]
+path = "src/debt.rs"
+name = "is_debt_line"
+
+[[gap]]
+kind = "gap"
+title = "debt markers can match outside comments"
+anchor = "src/debt.rs::is_debt_line"
+note = "Any marker anywhere before `simplified:` counts, so `a * b` or a `--flag` or a `#` inside a string earlier on the line reports a non-comment as debt. Line-based heuristic by design; no language-aware parsing."
+
+[doc]
+overview = "The analysis unit holds the read-only facts stewards derives from the repo's files. It answers which unit owns a path, whether a unit's anchors still point at real code, whether a unit's files have changed since its last review, and where `simplified:` debt comments sit. It never edits source: the one thing it writes is the review stamp on a unit's card. A reader meets it through `stewards route`, `stewards check` and `stewards debt`, and through the source windows and ownership answers that briefs are built from."
+how_it_works = "Routing lives in src/route.rs. `owner` picks the unit whose glob matches most specifically (longest literal prefix, then fewest wildcards, ties by units.toml order), after normalizing ./ and backslashes. Paths under .stewards, the docs path and any .git component have no owner, compared ignoring ASCII case. `Router::overlaps` lists files that two or more units match at equal top specificity. `stewards route` maps each path to its unit, repo-prefixed in a workspace, or to null. In src/anchors.rs, `resolve` finds the first case-sensitive whole-word match of the anchor's name and returns Found with a 1-based line; DeadName when nothing matches; DeadPath for absolute, ./.. , symlinked or unreadable paths, never panicking on invalid UTF-8. `source_window` returns that line with lines above and below, clamped to the file, or None for a dead anchor. src/check.rs builds on both. `fingerprint` hashes the sorted `path blob` lines of the files the unit owns in the snapshot into `sha256:<hex>`; a unit is stale with no [reviewed] stamp or a differing fingerprint. `stamp` writes [reviewed] to the unit's card, creating it if needed and keeping the rest, using `reviewed_at`, which keeps the old stamp's tree for a role left unmarked. `check_at` produces the report. Unreviewed, stale, dead_anchor and unknown_interface fail, and `stewards check` exits 1. Uncovered_interface, overlap and unowned warn. Uncovered_interface is one finding per unit counting interfaces without a scenario; it and unowned name the first ten items plus ` (+N more)` via `listed`. A unit filter drops overlap and unowned. src/debt.rs `scan` collects `simplified:` lines after a comment marker, case-insensitively, from tracked regular non-binary files outside .stewards, keyed by owning unit (None if unowned), skipping deleted files. `stewards debt` prints them per unit."
+how_to_change = "Start from the contract rows for the function you touch (route-owner, route-overlaps, route-command, anchor-resolve, anchor-source-window, check-fingerprint, check-stamp, check-report, debt-scan) and its tests: tests/route.rs and tests/route_workspace.rs for routing, tests/anchors.rs, tests/check.rs and tests/debt.rs for the rest. Keep ownership consistent. The fingerprint, the overlap warning and the debt keys all rely on `owner`, so a change to specificity or to the no-owner paths shifts what counts as stale, overlapping or unowned. Keep the fingerprint over owned files in the snapshot, not the working tree. Keep `resolve` and `source_window` safe on bad input: absolute, dotted, symlinked, unreadable or non-UTF-8 files must yield a dead anchor, never a panic or a read outside the repo. If you change which findings are failures and which are warnings, or how many findings a unit emits, update the check-report contract and the exit-code behavior together; uncovered_interface stays one finding per unit so check and next output stay short. Keep the stamp merge behavior in `reviewed_at`, which preserves the rest of the card and an unmarked role's old tree. Add a test next to the existing ones for any new behavior."

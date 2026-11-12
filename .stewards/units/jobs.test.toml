@@ -1,0 +1,105 @@
+unit = "jobs"
+
+[[scenario]]
+id = "submit-retires-own-answer"
+interface = "submit-file"
+given = "a maintainer job whose answer file is the brief's own .answer.json"
+expect = "a successful submit removes the brief and that answer; a second submit is no_brief"
+level = "integration"
+command = "cargo test --test submit a_second_submit_after_success_is_no_brief"
+
+[[scenario]]
+id = "submit-keeps-foreign-answer"
+interface = "submit-file"
+given = "a maintainer job submitted with --file pointing at an answer outside the brief's own path"
+expect = "the submit succeeds, the brief is removed, the caller's answer file is kept"
+level = "integration"
+command = "cargo test --test submit an_answer_file_from_outside_the_briefs_dir_is_kept"
+
+[[scenario]]
+id = "submit-keeps-answer-on-failure"
+interface = "submit-file"
+given = "a maintainer answer the validator rejects"
+expect = "the brief and the answer both remain for a retry"
+level = "integration"
+command = "cargo test --test submit dead_anchor_is_rejected_and_writes_nothing"
+
+[[scenario]]
+id = "submit-rejects-keyword-anchor-name"
+interface = "submit-file"
+given = "a maintainer card patch whose anchor names carry a keyword such as `def create_item`"
+expect = "answer_parse_failed naming each of interface[].anchor, anchors[].name and gaps[].anchor"
+level = "integration"
+command = "cargo test --test submit anchor_name_with_a_keyword_is_rejected_naming_each_field"
+
+[[scenario]]
+id = "submit-rejects-keyword-flow-entry"
+interface = "submit-file"
+given = "an architect flow whose entry anchor carries a keyword"
+expect = "answer_parse_failed on flows[0].entry and no write"
+level = "integration"
+command = "cargo test --test submit_roles architect_flow_entry_with_a_keyword_is_rejected"
+
+[[scenario]]
+id = "developer-submit-retires-answer"
+interface = "submit-file"
+given = "a developer job submitted from its own answer file"
+expect = "the brief and the answer are removed; card, stamp and task list are unchanged"
+level = "integration"
+command = "cargo test --test developer a_developer_submit_leaves_the_card_stamp_and_task_list_unchanged"
+
+[[scenario]]
+id = "submit-patch-upserts-by-key"
+interface = "submit-file"
+given = "a maintainer card patch listing one interface entry whose id is new, and one whose id the card has"
+expect = "the new entry is appended, the existing one is updated in place, every other entry keeps its order and content"
+level = "integration"
+command = "cargo test --test submit one_entry_updates_it_and_keeps_the_others_unchanged_in_order"
+
+[[scenario]]
+id = "submit-patch-removes-only-by-remove-list"
+interface = "submit-file"
+given = "a card patch with remove_interface, remove_anchors and remove_gaps naming entries the card has"
+expect = "exactly the named entries are removed; entries a patch merely omits stay"
+level = "integration"
+command = "cargo test --test submit remove_interface_removes_exactly_the_named_ids"
+
+[[scenario]]
+id = "submit-rejects-bad-removal"
+interface = "submit-file"
+given = "a removal naming a key the card lacks, or a key the same patch also adds or updates"
+expect = "answer_parse_failed on the remove field and no write"
+level = "integration"
+command = "cargo test --test submit removing_a_key_the_card_does_not_have_is_rejected"
+
+[[scenario]]
+id = "stdout-brief-matches-written-brief"
+interface = "brief-build"
+given = "brief --stdout for a maintainer"
+expect = "prints byte for byte the brief a plain brief writes, and writes no file"
+level = "integration"
+command = "cargo test --test brief stdout_prints_the_brief_and_writes_nothing"
+
+[[scenario]]
+id = "submit-caps-fix-task-text"
+interface = "submit-file"
+given = "a changes review whose findings join into a fix task longer than 20,000 characters"
+expect = "answer_too_long on findings and no write"
+level = "integration"
+command = "cargo test --test submit findings_whose_fix_task_passes_the_task_cap_are_answer_too_long"
+
+[[scenario]]
+id = "submit-long-fix-task-under-cap"
+interface = "submit-file"
+given = "a changes review whose joined findings pass 4500 characters but stay under the task cap"
+expect = "the submit succeeds and the developer brief reads the fix task"
+level = "integration"
+command = "cargo test --test submit changes_with_long_findings_writes_a_fix_task_the_developer_brief_reads"
+
+[[scenario]]
+id = "tester-bug-anchor-from-interface"
+interface = "card-patch"
+given = "a tester bug naming an interface, and a repeat of a bug whose card gap has an anchor"
+expect = "the gap anchor is the named interface's anchor; a bug naming no interface keeps the gap's existing anchor"
+level = "integration"
+command = "cargo test --test submit_roles tester_repeated_bug_sets_the_anchor_only_when_it_names_an_interface"

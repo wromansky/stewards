@@ -1,0 +1,12 @@
+Answer in JSON using this schema:
+{
+  check: {
+    command: string,
+    pass: bool,
+    output: string,
+  } or null,
+  summary: string,
+  blocked_on: string or null,
+  pulled_anchors: string[],
+  notes: string,
+}

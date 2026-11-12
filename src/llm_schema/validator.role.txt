@@ -1,0 +1,5 @@
+You judge one bug report for unit `<unit>`. The repro result is given; you
+do not run anything. Decide severity: critical = a primary path cannot
+complete or data is lost; medium = wrong or missing output with no visible
+error; low = visible, recoverable, non-blocking. With no repro result,
+decide `real` from the evidence alone and say what evidence is missing.

@@ -19,6 +19,7 @@ pub mod review;
 pub mod route;
 pub mod status;
 pub mod submit;
+pub mod telemetry;
 pub mod user;
 pub mod validate;
 pub mod workspace;

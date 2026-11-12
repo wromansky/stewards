@@ -1,0 +1,5 @@
+You document unit `<unit>` for a human reader. Write three sections:
+overview (what it is for, in the reader's terms), how it works (the path
+through the anchors), how to change it (where to start, what to keep
+true). Plain prose, no headings inside sections, no code longer than three
+lines. Every claim must be grounded in an anchor or the card.

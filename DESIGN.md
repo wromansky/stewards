@@ -424,7 +424,10 @@ check, no regex crate.
 Snapshot: copy `.git/index` to a temporary file, then `git add -A` and `git
 write-tree` with `GIT_INDEX_FILE` pointing at it. The tree covers modified
 and untracked files, honors `.gitignore`, and leaves the real index, HEAD,
-and refs untouched. One snapshot per command.
+and refs untouched. The copy keeps the real index's modification time:
+git re-reads a file only when its mtime is not older than the index's, so a
+fresh copy would hide a same-size edit made in the same second as the last
+`git add`. One snapshot per command.
 
 Fingerprint: sha256 over the sorted `path blob` lines of `git ls-tree -r
 <snapshot>` for the files the unit owns by route.

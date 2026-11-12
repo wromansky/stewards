@@ -341,3 +341,31 @@ fn snapshot_refuses_a_symlink_at_its_temp_index_path_child() {
     assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
     assert!(planted.is_symlink());
 }
+
+#[test]
+fn snapshot_sees_a_same_size_edit_made_in_the_same_second_as_the_last_add() {
+    // Regression: the copied index looked newer than every file, so git trusted the stat data
+    // and the snapshot kept the old blob. Everything here shares one mtime, as a fast edit does.
+    let r = repo();
+    let p = r.path();
+    run_git(p, &["config", "core.trustctime", "false"]);
+    let then = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+    let set_mtime = |path: &Path| {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(then)
+            .unwrap()
+    };
+    write(p, "tracked.txt", "one\n");
+    set_mtime(&p.join("tracked.txt"));
+    run_git(p, &["add", "-A"]);
+    run_git(p, &["commit", "-q", "-m", "init"]);
+    set_mtime(&p.join(".git/index"));
+    write(p, "tracked.txt", "two\n");
+    set_mtime(&p.join("tracked.txt"));
+    let tree = git::snapshot(p).unwrap();
+    let entries = git::ls_tree(p, &tree).unwrap();
+    assert_eq!(run_git(p, &["cat-file", "-p", &entries[0].1]), "two\n");
+}

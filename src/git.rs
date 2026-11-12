@@ -72,6 +72,11 @@ pub fn snapshot(root: &Path) -> Result<String> {
         Ok(mut index) => {
             std::io::copy(&mut index, &mut file)
                 .with_context(|| format!("copy {}", real.display()))?;
+            // Git re-reads a file whose mtime is not older than the index's own ("racily clean").
+            // A fresh copy would look newer than every file and hide a same-size edit made in the
+            // same second as the last `git add`, so the copy keeps the real index's mtime.
+            file.set_modified(index.metadata()?.modified()?)
+                .with_context(|| format!("set mtime of {}", temp.0.display()))?;
         }
         // no index yet: start from an empty one (git rejects a zero-byte index file)
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

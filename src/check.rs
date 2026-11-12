@@ -1,4 +1,5 @@
 // Fingerprints, stamps, and the `check` and `stamp` commands.
+use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
@@ -78,14 +79,78 @@ pub struct CheckReport {
     pub warnings: Vec<Finding>,
 }
 
+/// Files changed since `tree`; every file `unit` owns when there is no tree or git has pruned it.
+pub fn changed_since(
+    root: &Path,
+    snapshot: &str,
+    entries: &[(String, String)],
+    router: &Router,
+    unit: &str,
+    tree: Option<&str>,
+) -> Result<Vec<String>> {
+    match tree.filter(|t| git::has_object(root, t)) {
+        Some(t) => git::diff_names(root, t, snapshot),
+        None => Ok(entries
+            .iter()
+            .map(|(p, _)| p.clone())
+            .filter(|p| router.owner(p) == Some(unit))
+            .collect()),
+    }
+}
+
+/// The files `unit` owns that changed since its stamp; `None` when the unit is fresh.
+pub fn stale_files(
+    root: &Path,
+    snapshot: &str,
+    entries: &[(String, String)],
+    router: &Router,
+    unit: &str,
+    reviewed: Option<&Reviewed>,
+) -> Result<Option<Vec<String>>> {
+    if reviewed.is_some_and(|r| r.fingerprint == fingerprint(entries, unit, router)) {
+        return Ok(None);
+    }
+    let changed = changed_since(
+        root,
+        snapshot,
+        entries,
+        router,
+        unit,
+        reviewed.map(|r| r.tree.as_str()),
+    )?;
+    Ok(Some(
+        changed
+            .into_iter()
+            .filter(|p| router.owner(p) == Some(unit))
+            .collect(),
+    ))
+}
+
 /// Stamps, anchors, and scenario ids across the workspace; `filter` keeps one unit's findings
 /// (by plain or display name).
 pub fn check(ws: &Workspace, filter: Option<&str>) -> Result<CheckReport> {
+    let snapshots = ws
+        .loaded_repos()?
+        .iter()
+        .map(|(repo, _)| git::snapshot(&repo.root))
+        .collect::<Result<Vec<_>>>()?;
+    check_at(ws, filter, &snapshots)
+}
+
+/// `check` against snapshot trees the caller already took, one per `ws.loaded_repos()` in order.
+pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> Result<CheckReport> {
+    let repos = ws.loaded_repos()?;
+    anyhow::ensure!(
+        repos.len() == snapshots.len(),
+        "check_at: {} snapshots for {} repos",
+        snapshots.len(),
+        repos.len()
+    );
     let mut report = CheckReport::default();
-    for (repo, loaded) in ws.loaded_repos()? {
+    for ((repo, loaded), snapshot) in repos.into_iter().zip(snapshots) {
         let root = &repo.root;
         let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
-        let entries = git::ls_tree(root, &git::snapshot(root)?)?;
+        let entries = git::ls_tree(root, snapshot)?;
         let tracked = git::ls_files(root)?;
 
         for def in &loaded.units {

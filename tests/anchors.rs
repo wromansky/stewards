@@ -190,3 +190,42 @@ fn multibyte_neighbours_are_not_word_characters() {
         Resolution::Found { line: 1 }
     );
 }
+
+#[cfg(unix)]
+mod symlinks {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn symlinked_file_pointing_outside_the_repo_is_dead_path() {
+        let outside = repo_with("secret.txt", b"BEGIN\n");
+        let root = repo_with("f.txt", b"x");
+        symlink(
+            outside.path().join("secret.txt"),
+            root.path().join("link.txt"),
+        )
+        .unwrap();
+        let a = anchor("link.txt", "BEGIN");
+        assert_eq!(resolve(root.path(), &a), Resolution::DeadPath);
+        assert_eq!(source_window(root.path(), &a, 1, 1), None);
+    }
+
+    #[test]
+    fn symlinked_file_pointing_inside_the_repo_is_dead_path() {
+        let root = repo_with(".env", b"TOKEN=1\n");
+        symlink(".env", root.path().join("link.txt")).unwrap();
+        let a = anchor("link.txt", "TOKEN");
+        assert_eq!(resolve(root.path(), &a), Resolution::DeadPath);
+        assert_eq!(source_window(root.path(), &a, 1, 1), None);
+    }
+
+    #[test]
+    fn real_file_under_a_symlinked_directory_is_dead_path() {
+        let outside = repo_with("secret.txt", b"BEGIN\n");
+        let root = repo_with("f.txt", b"x");
+        symlink(outside.path(), root.path().join("dir")).unwrap();
+        let a = anchor("dir/secret.txt", "BEGIN");
+        assert_eq!(resolve(root.path(), &a), Resolution::DeadPath);
+        assert_eq!(source_window(root.path(), &a, 1, 1), None);
+    }
+}

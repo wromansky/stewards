@@ -174,11 +174,12 @@ struct UnitsFile {
 pub struct UnitCard {
     pub unit: String,
     pub reviewed: Option<Reviewed>,
-    #[serde(default)]
+    // skip empty: an inline `gap = []` breaks a later hand-appended `[[gap]]`
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub interface: Vec<Interface>,
-    #[serde(default, rename = "anchor")]
+    #[serde(default, rename = "anchor", skip_serializing_if = "Vec::is_empty")]
     pub anchors: Vec<Anchor>,
-    #[serde(default, rename = "gap")]
+    #[serde(default, rename = "gap", skip_serializing_if = "Vec::is_empty")]
     pub gaps: Vec<Gap>,
     pub doc: Option<Doc>,
 }
@@ -250,10 +251,10 @@ pub struct Doc {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestCard {
     pub unit: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub primary_paths: Vec<String>,
     pub test_command: Option<String>,
-    #[serde(default, rename = "scenario")]
+    #[serde(default, rename = "scenario", skip_serializing_if = "Vec::is_empty")]
     pub scenarios: Vec<Scenario>,
 }
 

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::check::{CheckReport, check, fingerprint};
+use crate::check::{CheckReport, changed_since, check_at, stale_files};
 use crate::debt::{DebtItem, is_debt_line};
 use crate::git;
 use crate::model::{Anchor, GapKind, Role};
@@ -48,10 +48,12 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
     let mut jobs = Vec::new();
     // Stamped units changed since their stamps: (name, task, snapshot, changed files).
     let mut moved: Vec<(String, String, String, Vec<String>)> = Vec::new();
+    let mut snapshots = Vec::new();
     for (repo, loaded) in ws.loaded_repos()? {
         let root = &repo.root;
         let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
         let snapshot = git::snapshot(root)?;
+        snapshots.push(snapshot.clone());
         let entries = git::ls_tree(root, &snapshot)?;
         let task = match task {
             Some(t) => t.to_string(),
@@ -67,16 +69,15 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
         for def in &loaded.units {
             let name = ws.display_name(repo, &def.name);
             let owns = |path: &str| router.owner(path) == Some(def.name.as_str());
-            // Files changed since `tree`; every owned file when there is no tree or git pruned it.
-            let since = |tree: Option<&String>| -> Result<Vec<String>> {
-                match tree.filter(|t| git::has_object(root, t)) {
-                    Some(t) => git::diff_names(root, t, &snapshot),
-                    None => Ok(entries
-                        .iter()
-                        .map(|(p, _)| p.clone())
-                        .filter(|p| owns(p))
-                        .collect()),
-                }
+            let since = |tree: Option<&String>| {
+                changed_since(
+                    root,
+                    &snapshot,
+                    &entries,
+                    &router,
+                    &def.name,
+                    tree.map(String::as_str),
+                )
             };
             let job = |role: Role, reasons: Vec<String>, changed: Vec<String>| Job {
                 unit: name.clone(),
@@ -96,8 +97,9 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
             let reviewed = card.and_then(|c| c.reviewed.as_ref());
             let stamp = reviewed.map(|r| &r.tree);
 
-            if reviewed.is_none_or(|r| r.fingerprint != fingerprint(&entries, &def.name, &router)) {
-                let changed: Vec<String> = since(stamp)?.into_iter().filter(|p| owns(p)).collect();
+            if let Some(changed) =
+                stale_files(root, &snapshot, &entries, &router, &def.name, reviewed)?
+            {
                 let debt_added = match stamp.filter(|t| git::has_object(root, t)) {
                     Some(t) => git::diff_added_lines(root, t, &snapshot)?
                         .into_iter()
@@ -202,7 +204,7 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
         jobs,
         architect,
         flow_checks: vec![],
-        check: check(ws, None)?,
+        check: check_at(ws, None, &snapshots)?,
     })
 }
 

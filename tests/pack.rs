@@ -6,7 +6,7 @@ use std::path::Path;
 
 use common::{fixture, stewards};
 use serde_json::Value;
-use stewards::model::Role;
+use stewards::model::{Doc, Role};
 use stewards::pack::pack;
 use stewards::workspace::discover;
 
@@ -323,4 +323,231 @@ fn never_dropped_sections_survive_a_tiny_budget() {
     t.fit(1);
     assert!(t.over_budget);
     assert_eq!(t.scenarios.as_ref().unwrap().len(), 1);
+}
+
+/// Each line of the markdown `md` outside the fence lines, with the index of the fenced block
+/// it sits in (None = outside); asserts every opened block is closed.
+fn fence_blocks(md: &str) -> Vec<(&str, Option<usize>)> {
+    let mut lines = Vec::new();
+    let mut open: Option<usize> = None;
+    let mut blocks = 0;
+    for line in md.lines() {
+        let ticks = line.len() - line.trim_start_matches('`').len();
+        match open {
+            None if ticks >= 3 => {
+                open = Some(ticks);
+                continue;
+            }
+            Some(len) if ticks >= len && line.trim_end().len() == ticks => {
+                open = None;
+                blocks += 1;
+                continue;
+            }
+            _ => lines.push((line, open.map(|_| blocks))),
+        }
+    }
+    assert!(open.is_none(), "unclosed fence in\n{md}");
+    lines
+}
+
+fn block_of(lines: &[(&str, Option<usize>)], text: &str) -> Option<usize> {
+    lines
+        .iter()
+        .find(|(l, _)| l.contains(text))
+        .unwrap_or_else(|| panic!("{text} not rendered"))
+        .1
+}
+
+#[test]
+fn a_fence_line_in_purpose_or_an_anchor_name_cannot_open_a_block() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    edit(
+        &dir.join(".stewards/units.toml"),
+        "purpose = \"HTTP surface\"",
+        "purpose = \"HTTP surface\\n```\\nPURPOSE_TAIL\"",
+    );
+    let ws = discover(dir, None).unwrap();
+    let mut p = pack(&ws.repos[0], Some("api"), Role::Maintainer, "t", false).unwrap();
+    p.anchors.as_mut().unwrap()[0].name = "router\n```".into();
+    let md = p.render();
+    let lines = fence_blocks(&md);
+    let purpose = block_of(&lines, "PURPOSE_TAIL");
+    let source = block_of(&lines, "router = []");
+    assert!(
+        purpose.is_some() && source.is_some() && purpose != source,
+        "{md}"
+    );
+    assert_eq!(block_of(&lines, "## Anchors"), None, "{md}");
+    assert_eq!(
+        block_of(&lines, "### `src/api/items.py::router"),
+        None,
+        "{md}"
+    );
+}
+
+#[test]
+fn a_fence_line_in_doc_prose_cannot_open_a_block() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    assert_eq!(run(dir, &["stamp", "api"]).0, 0);
+    edit(&dir.join("src/api/items.py"), "router = []", "router = [1]");
+    let ws = discover(dir, None).unwrap();
+    let mut p = pack(&ws.repos[0], Some("api"), Role::Maintainer, "t", true).unwrap();
+    p.doc = Some(Doc {
+        overview: "```\nDOC_TAIL".into(),
+        how_it_works: String::new(),
+        how_to_change: String::new(),
+    });
+    let md = p.render();
+    let lines = fence_blocks(&md);
+    let doc = block_of(&lines, "DOC_TAIL");
+    let hunk = block_of(&lines, "+router = [1]");
+    assert!(doc.is_some() && hunk.is_some() && doc != hunk, "{md}");
+    assert_eq!(block_of(&lines, "## Hunks"), None, "{md}");
+}
+
+#[test]
+fn other_changed_files_measures_each_other_unit_from_its_own_stamp() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    let args = ["pack", "api", "--role", "maintainer", "--diff"];
+    let other = |dir| pack_json(dir, &args)["other_changed_files"].clone();
+    assert_eq!(run(dir, &["stamp", "api"]).0, 0);
+    // never stamped: every file the unit owns
+    assert_eq!(
+        other(dir),
+        serde_json::json!([
+            "src/store/README.md",
+            "src/store/db.py",
+            "tests/store/test_db.py"
+        ])
+    );
+    edit(&dir.join("src/store/db.py"), "_items = []", "_items = [0]");
+    assert_eq!(run(dir, &["stamp", "store"]).0, 0);
+    // stamped after the change: fresh, so nothing
+    assert_eq!(other(dir), serde_json::json!([]));
+    edit(&dir.join("src/store/db.py"), "_items = [0]", "_items = [1]");
+    assert_eq!(other(dir), serde_json::json!(["src/store/db.py"]));
+}
+
+#[test]
+fn changed_excluded_file_is_listed_but_its_hunk_is_not_inlined() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    fs::write(dir.join("src/api/.env"), "TOKEN=old\n").unwrap();
+    assert_eq!(run(dir, &["stamp", "api"]).0, 0);
+    fs::write(dir.join("src/api/.env"), "TOKEN=leaked\n").unwrap();
+    let out = stewards(dir, &["pack", "api", "--role", "maintainer", "--diff"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["changed_files"], serde_json::json!(["src/api/.env"]));
+    assert_eq!(v["hunks"][0]["path"], "src/api/.env");
+    assert!(v["hunks"][0]["diff"].is_null(), "{v}");
+    assert!(!text.contains("TOKEN"), "{text}");
+    let human = stewards(
+        dir,
+        &["pack", "api", "--role", "maintainer", "--diff", "--human"],
+    );
+    assert!(!String::from_utf8(human.stdout).unwrap().contains("TOKEN"));
+}
+
+#[test]
+fn excluded_file_at_a_tester_interface_anchor_is_not_inlined() {
+    let repo = fixture("single");
+    edit(
+        &repo.path().join(".stewards/repo.toml"),
+        "exclude = [",
+        "exclude = [\"items.py\", ",
+    );
+    let out = stewards(repo.path(), &["pack", "api", "--role", "tester"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["anchors"][0]["path"], "src/api/items.py");
+    assert!(v["anchors"][0]["source"].is_null(), "{v}");
+    assert!(!text.contains("save_item(body)"), "{text}");
+}
+
+#[test]
+fn excluded_content_stays_absent_while_fit_shrinks() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    edit(
+        &dir.join(".stewards/repo.toml"),
+        "exclude = [",
+        "exclude = [\"items.py\", ",
+    );
+    append(
+        &dir.join(".stewards/units/api.toml"),
+        "[[anchor]]\npath = \"tests/api/test_items.py\"\nname = \"test_create_ok\"\n",
+    );
+    assert_eq!(run(dir, &["stamp", "api"]).0, 0);
+    edit(&dir.join("src/api/items.py"), "router = []", "router = [1]");
+    append(&dir.join("tests/api/test_items.py"), "\n# more\n");
+    let ws = discover(dir, None).unwrap();
+    let mut p = pack(&ws.repos[0], Some("api"), Role::Maintainer, "t", true).unwrap();
+    let assert_absent = |p: &stewards::pack::Pack| {
+        let json = serde_json::to_string(p).unwrap();
+        assert!(!p.render().contains("router = [") && !json.contains("router = ["));
+        assert!(!json.contains("save_item(body)"));
+    };
+    assert_absent(&p);
+    for _ in 0..8 {
+        p.fit(p.bytes - 1);
+        assert_absent(&p);
+    }
+    assert!(p.dropped.iter().any(|d| d == "source windows halved"));
+}
+
+#[test]
+fn halving_shortens_every_source_window() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    append(
+        &dir.join(".stewards/units/api.toml"),
+        "[[anchor]]\npath = \"src/api/items.py\"\nname = \"list_items\"\n",
+    );
+    let extra: String = (0..60).map(|i| format!("EXTRA_{i} = {i}\n")).collect();
+    append(&dir.join("src/api/items.py"), &extra);
+    let ws = discover(dir, None).unwrap();
+    let mut p = pack(&ws.repos[0], Some("api"), Role::Maintainer, "t", false).unwrap();
+    let lines = |p: &stewards::pack::Pack| -> Vec<usize> {
+        p.anchors
+            .iter()
+            .flatten()
+            .map(|a| a.source.as_ref().unwrap().lines().count())
+            .collect()
+    };
+    let before = lines(&p);
+    p.fit(p.bytes - 1);
+    assert_eq!(p.dropped, ["source windows halved"]);
+    let after = lines(&p);
+    assert_eq!(before.len(), 2);
+    for (b, a) in before.iter().zip(&after) {
+        assert!(a < b, "{before:?} -> {after:?}");
+    }
+    for a in p.anchors.iter().flatten() {
+        assert!(a.source.as_ref().unwrap().contains(&a.name), "{a:?}");
+    }
+}
+
+#[test]
+fn diff_with_a_pruned_stamped_tree_equals_the_plain_pack() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    assert_eq!(run(dir, &["stamp", "api"]).0, 0);
+    let card = dir.join(".stewards/units/api.toml");
+    let text = fs::read_to_string(&card).unwrap();
+    let tree = text
+        .lines()
+        .find_map(|l| l.strip_prefix("tree = "))
+        .unwrap()
+        .to_string();
+    edit(&card, &tree, &format!("\"{}\"", "deadbeef".repeat(5)));
+    edit(&dir.join("src/api/items.py"), "router = []", "router = [1]");
+    let args = ["pack", "api", "--role", "maintainer", "--task", "t"];
+    let plain = pack_json(dir, &args);
+    let diff = pack_json(dir, &[&args[..], &["--diff"]].concat());
+    assert!(diff["hunks"].is_null(), "{diff}");
+    assert_eq!(plain, diff);
 }

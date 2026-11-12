@@ -122,6 +122,8 @@ pub fn diff_names(root: &Path, from: &str, to: &str) -> Result<Vec<String>> {
 }
 
 pub fn diff_file(root: &Path, from: &str, to: &str, path: &str) -> Result<String> {
+    // literal: a tracked name like `*` must not match other files as a glob
+    let path = format!(":(literal){path}");
     let mut args = DIFF.to_vec();
     args.extend([
         "--no-color",
@@ -131,7 +133,7 @@ pub fn diff_file(root: &Path, from: &str, to: &str, path: &str) -> Result<String
         from,
         to,
         "--",
-        path,
+        &path,
     ]);
     run(root, &args, None)
 }

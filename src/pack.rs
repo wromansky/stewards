@@ -7,6 +7,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 
 use crate::anchors::{self, Resolution};
+use crate::check::stale_files;
 use crate::git;
 use crate::model::{Anchor, CommandEntry, Decision, Doc, Flow, Gap, Interface, Role, Scenario};
 use crate::output::{CliError, Global, Human, emit, not_implemented};
@@ -279,10 +280,10 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
     {
         let snapshot = git::snapshot(root)?;
         let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
-        let (owned, other): (Vec<String>, Vec<String>) = git::diff_names(root, tree, &snapshot)?
+        let owned: Vec<String> = git::diff_names(root, tree, &snapshot)?
             .into_iter()
-            .filter(|f| router.owner(f).is_some())
-            .partition(|f| router.owner(f) == Some(name));
+            .filter(|f| router.owner(f) == Some(name))
+            .collect();
         if let Some(specs) = &mut anchor_specs {
             specs.retain(|a| owned.contains(&a.path));
         }
@@ -303,6 +304,17 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
         p.hunks = Some(hunks);
         p.changed_files = Some(owned);
         if role == Role::Maintainer {
+            // Each other unit measured from its own stamp; fresh units contribute nothing.
+            let entries = git::ls_tree(root, &snapshot)?;
+            let mut other = Vec::new();
+            for u in loaded.units.iter().filter(|u| u.name != name) {
+                let reviewed = loaded.cards.get(&u.name).and_then(|c| c.reviewed.as_ref());
+                other.extend(
+                    stale_files(root, &snapshot, &entries, &router, &u.name, reviewed)?
+                        .unwrap_or_default(),
+                );
+            }
+            other.sort();
             p.other_changed_files = Some(other);
         }
     }
@@ -339,11 +351,16 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
     for row in rows {
         let cells: Vec<String> = row
             .iter()
-            .map(|c| c.replace('|', "\\|").replace('\n', " "))
+            .map(|c| one_line(&c.replace('|', "\\|")))
             .collect();
         t += &format!("| {} |\n", cells.join(" | "));
     }
     t
+}
+
+/// Card text in a heading, table cell, or code span must not start a new markdown line.
+fn one_line(s: &str) -> String {
+    s.replace(['\r', '\n'], " ")
 }
 
 fn fenced(lang: &str, body: &str) -> String {
@@ -370,7 +387,7 @@ impl Pack {
             out += &format!("\n## {title}\n\n{body}");
         };
         if let Some(purpose) = &self.purpose {
-            section("Purpose", format!("{purpose}\n"));
+            section("Purpose", fenced("", purpose));
         }
         if let Some(list) = &self.interface {
             let rows = list
@@ -383,7 +400,11 @@ impl Pack {
             let mut body = String::new();
             for a in list {
                 let line = a.line.map_or("dead".into(), |l| format!("line {l}"));
-                body += &format!("### `{}::{}` ({line})\n\n", a.path, a.name);
+                body += &format!(
+                    "### `{}::{}` ({line})\n\n",
+                    one_line(&a.path),
+                    one_line(&a.name)
+                );
                 body += &match &a.source {
                     Some(s) => fenced("", s),
                     None => "(source not inlined)\n".into(),
@@ -416,7 +437,7 @@ impl Pack {
             section("Scenarios", table(&headers, rows));
         }
         if let Some(cmd) = &self.test_command {
-            section("Test command", format!("`{cmd}`\n"));
+            section("Test command", format!("`{}`\n", one_line(cmd)));
         }
         if let Some(list) = &self.primary_paths {
             let rows = list.iter().map(|id| vec![id.clone()]).collect();
@@ -478,8 +499,10 @@ impl Pack {
             section(
                 "Doc",
                 format!(
-                    "### Overview\n\n{}\n\n### How it works\n\n{}\n\n### How to change\n\n{}\n",
-                    doc.overview, doc.how_it_works, doc.how_to_change
+                    "### Overview\n\n{}\n### How it works\n\n{}\n### How to change\n\n{}",
+                    fenced("", &doc.overview),
+                    fenced("", &doc.how_it_works),
+                    fenced("", &doc.how_to_change)
                 ),
             );
         }
@@ -489,7 +512,7 @@ impl Pack {
         if let Some(list) = &self.hunks {
             let mut body = String::new();
             for h in list {
-                body += &format!("### {}\n\n", h.path);
+                body += &format!("### {}\n\n", one_line(&h.path));
                 body += &match &h.diff {
                     Some(d) => fenced("diff", d.trim_end()),
                     None => "(not inlined: matches [pack] exclude)\n".into(),

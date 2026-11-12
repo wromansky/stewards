@@ -167,6 +167,21 @@ fn diff_file_shows_the_change_with_context() {
 }
 
 #[test]
+fn diff_file_takes_a_glob_character_name_literally() {
+    let r = repo();
+    let p = r.path();
+    write(p, "*", "star\n");
+    write(p, ".env", "TOKEN=old\n");
+    let from = git::snapshot(p).unwrap();
+    write(p, "*", "star changed\n");
+    write(p, ".env", "TOKEN=leaked\n");
+    let to = git::snapshot(p).unwrap();
+    let d = git::diff_file(p, &from, &to, "*").unwrap();
+    assert!(d.contains("+star changed"), "{d}");
+    assert!(!d.contains("TOKEN"), "{d}");
+}
+
+#[test]
 fn diff_added_lines_gives_new_file_line_numbers() {
     let r = repo();
     let p = r.path();

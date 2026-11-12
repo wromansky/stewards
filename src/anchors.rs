@@ -15,15 +15,25 @@ fn is_word(b: u8) -> bool {
 }
 
 /// The file's text (invalid UTF-8 replaced) and the byte offset of the first whole-word `name`.
-/// `None` when the path is not a plain relative path inside `root` or the file can't be read.
+/// `None` when the path is not a plain relative path inside `root`, passes through a symlink,
+/// or the file can't be read.
 fn find(root: &Path, a: &Anchor) -> Option<(String, Option<usize>)> {
-    if !Path::new(&a.path)
-        .components()
-        .all(|c| matches!(c, Component::Normal(_)))
-    {
-        return None;
+    let mut full = root.to_path_buf();
+    for c in Path::new(&a.path).components() {
+        let Component::Normal(c) = c else {
+            return None;
+        };
+        full.push(c);
+        // a symlink could point outside the repo or at a file excluded from packs
+        if std::fs::symlink_metadata(&full)
+            .ok()?
+            .file_type()
+            .is_symlink()
+        {
+            return None;
+        }
     }
-    let text = String::from_utf8_lossy(&std::fs::read(root.join(&a.path)).ok()?).into_owned();
+    let text = String::from_utf8_lossy(&std::fs::read(&full).ok()?).into_owned();
     let bytes = text.as_bytes();
     let mut start = 0;
     let mut at = None;

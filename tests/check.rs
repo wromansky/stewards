@@ -243,6 +243,18 @@ fn stamping_a_unit_without_a_card_creates_one() {
 }
 
 #[test]
+fn a_gap_appended_by_hand_to_a_stamped_card_still_loads() {
+    let repo = fixture("single");
+    assert_eq!(run(repo.path(), &["stamp", "store"]).0, 0);
+    let card = repo.path().join(".stewards/units/store.toml");
+    let text = fs::read_to_string(&card).unwrap();
+    fs::write(&card, text + "\n[[gap]]\nkind = \"gap\"\ntitle = \"t\"\n").unwrap();
+    let loaded = load_repo(repo.path()).unwrap();
+    assert_eq!(loaded.cards["store"].gaps[0].title, "t");
+    assert!(loaded.cards["store"].reviewed.is_some());
+}
+
+#[test]
 fn stamping_with_no_commits_records_an_empty_commit() {
     let repo = fixture("single");
     git(repo.path(), &["update-ref", "-d", "HEAD"]);

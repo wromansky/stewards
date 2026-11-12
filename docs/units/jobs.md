@@ -4,15 +4,15 @@
 
 ## Overview
 
-The jobs unit is the hand-off between the tool and the agent that does a piece of work. The tool writes a brief for one role on one unit (or for the architect, who has no unit), the agent answers in typed JSON, and submitting that answer checks it against the brief, writes the resulting updates, and retires the brief. Each submit also leaves one line of telemetry, so you can see how large the packs were and how many anchors agents had to open. It lives in src/brief.rs, src/submit.rs and src/telemetry.rs.
+The jobs unit is the hand-off between the tool and the agent that does a piece of work. The tool writes a brief for one role on one unit (or for the architect, who has no unit), the agent answers in typed JSON, and submitting that answer checks it against the brief, writes the resulting updates, and retires the brief. Where the answer carries a card patch, submit also applies it to the unit's card: each list updates entries by key, and only the explicit remove lists delete. Each submit also leaves one line of telemetry, so you can see how large the packs were and how many anchors agents had to open. It lives in src/brief.rs, src/submit.rs and src/telemetry.rs.
 
 ## How it works
 
-Building a brief packs the role's context and frames it (build in src/brief.rs). It refuses a repo root containing control or line-separator characters with unsafe_path, and a validator brief with no unjudged bug is a usage error. The brief is written to .stewards/briefs/&lt;unit>-&lt;role>.md (architect.md for the architect, &lt;unit>-developer-&lt;n>.md for developers, n counting from 1). Its first line is a comment of the form stewards-job followed by a JSON header, which read_header parses later; a missing file or an unparseable header counts as no_brief. Writing a brief deletes any stale .answer.json beside it, and a developer run also deletes job files past the end of the task list. Submit (submit_file in src/submit.rs) requires a known unit (none for the architect), a header whose unit, role, task number and full tree id match, and an answer file that is a regular file of at most 256 KiB. It then runs the role's handler. The handler writes through write_remove_and_retire, which refuses link paths and returns card_changed before any write if a checked file changed since it was recorded. It writes in order, then removes the brief; if a later write fails, the error names the files already written. Finally src/telemetry.rs appends one JSON line, sizes and counts only, to .stewards/telemetry/&lt;yyyy-mm>.jsonl. A telemetry failure is only a warning. The summary function reports per-role submit counts, mean pack bytes and total pulled anchors, returns null when there are no telemetry files, and skips unreadable files and lines.
+Building a brief packs and frames a role's context (build in src/brief.rs); it refuses a repo root with control or line-separator characters (unsafe_path), and a validator brief with no unjudged bug is a usage error. The brief goes to .stewards/briefs/&lt;unit>-&lt;role>.md (architect.md; &lt;unit>-developer-&lt;n>.md, n from 1). Its first line is a stewards-job comment holding a JSON header that read_header parses; a missing file or bad header is no_brief. Writing a brief deletes the stale .answer.json beside it. Submit (submit_file in src/submit.rs) requires a known unit (none for the architect), a header matching unit, role, task number and full tree id, and a regular answer file of at most 256 KiB, then runs the role's handler. For a card patch, check_patch validates before any write. Three upsert lists (interface by id, anchors by path and name, gaps by title) and three remove lists (remove_interface, remove_anchors, remove_gaps). A removal must name a key the card has, so a typo is answer_parse_failed, and must not also be upserted in the same patch. The handler starts from the old card and applies each upsert through put, replacing the entry with the same key or appending, so whatever the patch omits stays; a replaced gap keeps its severity and issue. The remove lists apply last. The result is reported as a card line of added, edited and removed entries, and the card is written only when a patch is present or the review approved. Writes go through write_remove_and_retire, which refuses link paths and returns card_changed before any write if a checked file changed since it was recorded; it writes in order, then removes the brief, and a later failure names the files already written. Finally src/telemetry.rs appends one JSON line of sizes and counts to .stewards/telemetry/&lt;yyyy-mm>.jsonl, a failure only a warning. The summary function gives per-role counts, mean pack bytes and total pulled anchors, null with no files, skipping unreadable ones.
 
 ## How to change it
 
-Start in src/brief.rs for what a brief says or where it lives, and in src/submit.rs for what an answer must satisfy or what a submit writes. Keep the header line format and the brief path scheme in step with each other, because submit finds the brief by path and trusts the header to match unit, role, task and tree id. Keep write_remove_and_retire checking for changed files and link paths before it writes anything, and keep the brief removal last, so a failed submit leaves the brief to retry. Keep telemetry to sizes and counts, never content, and never let it fail a submit. The tests are tests/brief.rs, tests/submit.rs, tests/submit_roles.rs and tests/developer.rs. Add the case to the one matching the file you changed, and for a change to what a brief names or contains, assert on the rendered brief text in tests/brief.rs.
+Start in src/brief.rs for what a brief says or where it lives, and in src/submit.rs for what an answer must satisfy or what a submit writes. Keep the header line format and the brief path scheme in step with each other, because submit finds the brief by path and trusts the header to match unit, role, task and tree id. Keep write_remove_and_retire checking for changed files and link paths before it writes anything, and keep the brief removal last, so a failed submit leaves the brief to retry. For card patches, keep an omitted entry meaning keep: a list updates by key through put, and an entry leaves the card only by being named in a remove list that check_patch has checked against the card. A key that a patch both upserts and removes is rejected rather than ordered. If you add a new patch list, give it a key, a check in check_patch, and a line in the card change report. Keep telemetry to sizes and counts, never content, and never let it fail a submit. The tests are tests/brief.rs, tests/submit.rs, tests/submit_roles.rs and tests/developer.rs. Add the case to the one matching the file you changed, and for a change to what a brief names or contains, assert on the rendered brief text in tests/brief.rs.
 
 ## Interface
 
@@ -22,18 +22,28 @@ Start in src/brief.rs for what a brief says or where it lives, and in src/submit
 | brief-path | Briefs live at \`.stewards/briefs/\<unit\>-\<role\>.md\` (\`architect.md\`); developer briefs at \`\<unit\>-developer-\<n\>.md\`, n from 1. | [src/brief.rs\:\:rel\_path](../../src/brief.rs#L76) |
 | brief-write | Writing a brief removes its stale \`.answer.json\`; a developer brief run also removes job files past the task list's end. | [src/brief.rs\:\:write\_text](../../src/brief.rs#L277) |
 | brief-build | Packs and frames a role's brief; \`unsafe\_path\` for a repo root with control or line-separator chars; a validator brief with no unjudged bug is \`usage\`. | [src/brief.rs\:\:build](../../src/brief.rs#L209) |
-| submit-file | Submit needs a known unit (none for architect), a header matching unit, role, task number and a full tree id, and an answer that is a regular file of at most 256 KiB; it then runs the role's handler and appends telemetry, a telemetry failure being only a warning. | [src/submit.rs\:\:submit\_file](../../src/submit.rs#L109) |
-| write-and-retire | Refuses link paths and returns \`card\_changed\` before any write when a checked file changed since it was recorded; writes in order, then removes the brief, naming already-written files on a later failure. | [src/submit.rs\:\:write\_remove\_and\_retire](../../src/submit.rs#L627) |
+| submit-file | Needs a known unit (none for architect), a header matching unit, role, task number and full tree id, and a regular answer file of at most 256 KiB; runs the role's handler, removes the job's own \`.answer.json\` if given as that regular file, and appends telemetry (failure only warns). | [src/submit.rs\:\:submit\_file](../../src/submit.rs#L109) |
+| anchor-name-bare | An anchor name holding whitespace (\`fn create\_item\`) in a card patch's interface, anchors or gaps, or an architect flow entry, is \`answer\_parse\_failed\` on that field instead of \`answer\_dead\_anchor\`. | [src/submit.rs\:\:spaced\_name](../../src/submit.rs#L1072) |
+| write-and-retire | Refuses link paths and returns \`card\_changed\` before any write when a checked file changed since it was recorded; writes in order, then removes the brief, naming already-written files on a later failure. | [src/submit.rs\:\:write\_remove\_and\_retire](../../src/submit.rs#L633) |
 | telemetry-append | Appends one JSON line per submit to \`.stewards/telemetry/\<yyyy-mm\>.jsonl\`\: sizes and counts only. | [src/telemetry.rs\:\:append](../../src/telemetry.rs#L30) |
 | telemetry-summary | Per-role submit counts and mean pack bytes plus total pulled anchors; null with no telemetry files; unreadable files and lines are skipped, never an error. | [src/telemetry.rs\:\:summary](../../src/telemetry.rs#L63) |
 
 ## Scenarios
 
-_None._
+| id | interface | given | expect | level |
+|---|---|---|---|---|
+| submit-retires-own-answer | submit-file | a maintainer job whose answer file is the brief's own .answer.json | a successful submit removes the brief and that answer; a second submit is no\_brief | integration |
+| submit-keeps-foreign-answer | submit-file | a maintainer job submitted with --file pointing at an answer outside the brief's own path | the submit succeeds, the brief is removed, the caller's answer file is kept | integration |
+| submit-keeps-answer-on-failure | submit-file | a maintainer answer the validator rejects | the brief and the answer both remain for a retry | integration |
+| submit-rejects-keyword-anchor-name | submit-file | a maintainer card patch whose anchor names carry a keyword such as \`def create\_item\` | answer\_parse\_failed naming each of interface\[\].anchor, anchors\[\].name and gaps\[\].anchor | integration |
+| submit-rejects-keyword-flow-entry | submit-file | an architect flow whose entry anchor carries a keyword | answer\_parse\_failed on flows\[0\].entry and no write | integration |
+| developer-submit-retires-answer | submit-file | a developer job submitted from its own answer file | the brief and the answer are removed; card, stamp and task list are unchanged | integration |
 
 ## Flows
 
-_None._
+- brief-submit-cycle: jobs → pack → llm → model → git → analysis
+- next-job-scheduling: next → analysis → git → model → jobs
+- documenter-card-to-docs-page: jobs → setup
 
 ## Gaps
 
@@ -43,4 +53,4 @@ _None._
 
 ## Last reviewed
 
-3c6db68cfc894ad163e09f30bc03928e40c91d3e
+ccd203c122f389e6b86c83753295c84769496a3e

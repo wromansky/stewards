@@ -118,6 +118,31 @@ fn architect_answer_parses() {
 }
 
 #[test]
+fn card_patch_remove_lists_parse_and_must_be_string_lists() {
+    for mode in [Mode::Review, Mode::Explain] {
+        let mut v = if mode == Mode::Review {
+            review()
+        } else {
+            explain()
+        };
+        v["card_patch"] = json!({
+            "remove_interface": ["old-id"],
+            "remove_anchors": ["src/a.rs::old"],
+            "remove_gaps": ["old gap"]
+        });
+        parse(Role::Maintainer, mode, &v.to_string()).unwrap();
+
+        v["card_patch"] = json!({"remove_gaps": [1]});
+        only_error(
+            Role::Maintainer,
+            mode,
+            &v.to_string(),
+            "card_patch.remove_gaps[0]",
+        );
+    }
+}
+
+#[test]
 fn wrong_enum_value_names_the_field() {
     let mut v = review();
     v["findings"][0]["rung"] = json!("NotNeeded");

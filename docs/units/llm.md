@@ -21,10 +21,10 @@ Start in baml_src: change a prompt or an answer shape there, never in src/llm_sc
 | role-text | Returns the role's prompt text rendered from baml\_src (src/llm\_schema/\<role\>.role.txt), with \`\<unit\>\` left for the caller to fill; only the maintainer distinguishes Review/Explain modes. | [src/llm.rs\:\:role\_text](../../src/llm.rs#L48) |
 | output-format | Returns BAML's ctx.output\_format text for the role's answer shape (src/llm\_schema/\<role\>.schema.txt); non-maintainer roles ignore the mode. | [src/llm.rs\:\:output\_format](../../src/llm.rs#L60) |
 | parse-answer | Strictly validates text as the role's answer via the generated types\: one JSON object, no surrounding text, no duplicate or unknown fields, snake\_case enums. Errors are FieldError {field, problem, example} naming the field path and an example at it. Needs no BAML native library. | [src/llm.rs\:\:parse](../../src/llm.rs#L76) |
-| prepare-baml-env | Unsafe, call before threads exist\: sets BAML\_LIBRARY\_DISABLE\_DOWNLOAD unless STEWARDS\_BAML\_DOWNLOAD is set, sets BAML\_LOG=off unless BAML\_LOG is set, removes every BOUNDARY\_\* variable. | [src/llm.rs\:\:prepare\_baml\_env](../../src/llm.rs#L268) |
-| direct-guards | Checks, in order\: \[models.direct\] \<role\> is \<provider\>/\<model\> with provider anthropic\|openai\|google-ai (else no\_direct\_model), the provider's API key env var is non-blank (else no\_api\_key), the BAML native library loads (else baml\_runtime\_unavailable). Returns (provider, model, key). | [src/llm.rs\:\:direct\_guards](../../src/llm.rs#L289) |
+| prepare-baml-env | Unsafe, call before threads exist\: sets BAML\_LIBRARY\_DISABLE\_DOWNLOAD unless STEWARDS\_BAML\_DOWNLOAD is set, sets BAML\_LOG=off unless BAML\_LOG is set, removes every BOUNDARY\_\* variable. | [src/llm.rs\:\:prepare\_baml\_env](../../src/llm.rs#L271) |
+| direct-guards | Checks, in order\: \[models.direct\] \<role\> is \<provider\>/\<model\> with provider anthropic\|openai\|google-ai (else no\_direct\_model), the provider's API key env var is non-blank (else no\_api\_key), the BAML native library loads (else baml\_runtime\_unavailable). Returns (provider, model, key). | [src/llm.rs\:\:direct\_guards](../../src/llm.rs#L292) |
 | direct-call | After direct\_guards, calls the role's BAML function with a ClientRegistry client carrying the explicit model and api\_key, and returns the typed answer serialized as JSON text. Any BAML error becomes the fixed direct\_call\_failed error, never echoing the brief, reply, or provider response. | [src/llm.rs\:\:direct](../../src/llm.rs#L5) |
-| schema-freshness | src/baml\_client embeds every baml\_src file verbatim, llm\_sources.sha256 matches baml\_src/\*.baml plus src/llm\_schema/\*.txt, and every generated enum has the on\_generate snake\_case rename. Refresh\: baml-cli generate, then the ignored llm\:\:tests\:\:refresh\_llm\_schema. | [tests/llm.rs\:\:generated\_client\_and\_rendered\_text\_match\_baml\_src](../../tests/llm.rs#L399) |
+| schema-freshness | src/baml\_client embeds every baml\_src file verbatim, llm\_sources.sha256 matches baml\_src/\*.baml plus src/llm\_schema/\*.txt, and every generated enum has the on\_generate snake\_case rename. Refresh\: baml-cli generate, then the ignored llm\:\:tests\:\:refresh\_llm\_schema. | [tests/llm.rs\:\:generated\_client\_and\_rendered\_text\_match\_baml\_src](../../tests/llm.rs#L402) |
 
 ## Scenarios
 
@@ -32,7 +32,7 @@ _None._
 
 ## Flows
 
-_None._
+- brief-submit-cycle: jobs → pack → llm → model → git → analysis
 
 ## Gaps
 
@@ -43,4 +43,4 @@ _None._
 
 ## Last reviewed
 
-3c6db68cfc894ad163e09f30bc03928e40c91d3e
+ccd203c122f389e6b86c83753295c84769496a3e

@@ -47,3 +47,35 @@ given = "a developer job submitted from its own answer file"
 expect = "the brief and the answer are removed; card, stamp and task list are unchanged"
 level = "integration"
 command = "cargo test --test developer a_developer_submit_leaves_the_card_stamp_and_task_list_unchanged"
+
+[[scenario]]
+id = "submit-patch-upserts-by-key"
+interface = "submit-file"
+given = "a maintainer card patch listing one interface entry whose id is new, and one whose id the card has"
+expect = "the new entry is appended, the existing one is updated in place, every other entry keeps its order and content"
+level = "integration"
+command = "cargo test --test submit one_entry_updates_it_and_keeps_the_others_unchanged_in_order"
+
+[[scenario]]
+id = "submit-patch-removes-only-by-remove-list"
+interface = "submit-file"
+given = "a card patch with remove_interface, remove_anchors and remove_gaps naming entries the card has"
+expect = "exactly the named entries are removed; entries a patch merely omits stay"
+level = "integration"
+command = "cargo test --test submit remove_interface_removes_exactly_the_named_ids"
+
+[[scenario]]
+id = "submit-rejects-bad-removal"
+interface = "submit-file"
+given = "a removal naming a key the card lacks, or a key the same patch also adds or updates"
+expect = "answer_parse_failed on the remove field and no write"
+level = "integration"
+command = "cargo test --test submit removing_a_key_the_card_does_not_have_is_rejected"
+
+[[scenario]]
+id = "stdout-brief-matches-written-brief"
+interface = "brief-build"
+given = "brief --stdout for a maintainer"
+expect = "prints byte for byte the brief a plain brief writes, and writes no file"
+level = "integration"
+command = "cargo test --test brief stdout_prints_the_brief_and_writes_nothing"

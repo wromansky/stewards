@@ -24,6 +24,12 @@ units = ["jobs", "setup"]
 entry = "src/submit.rs::documenter"
 check = "cargo test --test submit_roles documenter_writes_the_doc_renders_the_page_and_sets_its_mark"
 
+[[flow]]
+name = "maintainer-card-patch"
+units = ["llm", "jobs", "model"]
+entry = "src/submit.rs::maintainer"
+check = "cargo test --test submit one_interface_entry_updates_it_and_keeps_the_others_unchanged_in_order"
+
 [[decision]]
 title = "Docs fixtures route to setup through a narrower glob than model's tests/fixtures/**"
 why = "tests/fixtures/docs/** only feeds the docs renderer tests, so setup lists it and the more specific glob wins routing; edits there review the unit that renders docs, not the model unit."
@@ -31,3 +37,7 @@ why = "tests/fixtures/docs/** only feeds the docs renderer tests, so setup lists
 [[decision]]
 title = "Stewards adopts itself with checked-in .stewards cards and generated docs/units pages"
 why = "Running the tool on its own repo exercises every role on real code; docs/units is rendered from cards so it stays in the repo as generated output, and the AGENTS.md block is the init-written one."
+
+[[decision]]
+title = "A card patch upserts by key and removes only through explicit remove lists"
+why = "A present list used to replace that whole part of the card, so a maintainer who sent the one interface it changed deleted the rest. interface, anchors, and gaps now upsert by id, path::name, and title and keep every entry not named; remove_interface, remove_anchors, and remove_gaps are the only removal, and each removal must name a key the card has and the patch does not also upsert, so a typo or a contradictory patch is rejected rather than silently dropping entries."

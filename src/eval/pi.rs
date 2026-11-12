@@ -1,21 +1,26 @@
 // The Pi driver: `pi --mode json` with pi-subagents, and its session transcripts.
-use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::collections::{BTreeSet, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use serde_json::Value;
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 
-use super::{Action, Driver, Run, Session, Status, Tokens, fresh_session_env, ritual_steps};
+use super::{
+    Action, Driver, FAILED_STOPS, Run, Session, Status, Tokens, fresh_session_env, ritual_steps,
+    shell_reads,
+};
 use crate::output::CliError;
 
 pub struct Pi {
     pub bin: PathBuf,
     /// A session still running after this is killed and recorded as timed out.
     pub limit: Duration,
+    /// The eval's own Pi agent directory (`PI_CODING_AGENT_DIR`), from `isolate`.
+    pub agent_dir: Option<PathBuf>,
 }
 
 impl Pi {
@@ -24,36 +29,119 @@ impl Pi {
         std::env::split_paths(path)
             .map(|d| d.join("pi"))
             .find(|p| p.is_file())
-            .map(|bin| Pi { bin, limit })
-            .ok_or_else(|| {
-                CliError::new(
-                    "harness_missing",
-                    "`pi` is not on PATH",
-                    "install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`)",
-                )
-                .into()
+            .map(|bin| Pi {
+                bin,
+                limit,
+                agent_dir: None,
             })
+            .ok_or_else(|| missing("`pi` is not on PATH".into()))
+    }
+
+    /// Builds the eval's Pi agent directory at `dir` from the user's (`PI_CODING_AGENT_DIR`, else
+    /// `~/.pi/agent`), so sessions load none of the user's personal setup, and returns what it
+    /// holds in plain words. See `agent_dir`.
+    pub fn isolate(&mut self, dir: &Path) -> Result<String> {
+        let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
+        let user = std::env::var_os("PI_CODING_AGENT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".pi/agent"));
+        let note = agent_dir(&user, &home, dir)?;
+        self.agent_dir = Some(dir.to_path_buf());
+        Ok(note)
     }
 }
 
+fn missing(message: String) -> anyhow::Error {
+    CliError::new(
+        "harness_missing",
+        message,
+        "install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`)",
+    )
+    .into()
+}
+
+/// Writes a Pi agent directory at `dir` holding only what a session needs from the user's `user`
+/// directory, and never writes there: `settings.json` listing only the `npm:pi-subagents` package
+/// (with the user's `defaultProvider`/`defaultModel`, if any, and the skills Pi always scans in
+/// `<home>/.agents/skills` excluded); `auth.json` linked, so an OAuth refresh is shared with the
+/// user's own Pi instead of rotating their token away (Pi locks the linked file); `models-store.json`
+/// copied; `npm/` linked (the installed package store). No `AGENTS.md`, `extensions/`, hooks,
+/// agents, or other packages. Returns that in plain words.
+pub fn agent_dir(user: &Path, home: &Path, dir: &Path) -> Result<String> {
+    if !user.join("npm/node_modules/pi-subagents").is_dir() {
+        return Err(missing(format!(
+            "pi-subagents is not installed in {}",
+            user.display()
+        )));
+    }
+    std::fs::create_dir_all(dir)?;
+    let theirs: Value = std::fs::read_to_string(user.join("settings.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let mut settings = json!({
+        "packages": ["npm:pi-subagents"],
+        "skills": [format!("!{}/.agents/skills/**", home.display())],
+    });
+    for key in ["defaultProvider", "defaultModel"] {
+        if let Some(v) = theirs.get(key) {
+            settings[key] = v.clone();
+        }
+    }
+    std::fs::write(
+        dir.join("settings.json"),
+        serde_json::to_string_pretty(&settings)?,
+    )?;
+    let mut held = vec![format!("settings.json {settings}")];
+    for (name, link) in [
+        ("auth.json", true),
+        ("models-store.json", false),
+        ("npm", true),
+    ] {
+        let from = user.join(name);
+        if !from.exists() {
+            continue;
+        }
+        if link {
+            std::os::unix::fs::symlink(&from, dir.join(name))?;
+            held.push(format!("{name} linked to {}", from.display()));
+        } else {
+            std::fs::copy(&from, dir.join(name))?;
+            held.push(format!("{name} copied"));
+        }
+    }
+    Ok(format!(
+        "Pi agent dir {} (PI_CODING_AGENT_DIR): {}. Active: the pi-subagents extension and its skills, and Pi's built-in extensions; no user AGENTS.md, extensions, hooks, agents, other packages, or ~/.agents skills.",
+        dir.display(),
+        held.join("; ")
+    ))
+}
+
 impl Driver for Pi {
-    /// `pi --mode json --session-dir <sessions> --exclude-tools subagents_enable [--model m] -- <prompt>`
-    /// in `dir`: excluding the loader keeps `subagent` active from the first request. Pi stays up
+    /// `pi --mode json --session-dir <sessions> --exclude-tools subagents_enable --thinking <level>
+    /// [--model m] -- <prompt>` in `dir`, with `PI_CODING_AGENT_DIR` set to the eval's agent
+    /// directory: excluding the loader keeps `subagent` active from the first request. Pi stays up
     /// until its background subagents finish. stdout and stderr go to `stdout.log` and `stderr.log`.
     fn start(
         &self,
         dir: &Path,
         prompt: &str,
         model: Option<&str>,
+        thinking: &str,
         sessions: &Path,
-        path: &OsStr,
+        env: &[(&str, OsString)],
     ) -> Result<Session> {
         std::fs::create_dir_all(sessions)?;
         let mut cmd = Command::new(&self.bin);
         cmd.current_dir(dir)
             .args(["--mode", "json", "--session-dir"])
             .arg(sessions)
-            .args(["--exclude-tools", "subagents_enable"]);
+            .args([
+                "--exclude-tools",
+                "subagents_enable",
+                "--thinking",
+                thinking,
+            ]);
         if let Some(m) = model {
             cmd.args(["--model", m]);
         }
@@ -62,8 +150,10 @@ impl Driver for Pi {
             .stdin(Stdio::null())
             .stdout(File::create(sessions.join("stdout.log"))?)
             .stderr(File::create(sessions.join("stderr.log"))?);
-        fresh_session_env(&mut cmd, path);
-        #[cfg(unix)]
+        fresh_session_env(&mut cmd, env);
+        if let Some(a) = &self.agent_dir {
+            cmd.env("PI_CODING_AGENT_DIR", a);
+        }
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         let started = Instant::now();
         let mut child = cmd
@@ -85,19 +175,19 @@ impl Driver for Pi {
         };
         Ok(Session {
             status,
-            transcript: main_transcript(sessions)?,
+            transcript: top_level(sessions)?.into_iter().next(),
             duration_s: started.elapsed().as_secs_f64(),
         })
     }
 
-    fn parse(&self, transcript: &Path, duration_s: f64) -> Result<Run> {
-        parse(transcript, duration_s)
+    fn parse(&self, transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run> {
+        parse(transcript, duration_s, truncation_ok)
     }
 }
 
-/// Kills the session's whole process group, then the child itself.
+/// Kills the session's whole process group, then the child itself; the runner then kills what
+/// left the group (Pi starts shell commands and background subagents in their own groups).
 fn kill(child: &mut Child) {
-    #[cfg(unix)]
     let _ = Command::new("kill")
         .args(["-KILL", &format!("-{}", child.id())])
         .status();
@@ -105,25 +195,31 @@ fn kill(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// The parent session file: the `.jsonl` directly in the session directory.
-fn main_transcript(sessions: &Path) -> Result<Option<PathBuf>> {
+/// The `.jsonl` files directly in a session directory, sorted.
+fn top_level(sessions: &Path) -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(sessions)?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.is_file() && p.extension() == Some(OsStr::new("jsonl")))
         .collect();
     files.sort();
-    Ok(files.into_iter().next())
+    Ok(files)
 }
 
-fn records(path: &Path) -> Result<Vec<Value>> {
+/// A file's records; with `truncation_ok` an unparseable last line is dropped and counted.
+fn records(path: &Path, truncation_ok: bool) -> Result<(Vec<Value>, usize)> {
     let text = std::fs::read_to_string(path).with_context(|| path.display().to_string())?;
-    text.lines()
-        .filter(|l| !l.trim().is_empty())
-        .enumerate()
-        .map(|(n, l)| {
-            serde_json::from_str(l).with_context(|| format!("{}:{}", path.display(), n + 1))
-        })
-        .collect()
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let mut out = vec![];
+    for (n, l) in lines.iter().enumerate() {
+        match serde_json::from_str(l) {
+            Ok(v) => out.push(v),
+            Err(_) if truncation_ok && n + 1 == lines.len() => return Ok((out, 1)),
+            Err(e) => {
+                return Err(e).with_context(|| format!("{}:{}", path.display(), n + 1));
+            }
+        }
+    }
+    Ok((out, 0))
 }
 
 /// Every child session file: `*.jsonl` anywhere under `<transcript without .jsonl>/`, sorted, so
@@ -148,18 +244,17 @@ fn child_transcripts(transcript: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The usage object a record carries: an assistant message's `message.usage`, or the top-level
-/// `usage` of `usage`, `compaction`, and `branch_summary` records.
-fn usage(r: &Value) -> Option<&Value> {
-    let u = if r["type"] == "message" {
-        if r["message"]["role"] != "assistant" {
-            return None;
-        }
-        &r["message"]["usage"]
-    } else {
-        &r["usage"]
+/// The usage a record carries, and whether it is context usage: an assistant message's
+/// `message.usage` and the top-level `usage` of `compaction` and `branch_summary` records are;
+/// the top-level `usage` of a `usage` record (a cache refresh) is not.
+fn usage(r: &Value) -> Option<(&Value, bool)> {
+    let (u, context) = match r["type"].as_str()? {
+        "message" if r["message"]["role"] == "assistant" => (&r["message"]["usage"], true),
+        "compaction" | "branch_summary" => (&r["usage"], true),
+        "usage" => (&r["usage"], false),
+        _ => return None,
     };
-    u.is_object().then_some(u)
+    u.is_object().then_some((u, context))
 }
 
 fn tokens(u: &Value) -> Tokens {
@@ -172,7 +267,7 @@ fn tokens(u: &Value) -> Tokens {
     }
 }
 
-/// A path the read tool opened, relative to the session's `cwd`; `None` outside it.
+/// A path a session opened, relative to the session's `cwd`; `None` outside it.
 fn repo_relative(path: &str, cwd: &str) -> Option<String> {
     let p = Path::new(path);
     let rel = if p.is_absolute() {
@@ -191,59 +286,88 @@ fn repo_relative(path: &str, cwd: &str) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
-/// The actions of one session's records, in order: tool calls from assistant messages, matched to
-/// their tool results by id for shell exits.
+/// The tool calls of one session's records, in order.
+fn tool_calls<'a>(records: &[&'a Value]) -> impl Iterator<Item = &'a Value> {
+    records
+        .iter()
+        .filter(|r| r["message"]["role"] == "assistant")
+        .flat_map(|r| r["message"]["content"].as_array().into_iter().flatten())
+        .filter(|b| b["type"] == "toolCall")
+}
+
+/// The ritual actions of one session: shell commands and subagent launches.
 fn actions(records: &[&Value]) -> Vec<Action> {
-    let mut calls = std::collections::HashMap::new();
-    let mut out = vec![];
-    for r in records {
-        let m = &r["message"];
-        let at = r["timestamp"].as_str().unwrap_or_default().to_string();
-        if m["role"] == "assistant" {
-            for b in m["content"].as_array().into_iter().flatten() {
-                if b["type"] != "toolCall" {
-                    continue;
-                }
-                match b["name"].as_str() {
-                    Some("subagent") => out.push(Action::Dispatch {
-                        text: b["arguments"].to_string(),
-                    }),
-                    Some("edit" | "write") => out.push(Action::Edit { at: at.clone() }),
-                    _ => {}
-                }
-                calls.insert(b["id"].as_str().unwrap_or_default().to_string(), b);
-            }
-        } else if m["role"] == "toolResult"
-            && let Some(call) = calls.get(m["toolCallId"].as_str().unwrap_or_default())
-            && call["name"] == "bash"
-        {
-            out.push(Action::Shell {
-                command: call["arguments"]["command"]
+    tool_calls(records)
+        .filter_map(|b| match b["name"].as_str() {
+            Some("subagent") => Some(Action::Dispatch {
+                text: b["arguments"].to_string(),
+            }),
+            Some("bash") => Some(Action::Shell {
+                command: b["arguments"]["command"]
                     .as_str()
                     .unwrap_or_default()
                     .to_string(),
-                ok: m["isError"] != true,
-                at,
-            });
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The distinct repo-relative paths one session opened, in order: each `read` tool path and each
+/// path `shell_reads` finds in a `bash` command.
+fn files_opened(records: &[&Value]) -> Vec<String> {
+    let cwd = records
+        .iter()
+        .find_map(|r| r["cwd"].as_str())
+        .unwrap_or_default();
+    let mut out: Vec<String> = vec![];
+    for b in tool_calls(records) {
+        let paths = match b["name"].as_str() {
+            Some("read") => b["arguments"]["path"].as_str().into_iter().collect(),
+            Some("bash") => shell_reads(b["arguments"]["command"].as_str().unwrap_or_default()),
+            _ => vec![],
+        };
+        for p in paths.into_iter().filter_map(|p| repo_relative(p, cwd)) {
+            if !out.contains(&p) {
+                out.push(p);
+            }
         }
     }
     out
 }
 
-/// Parses a Pi session tree. Main tokens sum the parent session file; total tokens add every
-/// child session file under `<parent without .jsonl>/` (subagent runs, nested children, forks).
-/// The token fields summed are `input`, `output`, `cacheRead`, and `cacheWrite` of every assistant
-/// message's usage and of every `usage`, `compaction`, and `branch_summary` record (Pi counts those
-/// toward session totals; `totalTokens` is not read, `reasoning` is inside `output`). A record is
-/// counted once across the tree by its `(id, timestamp)`: a fork starts as a copy of its parent's
-/// records. `cost_usd` sums `usage.cost.total`, Pi's own figure from its price table.
-pub fn parse(transcript: &Path, duration_s: f64) -> Result<Run> {
-    let main = records(transcript)?;
-    let cwd = main
-        .first()
-        .and_then(|r| r["cwd"].as_str())
-        .unwrap_or_default()
-        .to_string();
+/// The stop reason of a session's last assistant message.
+fn last_stop(records: &[&Value]) -> Option<String> {
+    records
+        .iter()
+        .rev()
+        .find(|r| r["message"]["role"] == "assistant")
+        .and_then(|r| r["message"]["stopReason"].as_str())
+        .map(str::to_string)
+}
+
+/// Parses a Pi session tree. The session directory must hold exactly one top-level `.jsonl`.
+/// Main tokens sum the parent session file; total tokens add every child session file under
+/// `<parent without .jsonl>/` (subagent runs, nested children, forks). The token fields summed
+/// are `input`, `output`, `cacheRead`, and `cacheWrite` of every assistant message's usage and of
+/// every `compaction` and `branch_summary` record (`totalTokens` is not read, `reasoning` is
+/// inside `output`); `usage` records (cache refreshes, which do not enter context) go to
+/// `cache_warming` instead. A record is counted once across the tree by its `(id, timestamp)`: a
+/// fork starts as a copy of its parent's records. `cost_usd` sums `usage.cost.total` of all of
+/// them, Pi's own figure from its price table. `files_opened` counts, per session, the paths of
+/// the `read` tool plus the shell reads `shell_reads` recognises, each relative to that session's
+/// own `cwd`. Models come from `model_change` records and assistant messages over the tree.
+pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run> {
+    let dir = transcript.parent().unwrap_or(Path::new("."));
+    let tops = top_level(dir)?;
+    if tops.len() > 1 {
+        bail!(
+            "{} top-level session files in {}, expected one",
+            tops.len(),
+            dir.display()
+        );
+    }
+    let (main, mut truncated_lines) = records(transcript, truncation_ok)?;
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut first_time = |r: &Value| {
         seen.insert((
@@ -252,64 +376,87 @@ pub fn parse(transcript: &Path, duration_s: f64) -> Result<Run> {
         ))
     };
     let main: Vec<&Value> = main.iter().filter(|r| first_time(r)).collect();
-    let children: Vec<Vec<Value>> = child_transcripts(transcript)
+    let tree = transcript.with_extension("");
+    let mut children: Vec<(String, Vec<Value>)> = vec![];
+    for p in child_transcripts(transcript) {
+        let (recs, t) = records(&p, truncation_ok)?;
+        truncated_lines += t;
+        let name = p.strip_prefix(&tree).unwrap_or(&p).display().to_string();
+        children.push((name, recs));
+    }
+    let children: Vec<(&str, Vec<&Value>)> = children
         .iter()
-        .map(|p| records(p))
-        .collect::<Result<_>>()?;
-    let children: Vec<Vec<&Value>> = children
-        .iter()
-        .map(|c| c.iter().filter(|r| first_time(r)).collect())
+        .map(|(n, c)| (n.as_str(), c.iter().filter(|r| first_time(r)).collect()))
         .collect();
 
     let mut main_tokens = Tokens::default();
+    let mut total_tokens = Tokens::default();
+    let mut cache_warming = Tokens::default();
+    let mut peak_main_context = 0;
     let mut cost: Option<f64> = None;
-    let mut add_usage = |recs: &[&Value], into: &mut Tokens| {
-        for u in recs.iter().filter_map(|r| usage(r)) {
-            into.add(tokens(u));
+    let sessions = std::iter::once(("", &main)).chain(children.iter().map(|(n, c)| (*n, c)));
+    for (i, (_, recs)) in sessions.clone().enumerate() {
+        for (u, context) in recs.iter().filter_map(|r| usage(r)) {
+            let t = tokens(u);
+            if !context {
+                cache_warming.add(t);
+            } else {
+                total_tokens.add(t);
+                if i == 0 {
+                    main_tokens.add(t);
+                    peak_main_context = peak_main_context.max(t.context());
+                }
+            }
             if let Some(c) = u["cost"]["total"].as_f64() {
                 cost = Some(cost.unwrap_or(0.0) + c);
             }
         }
-    };
-    add_usage(&main, &mut main_tokens);
-    let mut total_tokens = main_tokens;
-    for c in &children {
-        add_usage(c, &mut total_tokens);
     }
 
-    let mut tool_calls = vec![];
-    let mut files_opened: Vec<String> = vec![];
+    let mut tool_names = vec![];
     let mut shell_commands = vec![];
-    for b in main
-        .iter()
-        .filter(|r| r["message"]["role"] == "assistant")
-        .flat_map(|r| r["message"]["content"].as_array().into_iter().flatten())
-        .filter(|b| b["type"] == "toolCall")
-    {
+    for b in tool_calls(&main) {
         let name = b["name"].as_str().unwrap_or_default();
-        tool_calls.push(name.to_string());
-        match name {
-            "bash" => shell_commands.push(
+        tool_names.push(name.to_string());
+        if name == "bash" {
+            shell_commands.push(
                 b["arguments"]["command"]
                     .as_str()
                     .unwrap_or_default()
                     .to_string(),
-            ),
-            "read" => {
-                if let Some(p) = b["arguments"]["path"]
-                    .as_str()
-                    .and_then(|p| repo_relative(p, &cwd))
-                    && !files_opened.contains(&p)
-                {
-                    files_opened.push(p);
-                }
-            }
-            _ => {}
+            );
         }
     }
-    let mut all = actions(&main);
-    for c in &children {
-        all.extend(actions(c));
+    let mut all = vec![];
+    let mut tree_files: Vec<String> = vec![];
+    let mut models = BTreeSet::new();
+    let mut failed_children = vec![];
+    for (i, (name, recs)) in sessions.enumerate() {
+        all.extend(actions(recs));
+        for f in files_opened(recs) {
+            if !tree_files.contains(&f) {
+                tree_files.push(f);
+            }
+        }
+        for r in recs.iter() {
+            let m = &r["message"];
+            if r["type"] == "model_change" {
+                models.insert(format!(
+                    "{}/{}",
+                    r["provider"].as_str().unwrap_or_default(),
+                    r["modelId"].as_str().unwrap_or_default()
+                ));
+            } else if m["role"] == "assistant"
+                && let (Some(p), Some(id)) = (m["provider"].as_str(), m["model"].as_str())
+            {
+                models.insert(format!("{p}/{id}"));
+            }
+        }
+        if i > 0
+            && let Some(s) = last_stop(recs).filter(|s| FAILED_STOPS.contains(&s.as_str()))
+        {
+            failed_children.push(format!("{name} stopped with `{s}`"));
+        }
     }
     let model = main.iter().find(|r| r["type"] == "model_change").map(|r| {
         format!(
@@ -321,12 +468,19 @@ pub fn parse(transcript: &Path, duration_s: f64) -> Result<Run> {
     Ok(Run {
         main_tokens,
         total_tokens,
-        tool_calls,
-        files_opened,
+        cache_warming,
+        peak_main_context,
+        tool_calls: tool_names,
+        files_opened: files_opened(&main),
+        files_opened_tree: tree_files,
         shell_commands,
         ritual_steps: ritual_steps(&all),
         cost_usd: cost,
         duration_s,
         model,
+        models: models.into_iter().collect(),
+        stop_reason: last_stop(&main),
+        failed_children,
+        truncated_lines,
     })
 }

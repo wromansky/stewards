@@ -468,7 +468,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | `debt` | `simplified:` comments attached to units |
 | `docs [unit]` | renders `docs/units/<unit>.md` and the index |
 | `render --harness <h> [--repo-level]` | writes the six native role agents |
-| `eval [--harness h] [--arm a] [--task n]... [--runs n] [--max-cost usd] [--no-developers] [--model id] [--setup-dir d]` | runs the eval suite; exit 0 when the suite passes, 1 otherwise |
+| `eval [--harness h] [--arm a] [--task n]... [--runs n] [--max-cost usd] [--no-developers] [--model id] [--thinking level] [--setup-dir d] [--keep-work]` | runs the eval suite; exit 0 when the suite passes, 1 otherwise |
 | `completions <shell>` | shell completions |
 
 Global flags: `--human`, `--repo <name>`, `-C <dir>`, `--direct`. JSON by
@@ -711,8 +711,8 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `unsafe_path` | a path the tool reads or writes in a repo is not plain names, or passes through a symlink | remove the symlink at `<path>`; stewards never writes through links |
 | `card_changed` | a file `submit` was about to write changed since it was loaded (another submit finished first) | run the same submit again |
 | `no_tasks` | `brief --role developer` with no usable task list for the unit | brief the maintainer again with the change as `--task` |
-| `harness_missing` | `eval` and the harness binary (`pi`) is not on PATH | install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`) |
-| `eval_setup_incomplete` | `eval`'s adopted fixture for the `full` arm leaves tracked files unowned or does not reach a clean `stewards next` | read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` an adopted copy where `stewards next` exits 0 |
+| `harness_missing` | `eval` and the harness binary (`pi`) is not on PATH, or pi-subagents is not installed in the Pi agent directory | install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`) |
+| `eval_setup_incomplete` | `eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted | read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0 |
 | `not_implemented` | a command or flag not built yet | use a release that has it |
 | `internal` | any other failure | report a bug |
 
@@ -919,53 +919,113 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
 - **Runner:** `stewards eval` drives `claude -p --output-format stream-json
   --verbose`, `codex exec --json`, `pi --mode json` (Pi is built; the
   other two are stage 4) behind one `Driver` trait (start a session on a
-  prompt in a directory with a model and return its transcript; parse
-  it), and parses each transcript
+  prompt in a directory with a model and thinking level and return its
+  transcript; parse it), and parses each transcript
   to `Run {main_tokens {input, output, cache_read, cache_write},
-  total_tokens {same}, tool_calls[], files_opened[], shell_commands[],
+  total_tokens {same}, cache_warming {same}, peak_main_context,
+  tool_calls[], files_opened[], files_opened_tree[], shell_commands[],
   ritual_steps{status, route, brief, next, submit, check_green}, cost_usd?,
-  duration_s}`.
+  duration_s, models[], stop_reason, failed_children[], truncated_lines}`.
   Main tokens = the parent session only; total = parent + all children;
   the token criteria compare the sum of the four fields. For Pi the fields
-  are summed over assistant-message usage plus `usage`, `compaction`, and
-  `branch_summary` records, each record counted once across the tree by
-  `(id, timestamp)` because a fork starts as a copy of its parent;
+  are summed over assistant-message usage plus `compaction` and
+  `branch_summary` records (matched by record type), each record counted
+  once across the tree by `(id, timestamp)` because a fork starts as a copy
+  of its parent; `usage` records (cache refreshes, which do not enter
+  context) go to `cache_warming` instead, their cost still in `cost_usd`.
   `cost_usd` is Pi's own `cost.total` (its price table, not a bill), `null`
-  when the transcript has none.
-  Ritual steps are shell commands, in the main session or any child, whose
-  argv starts with `stewards <cmd>`;
-  `brief` when a subagent is dispatched with a `.stewards/briefs/` path or a
-  `stewards submit` appears; `check_green` when `next` exits 0
-  after the last edit-tool call. `files_opened` counts distinct repo-relative paths
-  read in the main session. Every arm gets the same model (`--model`, else
-  the harness default, recorded from the transcript), the task file
-  verbatim as the prompt, and the same parsing. Runs are sequential, each
-  in a fresh copy made by `evals/arms.sh`; `bare` and `block-only` run with
-  `stewards` off `PATH` (each `PATH` directory holding it is replaced by a
-  mirror without it), `full` with the running binary first on `PATH`.
-  `full` copies one adopted fixture per invocation: `stewards init`, then
-  hand-set units from `evals/full-units.toml` (`api`, `client`, `cli`;
-  `init` proposes only the `cli` manifest root on the fixture; the root
-  `.gitignore` and `AGENTS.md` stay unowned, anything else unowned stops
-  the eval; the summary says so in plain words), then an adoption session
-  on the same model that runs `stewards init --draft` and dispatches until
-  `stewards next` lists no jobs, recorded as a `setup` run; the runner checks `stewards next` exits
-  0 there (else `eval_setup_incomplete`, before any `full` run) and commits
-  it; `--setup-dir` reuses an adopted copy. `--no-developers` is `full`
-  with the block's "Changing:" line replaced by `- Changing: make the
-  edits yourself.` and the developer fix sentence by `fix them yourself.`,
+  when the transcript has none. `peak_main_context` is the largest input +
+  cache read + cache write of any one main-session response.
+  `files_opened` (main session) and `files_opened_tree` (every session)
+  count distinct paths relative to each session's cwd, from the `read` tool
+  plus simply recognised shell reads (`cat`, `head`, `tail`, `less`, `sed
+  -n`, `grep`/`rg` with a path argument; see `shell_reads`).
+  `check_green` comes from the runner: after each `full` (and
+  `full-no-developers`) session it runs `stewards next --no-brief` in the
+  run directory and records the exit code and job count; green is exit 0.
+  The other five ritual steps are best-effort from the transcripts: shell
+  commands, in the main session or any child, whose argv starts with
+  `stewards <cmd>`; `brief` when a subagent is dispatched with a
+  `.stewards/briefs/` path or a `stewards submit` appears; the summary lists
+  the known blind spots (`timeout`/`env` prefixes, `if`, `bash -c`,
+  heredocs, steps a child alone ran). A session whose last main response,
+  or any child's last response, stopped with `error`, `aborted`, or
+  `length` is a failed run whatever the harness's exit code; the stop
+  reason and the failed child are recorded. A session directory with more
+  than one top-level session file fails the parse; an unparseable line is
+  tolerated only as the last line of a file from a failed or timed-out
+  session (counted in `truncated_lines`). A run whose transcript cannot be
+  parsed has an unknown cost: after one, `--max-cost` stops the eval, as it
+  can no longer bound the spend, and the summary says so. Every arm gets
+  the same model (`--model`, else the harness default) and thinking level
+  (`--thinking`, default `medium`), the task file verbatim as the prompt,
+  and the same parsing; every model used in a session tree is recorded and
+  a run where any differs from the requested one (or the main session's) is
+  flagged, not failed (the main agent may pass `model` per subagent).
+  Sessions run without the user's personal harness setup: for Pi, one agent
+  directory per invocation (`PI_CODING_AGENT_DIR`) holds a `settings.json`
+  listing only `npm:pi-subagents` (plus the user's `defaultProvider`/
+  `defaultModel`, and `~/.agents/skills` excluded), `auth.json` and the
+  `npm/` package store linked to the user's (a linked `auth.json` shares
+  OAuth refreshes instead of rotating the user's token away), and a copied
+  `models-store.json`; no global `AGENTS.md`, other extensions, or skills
+  beyond pi-subagents'; the summary records it. Each session gets its own
+  `STEWARDS_HOME` and `CARGO_INSTALL_ROOT` (never on `PATH`), and every
+  other harness env prefix is stripped. Runs are sequential, each in a
+  fresh copy made by `evals/arms.sh` at `<tmp>/w-<random>/<n>/repo`, a
+  path naming no arm, `stewards`, or `eval` (the run record keeps the
+  mapping); `bare` and `block-only` run with `stewards` off `PATH` (each
+  `PATH` directory holding it is replaced by a mirror without it), `full`
+  with the running binary first on `PATH`. `full` copies one adopted
+  fixture per invocation: `stewards init`, then hand-set units from
+  `evals/full-units.toml` (`api`, `client`, `cli`; `init` proposes only the
+  `cli` manifest root on the fixture; the root `.gitignore` and `AGENTS.md`
+  stay unowned, anything else unowned stops the eval; the summary says so
+  in plain words), then an adoption session on the same model that runs
+  `stewards init --draft` and dispatches until `stewards next` lists no
+  jobs, recorded as a `setup` run. The runner then diffs the adopted state
+  against the `fixture: initial` commit: a changed, deleted, or added file
+  outside `.stewards/`, `docs/units/`, `AGENTS.md`, and `.gitignore` stops
+  the eval with `eval_setup_incomplete` naming the files, except a newly
+  added file under the test locations `FULL_UNITS_TESTS`
+  (`api/test_*.py`, `client/*.test.ts`, `cli/tests/**`, kept beside
+  `FULL_UNITS_UNOWNED` in `src/eval/mod.rs`); the summary lists every added
+  path and every `kind = "bug"` gap on the adopted cards (a bug task whose
+  seeded bug is listed started known). The runner checks `stewards next`
+  exits 0 there (else `eval_setup_incomplete`, before any `full` run),
+  removes every gitignored file, and commits it; each `full` copy runs
+  `git clean -fdX` after the copy. `--setup-dir` reuses an adopted copy; it
+  must be a git repository with an empty `git status --porcelain` and a
+  clean `next`, and gets the same diff check. `--no-developers` is `full`
+  with the block's "Changing:" line replaced by `- Changing: make the edits
+  yourself.` and the developer fix sentence by `fix them yourself.`,
   labelled `full-no-developers`. Task 6 runs in a new session in the
   directory task 5 left: each task-6 run first runs task 5 there as a
-  `setup` run. A session has 30 minutes, then it is killed and recorded
-  `timed_out`; a failed or timed-out session is recorded and counted, never
-  retried or dropped. `--max-cost` stops before the next session when the
-  spend so far plus its mean per session would pass the ceiling; the first
-  always runs. Results go to `evals/results/<timestamp>/` (gitignored):
-  `runs/*.json` (the `Run`, arm, task, role, model, status, transcript
-  path), `sessions/` (the transcripts), `summary.json`, and `summary.md`.
+  `setup` run. A session has 30 minutes, then Pi's process group is killed
+  and the session recorded `timed_out`. After every session (normal exit,
+  failure, or timeout) the runner kills every process whose
+  `/proc/<pid>/cwd` is under that session's `<n>/` directory (Pi starts
+  shell commands and background subagents in their own process groups),
+  waits up to 10 s until none is left, and records how many it killed; a
+  survivor stops the eval after the run is recorded. A failed or timed-out
+  session is recorded and counted, never retried or dropped. `--max-cost`
+  stops before the next session when the spend so far plus its mean per
+  session would pass the ceiling; the first always runs. Results go to
+  `evals/results/<timestamp>/` (gitignored): `runs/*.json` (the `Run`, arm,
+  task, role, model, thinking, status, failure, leftovers, `next` check,
+  transcript path), `sessions/` (each session's transcripts, copied there
+  after the run), `summary.json`, and `summary.md`, with report-only
+  `full`/`bare` ratios of median cost and median peak main context next to
+  each verdict. Each run's work directory is deleted after the run unless
+  `--keep-work`. pi-subagents also leaves run state outside both, under
+  `/tmp/pi-subagents-uid-<uid>/` (`async-subagent-runs/`,
+  `async-subagent-launches/`, `async-subagent-results/`,
+  `nested-subagent-events/`, `run-fanout-budgets/`, `session-leases/`,
+  `supervisor-channels/`); the eval does not clean it.
 - **Pass criteria:** 3 runs per arm per task, medians compared. Tokens:
   `full` main-context ≤ 80% of `bare` and total ≤ 110% of `bare`; task 6
-  files opened ≤ half of `bare` task 4; both token criteria failing fails
+  files opened (main session) ≤ half of `bare` task 4, and 0 on both sides
+  is `unmeasured`, a warning, not a pass; both token criteria failing fails
   the task, one is a warning. A task with any compared run failed, timed
   out, without a transcript, or not started is `incomplete`: its medians
   are reported but given no verdict, and it never passes. Cleanliness:
@@ -1620,12 +1680,22 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   ChatGPT-account Codex rejects the configured model ids with 400. Pi
   (verified 2026-11-12 on `@earendil-works/pi-coding-agent` 1.5.2 with
   pi-subagents 0.88.0): `pi --mode json --session-dir <d> --exclude-tools
-  subagents_enable [--model <provider/id>] -- "<prompt>"`, stdin closed;
+  subagents_enable --thinking <level> [--model <provider/id>] --
+  "<prompt>"`, stdin closed, `PI_CODING_AGENT_DIR` set to the eval's agent
+  directory (checked 2026-11-12 on `anthropic/claude-haiku-5-5`: it
+  authenticates, the first request's tools are `read`, `bash`, `edit`,
+  `write`, `subagent`, `contact_supervisor`, `bg_wait`,
+  `subagent_supervisor`, its skills only pi-subagents' `council-mode` and
+  `pi-subagents`, and no context file; Pi always scans `~/.agents/skills`,
+  so the eval's settings exclude it);
   no cwd flag, the process cwd is the session's; AGENTS.md in the cwd is
   loaded. JSON events go to stdout, but the transcript is the session file
   `<d>/<timestamp>_<id>.jsonl` (`session` header with `cwd`, `model_change`,
   `message` records with per-response `usage {input, output, cacheRead,
-  cacheWrite, cost.total}`, `usage` records). Subagent children are
+  cacheWrite, cost.total}` and `stopReason`, `usage` records for cache
+  refreshes). In `--mode json` Pi exits 0 even when the final response
+  stopped with `error`, `aborted`, or `length` (only text mode sets exit
+  1), so the runner reads the stop reason from the transcript. Subagent children are
   `<d>/<timestamp>_<id>/<runId>/run-0/session.jsonl` with `parentSession`,
   forks `<d>/<timestamp>_<id>/forks/<id>/*.jsonl` (a copy of the parent's
   records, same ids and timestamps, then the fork's own);
@@ -1634,7 +1704,8 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   non-interactive mode subagents launch async and Pi waits for them
   before exiting. A `PI_*` environment from an enclosing Pi session
   (`PI_SUBAGENT_CHILD`) makes a nested `pi` start without `subagent`, so
-  the runner strips every harness's env prefix.
+  the runner strips every harness's env prefix, then sets
+  `PI_CODING_AGENT_DIR` itself.
 - `claude plugin eval` exists (cases under `evals/<case>/`, six fixed grader
   types, with/without ablation, `--json`) but has no custom-code graders and
   starts in an empty workspace; stewards uses its own runner.

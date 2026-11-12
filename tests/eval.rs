@@ -7,11 +7,12 @@ use std::time::Duration;
 
 use common::copy_dir;
 use stewards::eval::grade::{grade_task, median};
-use stewards::eval::pi::{Pi, parse};
+use stewards::eval::pi::{Pi, agent_dir, parse};
 use stewards::eval::{
-    Action, Arm, Driver, Plan, RitualSteps, Run, RunRecord, RunRole, Session, Status, Tokens,
-    Verdict, execute, path_without_stewards, ritual_steps, stewards_subcommands,
-    without_developers, would_exceed,
+    ADOPT_PROMPT, Action, Arm, Driver, Plan, RITUAL_STEPS, RitualSteps, Run, RunRecord, RunRole,
+    Session, Status, Tokens, Verdict, execute, kill_leftovers, neutral_work_dir, next_check,
+    path_without_stewards, ritual_steps, shell_reads, stewards_subcommands, without_developers,
+    would_exceed,
 };
 use stewards::output::CliError;
 use tempfile::TempDir;
@@ -31,9 +32,18 @@ fn main_file(dir: &Path) -> PathBuf {
         .unwrap()
 }
 
+/// The ritual steps with exactly `on` present.
+fn steps(on: &[&str]) -> RitualSteps {
+    RITUAL_STEPS.iter().map(|&s| (s, on.contains(&s))).collect()
+}
+
+fn all() -> RitualSteps {
+    steps(&RITUAL_STEPS)
+}
+
 #[test]
 fn pi_sample_counts_child_tokens_in_total_and_not_in_main() {
-    let run = parse(&main_file(&sample("subagent")), 1.5).unwrap();
+    let run = parse(&main_file(&sample("subagent")), 1.5, false).unwrap();
     let main = Tokens {
         input: 12,
         output: 743,
@@ -53,11 +63,18 @@ fn pi_sample_counts_child_tokens_in_total_and_not_in_main() {
     assert_eq!(run.total_tokens.sum(), 60223 + 6148);
     assert_eq!(run.tool_calls, ["bash", "read", "subagent"]);
     assert_eq!(run.files_opened, ["AGENTS.md"]);
+    assert_eq!(run.files_opened_tree, ["AGENTS.md"]);
     assert_eq!(run.shell_commands, ["echo probe"]);
     assert_eq!(run.model.as_deref(), Some("anthropic/claude-haiku-5-5"));
+    assert_eq!(run.models, ["anthropic/claude-haiku-5-5"]);
     assert!((run.cost_usd.unwrap() - (0.00113712 + 0.0009244)).abs() < 1e-6);
     assert_eq!(run.duration_s, 1.5);
-    assert_eq!(run.ritual_steps, RitualSteps::default());
+    assert_eq!(run.ritual_steps, steps(&[]));
+    assert_eq!(run.peak_main_context, 15564);
+    assert_eq!(run.cache_warming, Tokens::default());
+    assert_eq!(run.stop_reason.as_deref(), Some("stop"));
+    assert!(run.failed_children.is_empty());
+    assert_eq!(run.truncated_lines, 0);
 }
 
 #[test]
@@ -65,52 +82,69 @@ fn a_fork_copy_of_the_parent_is_counted_once() {
     let tmp = TempDir::new().unwrap();
     copy_dir(&sample("subagent"), tmp.path());
     let parent = main_file(tmp.path());
-    let before = parse(&parent, 0.0).unwrap();
+    let before = parse(&parent, 0.0, false).unwrap();
     let forks = parent.with_extension("").join("forks/f1");
     std::fs::create_dir_all(&forks).unwrap();
     let extra = r#"{"type":"message","id":"fork0001","parentId":null,"timestamp":"2026-11-12T19:30:00.000Z","message":{"role":"assistant","content":[],"usage":{"input":1,"output":2,"cacheRead":3,"cacheWrite":4,"cost":{"total":0.5}}}}"#;
     let copy = std::fs::read_to_string(&parent).unwrap() + extra + "\n";
     std::fs::write(forks.join("fork.jsonl"), copy).unwrap();
-    let after = parse(&parent, 0.0).unwrap();
+    let after = parse(&parent, 0.0, false).unwrap();
     assert_eq!(after.main_tokens, before.main_tokens);
     assert_eq!(after.total_tokens.sum(), before.total_tokens.sum() + 10);
     assert!((after.cost_usd.unwrap() - before.cost_usd.unwrap() - 0.5).abs() < 1e-9);
 }
 
 #[test]
-fn pi_ritual_sample_shows_every_step_across_parent_and_child() {
-    let run = parse(&main_file(&sample("ritual")), 0.0).unwrap();
+fn pi_ritual_sample_shows_the_transcript_steps_across_parent_and_child() {
+    let run = parse(&main_file(&sample("ritual")), 0.0, false).unwrap();
+    // check_green is the runner's own `stewards next`, never read from a transcript
     assert_eq!(
         run.ritual_steps,
-        RitualSteps {
-            status: true,
-            route: true,
-            brief: true,
-            next: true,
-            submit: true,
-            check_green: true,
-        }
+        steps(&["status", "route", "brief", "next", "submit"])
     );
-    // the usage record counts; the child's two messages count in total only
+    // the cache-warming `usage` record is kept apart; the child's two messages count in total only
+    let main = Tokens {
+        input: 80,
+        output: 40,
+        cache_read: 800,
+        cache_write: 160,
+    };
+    assert_eq!(run.main_tokens, main);
     assert_eq!(
-        run.main_tokens,
+        run.cache_warming,
         Tokens {
-            input: 81,
-            output: 41,
-            cache_read: 850,
-            cache_write: 160
+            input: 1,
+            output: 1,
+            cache_read: 50,
+            cache_write: 0
         }
     );
-    assert_eq!(run.total_tokens.sum(), 81 + 41 + 850 + 160 + 2 * 45);
+    assert_eq!(run.total_tokens.sum(), main.sum() + 2 * 45);
+    assert_eq!(run.peak_main_context, 130);
     assert_eq!(run.files_opened, ["api/items.py"]);
     assert_eq!(run.shell_commands.len(), 4);
 }
 
-fn shell(command: &str, ok: bool, at: &str) -> Action {
+#[test]
+fn a_cache_refresh_cost_is_in_cost_usd_but_not_in_tokens() {
+    let tmp = TempDir::new().unwrap();
+    copy_dir(&sample("subagent"), tmp.path());
+    let parent = main_file(tmp.path());
+    let before = parse(&parent, 0.0, false).unwrap();
+    let warm = r#"{"type":"usage","id":"w1","parentId":null,"timestamp":"2026-11-12T19:31:00.000Z","kind":"cache_warm","usage":{"input":1,"output":1,"cacheRead":9000,"cacheWrite":0,"cost":{"total":0.25}}}"#;
+    let text = std::fs::read_to_string(&parent).unwrap() + warm + "\n";
+    std::fs::write(&parent, text).unwrap();
+    let after = parse(&parent, 0.0, false).unwrap();
+    assert_eq!(after.main_tokens, before.main_tokens);
+    assert_eq!(after.total_tokens, before.total_tokens);
+    assert_eq!(after.peak_main_context, before.peak_main_context);
+    assert_eq!(after.cache_warming.cache_read, 9000);
+    assert!((after.cost_usd.unwrap() - before.cost_usd.unwrap() - 0.25).abs() < 1e-9);
+}
+
+fn shell(command: &str) -> Action {
     Action::Shell {
         command: command.into(),
-        ok,
-        at: at.into(),
     }
 }
 
@@ -118,59 +152,53 @@ fn dispatch(text: &str) -> Action {
     Action::Dispatch { text: text.into() }
 }
 
-fn edit(at: &str) -> Action {
-    Action::Edit { at: at.into() }
-}
-
 #[test]
 fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
-    let t = "2026-11-12T20:00:00.000Z";
     let cases: [(&str, Vec<Action>); 5] = [
-        ("status", vec![shell("stewards status", false, t)]),
-        (
-            "route",
-            vec![shell("cd /r && stewards route a.py", true, t)],
-        ),
+        ("status", vec![shell("stewards status")]),
+        ("route", vec![shell("cd /r && stewards route a.py")]),
         (
             "brief",
             vec![dispatch(
                 r#"{"task":"Read /r/.stewards/briefs/api-maintainer.md"}"#,
             )],
         ),
-        // a failing next is still the step, but not a green check
-        ("next", vec![shell("stewards next", false, t)]),
+        ("next", vec![shell("stewards next")]),
         (
             "submit",
-            vec![shell(
-                "stewards submit api --role tester --file a.json",
-                true,
-                t,
-            )],
+            vec![shell("stewards submit api --role tester --file a.json")],
         ),
     ];
     for (name, actions) in &cases {
-        let steps = ritual_steps(actions);
-        for other in RitualSteps::NAMES {
+        let found = ritual_steps(actions);
+        for other in RITUAL_STEPS {
             // submit implies brief; nothing else implies another step
             let expected = other == *name || (*name == "submit" && other == "brief");
-            assert_eq!(steps.get(other), expected, "{name}: {other}");
+            assert_eq!(found[other], expected, "{name}: {other}");
         }
     }
-    assert_eq!(ritual_steps(&[]), RitualSteps::default());
-    let green = ritual_steps(&[shell("stewards next", true, t)]);
-    assert!(green.check_green && green.next);
+    assert_eq!(ritual_steps(&[]), steps(&[]));
 }
 
 #[test]
-fn check_green_needs_a_passing_next_after_the_last_edit() {
-    let early = "2026-11-12T20:00:00.000Z";
-    let late = "2026-11-12T20:05:00.000Z";
-    let green_after = [edit(early), shell("stewards next", true, late)];
-    assert!(ritual_steps(&green_after).check_green);
-    let edit_after = [shell("stewards next", true, early), edit(late)];
-    assert!(!ritual_steps(&edit_after).check_green);
-    let red_after = [edit(early), shell("stewards next", false, late)];
-    assert!(!ritual_steps(&red_after).check_green);
+fn shell_reads_finds_the_files_simple_read_commands_name() {
+    assert_eq!(shell_reads("cat api/items.py"), ["api/items.py"]);
+    assert_eq!(
+        shell_reads("head -n 20 a.py && tail -5 b.py | less c.py"),
+        ["a.py", "b.py", "c.py"]
+    );
+    assert_eq!(
+        shell_reads("sed -n '1,40p' cli/src/main.rs"),
+        ["cli/src/main.rs"]
+    );
+    assert_eq!(shell_reads("sed 's/a/b/' x.py"), Vec::<&str>::new());
+    assert_eq!(
+        shell_reads("grep -n -A 3 create api/items.py client/client.ts 2>/dev/null"),
+        ["api/items.py", "client/client.ts"]
+    );
+    assert_eq!(shell_reads("rg priority"), Vec::<&str>::new());
+    assert_eq!(shell_reads("cat > new.py"), Vec::<&str>::new());
+    assert_eq!(shell_reads("ls api; echo cat"), Vec::<&str>::new());
 }
 
 #[test]
@@ -199,21 +227,29 @@ fn median_of_three_and_of_even_counts() {
     assert_eq!(median(&[]), None);
 }
 
-fn run_with(main: u64, total: u64, files: usize, steps: RitualSteps) -> Run {
+fn run_with(main: u64, total: u64, files: usize, ritual: RitualSteps) -> Run {
     let t = |n| Tokens {
         input: n,
         ..Tokens::default()
     };
+    let files: Vec<String> = (0..files).map(|n| format!("f{n}")).collect();
     Run {
         main_tokens: t(main),
         total_tokens: t(total),
+        cache_warming: Tokens::default(),
+        peak_main_context: main / 2,
         tool_calls: vec![],
-        files_opened: (0..files).map(|n| format!("f{n}")).collect(),
+        files_opened: files.clone(),
+        files_opened_tree: files,
         shell_commands: vec![],
-        ritual_steps: steps,
-        cost_usd: Some(0.1),
+        ritual_steps: ritual,
+        cost_usd: Some(main as f64 / 1000.0),
         duration_s: 1.0,
         model: None,
+        models: vec![],
+        stop_reason: Some("stop".into()),
+        failed_children: vec![],
+        truncated_lines: 0,
     }
 }
 
@@ -225,25 +261,21 @@ fn record(task: u32, arm: Arm, role: RunRole, run: u32, result: Run) -> RunRecor
         role,
         run,
         model: None,
+        thinking: "medium".into(),
+        model_mismatch: false,
         status: Status::Ok,
+        failure: None,
         transcript: None,
         workdir: PathBuf::new(),
+        leftovers: None,
+        next_check: None,
         result: Some(result),
         error: None,
     }
 }
 
-const ALL: RitualSteps = RitualSteps {
-    status: true,
-    route: true,
-    brief: true,
-    next: true,
-    submit: true,
-    check_green: true,
-};
-
 /// Three runs per arm of `task`: bare at 1000 main and 1000 total, full at the medians given.
-fn records(task: u32, full_main: u64, full_total: u64, steps: RitualSteps) -> Vec<RunRecord> {
+fn records(task: u32, full_main: u64, full_total: u64, ritual: RitualSteps) -> Vec<RunRecord> {
     let mut out = vec![];
     for run in 1..=3 {
         // the spread around the median must not matter
@@ -253,14 +285,14 @@ fn records(task: u32, full_main: u64, full_total: u64, steps: RitualSteps) -> Ve
             Arm::Bare,
             RunRole::Task,
             run,
-            run_with(1000 + spread, 1000 + spread, 10, RitualSteps::default()),
+            run_with(1000 + spread, 1000 + spread, 10, steps(&[])),
         ));
         out.push(record(
             task,
             Arm::Full,
             RunRole::Task,
             run,
-            run_with(full_main + spread, full_total + spread, 4, steps),
+            run_with(full_main + spread, full_total + spread, 4, ritual.clone()),
         ));
     }
     out
@@ -270,7 +302,7 @@ const ARMS: [Arm; 2] = [Arm::Bare, Arm::Full];
 
 #[test]
 fn token_criteria_boundaries() {
-    let grade = |main, total| grade_task(1, &records(1, main, total, ALL), &ARMS, 3);
+    let grade = |main, total| grade_task(1, &records(1, main, total, all()), &ARMS, 3);
     let at_limits = grade(800, 1100);
     assert_eq!(at_limits.verdict, Verdict::Pass, "{:?}", at_limits.reasons);
     assert_eq!(at_limits.criteria.len(), 3);
@@ -282,35 +314,56 @@ fn token_criteria_boundaries() {
 }
 
 #[test]
+fn cost_and_peak_context_ratios_are_report_only() {
+    // full costs and peaks 3x bare, yet the token criteria alone decide the verdict
+    let g = grade_task(1, &records(1, 3000, 1000, all()), &ARMS, 3);
+    let ratio = |n: &str| g.report_only.iter().find(|r| r.name == n).unwrap().ratio;
+    assert!((ratio("cost_usd").unwrap() - 3.0).abs() < 1e-9);
+    assert!((ratio("peak_main_context").unwrap() - 3.0).abs() < 1e-9);
+    assert_eq!(g.verdict, Verdict::Warn, "{:?}", g.reasons);
+    let pass = grade_task(1, &records(1, 500, 900, all()), &ARMS, 3);
+    assert_eq!(pass.verdict, Verdict::Pass);
+    assert!((pass.report_only[0].ratio.unwrap() - 0.5).abs() < 1e-9);
+}
+
+#[test]
 fn a_missing_ritual_step_is_a_warning() {
-    let steps = RitualSteps {
-        submit: false,
-        ..ALL
-    };
-    let g = grade_task(1, &records(1, 500, 900, steps), &ARMS, 3);
+    let mut ritual = all();
+    ritual.insert("submit", false);
+    let g = grade_task(1, &records(1, 500, 900, ritual), &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Warn);
     assert_eq!(g.reasons, ["ritual steps missing: submit"]);
 }
 
-/// Task 6 records with the full arm's task-6 files opened at `files`, against bare task 4 at 10.
-fn task6(files: usize) -> Vec<RunRecord> {
-    let mut out = records(6, 500, 900, ALL);
+/// Task 6 records with the full arm's task-6 files opened at `files`, against bare task 4 at `bare4`.
+fn task6_against(files: usize, bare4: usize) -> Vec<RunRecord> {
+    let mut out = records(6, 500, 900, all());
     for r in out.iter_mut().filter(|r| r.arm == Arm::Full) {
         r.result.as_mut().unwrap().files_opened = (0..files).map(|n| format!("f{n}")).collect();
     }
     for run in 1..=3 {
         for arm in ARMS {
-            out.push(record(5, arm, RunRole::Setup, run, run_with(1, 1, 0, ALL)));
+            out.push(record(
+                5,
+                arm,
+                RunRole::Setup,
+                run,
+                run_with(1, 1, 0, all()),
+            ));
         }
         out.push(record(
             4,
             Arm::Bare,
             RunRole::Task,
             run,
-            run_with(1000, 1000, 10, RitualSteps::default()),
+            run_with(1000, 1000, bare4, steps(&[])),
         ));
     }
     out
+}
+
+fn task6(files: usize) -> Vec<RunRecord> {
+    task6_against(files, 10)
 }
 
 #[test]
@@ -320,11 +373,22 @@ fn task_6_files_opened_is_at_most_half_of_bare_task_4() {
     let over = grade_task(6, &task6(6), &ARMS, 3);
     assert_eq!(over.verdict, Verdict::Warn);
     assert!(over.reasons[0].starts_with("files_opened 0.60"));
+    let none = grade_task(6, &task6_against(0, 0), &ARMS, 3);
+    assert_eq!(none.verdict, Verdict::Warn, "0 on both sides is not a pass");
+    assert_eq!(
+        none.reasons,
+        ["files_opened unmeasured: 0 files opened on both sides"]
+    );
+    assert!(
+        none.criteria
+            .iter()
+            .any(|c| c.name == "files_opened" && c.unmeasured)
+    );
 }
 
 #[test]
 fn a_timed_out_or_missing_run_makes_the_task_incomplete_with_medians_kept() {
-    let mut recs = records(1, 500, 900, ALL);
+    let mut recs = records(1, 500, 900, all());
     recs[1].status = Status::TimedOut; // full run 1
     let g = grade_task(1, &recs, &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Incomplete);
@@ -333,14 +397,14 @@ fn a_timed_out_or_missing_run_makes_the_task_incomplete_with_medians_kept() {
     assert_eq!(g.arms[1].main_tokens, Some(500.0));
     assert_eq!(g.arms[1].not_ok, 1);
 
-    let mut no_transcript = records(1, 500, 900, ALL);
+    let mut no_transcript = records(1, 500, 900, all());
     no_transcript[0].result = None;
     no_transcript[0].error = Some("no transcript".into());
     let g = grade_task(1, &no_transcript, &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Incomplete);
     assert_eq!(g.arms[0].main_tokens, None);
 
-    let short = records(1, 500, 900, ALL);
+    let short = records(1, 500, 900, all());
     let g = grade_task(1, &short[..4], &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Incomplete);
     assert!(
@@ -375,35 +439,228 @@ fn a_missing_pi_binary_is_a_clear_error() {
     assert!(err.fix.contains("pi-subagents"), "{}", err.fix);
 }
 
-#[cfg(unix)]
 #[test]
-fn pi_driver_records_a_timed_out_session_with_its_transcript() {
+fn the_eval_agent_dir_holds_only_auth_the_package_store_and_pi_subagents() {
+    let tmp = TempDir::new().unwrap();
+    let user = tmp.path().join("user");
+    std::fs::create_dir_all(user.join("npm/node_modules/pi-subagents")).unwrap();
+    std::fs::create_dir_all(user.join("extensions/x")).unwrap();
+    std::fs::write(user.join("AGENTS.md"), "personal rules").unwrap();
+    std::fs::write(user.join("auth.json"), "{}").unwrap();
+    std::fs::write(user.join("models-store.json"), "{}").unwrap();
+    std::fs::write(
+        user.join("settings.json"),
+        r#"{"defaultModel":"m","packages":["npm:pi-subagents","npm:other"],"cacheWarming":"off"}"#,
+    )
+    .unwrap();
+    let dir = tmp.path().join("a");
+    let note = agent_dir(&user, Path::new("/home/u"), &dir).unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(
+        settings,
+        serde_json::json!({
+            "packages": ["npm:pi-subagents"],
+            "skills": ["!/home/u/.agents/skills/**"],
+            "defaultModel": "m",
+        })
+    );
+    assert_eq!(
+        std::fs::read_link(dir.join("auth.json")).unwrap(),
+        user.join("auth.json")
+    );
+    assert_eq!(
+        std::fs::read_link(dir.join("npm")).unwrap(),
+        user.join("npm")
+    );
+    assert!(
+        std::fs::symlink_metadata(dir.join("models-store.json"))
+            .unwrap()
+            .is_file()
+    );
+    for absent in ["AGENTS.md", "extensions"] {
+        assert!(!dir.join(absent).exists(), "{absent}");
+    }
+    assert!(note.contains("npm:pi-subagents"), "{note}");
+
+    std::fs::remove_dir_all(user.join("npm")).unwrap();
+    let err = agent_dir(&user, Path::new("/home/u"), &tmp.path().join("b"))
+        .err()
+        .unwrap();
+    assert_eq!(
+        err.downcast_ref::<CliError>().unwrap().code,
+        "harness_missing"
+    );
+}
+
+/// Number of live (non-zombie) processes whose cwd is under `dir`.
+fn alive_under(dir: &Path) -> usize {
+    let dir = dir.canonicalize().unwrap();
+    std::fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.parse::<u32>().is_ok())
+        })
+        .filter(|e| std::fs::read_link(e.path().join("cwd")).is_ok_and(|c| c.starts_with(&dir)))
+        .count()
+}
+
+#[test]
+fn pi_driver_passes_thinking_and_the_agent_dir_and_a_timed_out_sessions_detached_child_is_killed() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = TempDir::new().unwrap();
     let bin = tmp.path().join("pi");
-    // writes a session file into --session-dir, then hangs
+    // records its argv and env, writes a session file, starts a detached child, then hangs
     std::fs::write(
         &bin,
-        "#!/bin/sh\nwhile [ \"$1\" != --session-dir ]; do shift; done\necho '{\"type\":\"session\",\"id\":\"s\",\"timestamp\":\"t\",\"cwd\":\"/r\"}' > \"$2/s.jsonl\"\nexec sleep 30\n",
+        "#!/bin/sh\necho \"$@\" > ../args\nenv > ../env\nwhile [ \"$1\" != --session-dir ]; do shift; done\necho '{\"type\":\"session\",\"id\":\"s\",\"timestamp\":\"t\",\"cwd\":\"/r\"}' > \"$2/s.jsonl\"\nsetsid sleep 300 >/dev/null 2>&1 &\nexec sleep 30\n",
     )
     .unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     let pi = Pi {
         bin,
         limit: Duration::from_secs(1),
+        agent_dir: Some(tmp.path().join("a")),
     };
+    let root = tmp.path().join("run");
+    let dir = root.join("repo");
+    std::fs::create_dir_all(&dir).unwrap();
     let sessions = tmp.path().join("sessions");
-    let path = std::env::var_os("PATH").unwrap();
-    let s = pi.start(tmp.path(), "hi", None, &sessions, &path).unwrap();
+    let env = [
+        ("PATH", std::env::var_os("PATH").unwrap()),
+        ("STEWARDS_HOME", tmp.path().join("h").into_os_string()),
+    ];
+    let s = pi.start(&dir, "hi", None, "low", &sessions, &env).unwrap();
     assert_eq!(s.status, Status::TimedOut);
     assert!(s.duration_s < 20.0, "{}", s.duration_s);
     assert_eq!(s.transcript, Some(sessions.join("s.jsonl")));
+    let args = std::fs::read_to_string(root.join("args")).unwrap();
+    assert!(args.contains("--thinking low"), "{args}");
+    let vars = std::fs::read_to_string(root.join("env")).unwrap();
+    let agent = format!("PI_CODING_AGENT_DIR={}\n", tmp.path().join("a").display());
+    assert!(vars.contains(&agent), "{vars}");
+    assert!(vars.contains("STEWARDS_HOME="), "{vars}");
+
+    // the process-group kill does not reach the detached child; the runner's sweep does
+    assert_eq!(alive_under(&root), 1);
+    let left = kill_leftovers(&root).unwrap().unwrap();
+    assert_eq!(left.killed, 1);
+    assert!(left.survived.is_empty());
+    assert_eq!(alive_under(&root), 0);
 }
 
-/// Copies a recorded sample as each session's transcript, with a fixed status.
+#[test]
+fn a_truncated_last_line_is_tolerated_only_for_a_failed_session() {
+    let tmp = TempDir::new().unwrap();
+    copy_dir(&sample("subagent"), tmp.path());
+    let parent = main_file(tmp.path());
+    let text = std::fs::read_to_string(&parent).unwrap();
+    std::fs::write(&parent, text.clone() + "{\"type\":\"mess").unwrap();
+    assert!(parse(&parent, 0.0, false).is_err());
+    let run = parse(&parent, 0.0, true).unwrap();
+    assert_eq!(run.truncated_lines, 1);
+    assert_eq!(run.main_tokens.output, 743);
+    // a bad line anywhere else fails even a failed session's parse
+    std::fs::write(&parent, "{\"type\":\"mess\n".to_string() + &text).unwrap();
+    assert!(parse(&parent, 0.0, true).is_err());
+}
+
+#[test]
+fn two_top_level_session_files_are_an_error() {
+    let tmp = TempDir::new().unwrap();
+    copy_dir(&sample("subagent"), tmp.path());
+    let parent = main_file(tmp.path());
+    std::fs::copy(&parent, tmp.path().join("zz-second.jsonl")).unwrap();
+    let err = parse(&parent, 0.0, false).err().unwrap();
+    assert!(
+        format!("{err:#}").contains("2 top-level session files"),
+        "{err:#}"
+    );
+}
+
+/// The subagent sample with the last `stopReason` of the main file, or of the child, replaced.
+fn stopped_sample(tmp: &Path, child: bool, reason: &str) -> PathBuf {
+    let dir = tmp.join(format!("sample-{child}-{reason}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    copy_dir(&sample("subagent"), &dir);
+    let mut file = main_file(&dir);
+    if child {
+        file = file
+            .with_extension("")
+            .join("b5d51927-cb55-4247-a969-9448b23c2c26/run-0/session.jsonl");
+    }
+    let text = std::fs::read_to_string(&file).unwrap();
+    let at = text.rfind("\"stopReason\":\"stop\"").unwrap();
+    let text = format!(
+        "{}\"stopReason\":\"{reason}\"{}",
+        &text[..at],
+        &text[at + "\"stopReason\":\"stop\"".len()..]
+    );
+    std::fs::write(&file, text).unwrap();
+    dir
+}
+
+#[test]
+fn a_main_or_child_session_that_stopped_with_an_error_is_a_failed_run() {
+    let tmp = TempDir::new().unwrap();
+    let main_error = parse(
+        &main_file(&stopped_sample(tmp.path(), false, "error")),
+        0.0,
+        false,
+    )
+    .unwrap();
+    assert_eq!(main_error.stop_reason.as_deref(), Some("error"));
+    let child_length = parse(
+        &main_file(&stopped_sample(tmp.path(), true, "length")),
+        0.0,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        child_length.failed_children,
+        ["b5d51927-cb55-4247-a969-9448b23c2c26/run-0/session.jsonl stopped with `length`"]
+    );
+
+    for (child, reason, why) in [
+        (false, "aborted", "main session stopped with `aborted`"),
+        (true, "error", "child b5d51927"),
+    ] {
+        let run = TempDir::new().unwrap();
+        let driver = Replay::new(stopped_sample(tmp.path(), child, reason), Status::Ok);
+        let summary = execute(&driver, &plan(run.path(), 1, None)).unwrap();
+        let runs = run_files(&run.path().join("results"));
+        assert_eq!(
+            runs[0]["status"], "failed",
+            "Pi exited 0, the transcript says otherwise"
+        );
+        assert!(
+            runs[0]["failure"].as_str().unwrap().contains(why),
+            "{}",
+            runs[0]["failure"]
+        );
+        assert_eq!(summary.grades[0].arms[0].not_ok, 1);
+    }
+}
+
+/// Copies a recorded sample as each session's transcript, with a fixed status; leaves a detached
+/// process running in the run directory, and on the adoption prompt writes `adopt_writes`.
 struct Replay {
     sample: PathBuf,
     status: Status,
+    adopt_writes: Vec<(&'static str, &'static str)>,
+}
+
+impl Replay {
+    fn new(sample: PathBuf, status: Status) -> Replay {
+        Replay {
+            sample,
+            status,
+            adopt_writes: vec![],
+        }
+    }
 }
 
 impl Driver for Replay {
@@ -412,10 +669,36 @@ impl Driver for Replay {
         dir: &Path,
         prompt: &str,
         _: Option<&str>,
+        thinking: &str,
         sessions: &Path,
-        _: &OsStr,
+        env: &[(&str, std::ffi::OsString)],
     ) -> anyhow::Result<Session> {
         assert!(dir.join("api").is_dir() && !prompt.is_empty());
+        assert_eq!(thinking, "medium");
+        // nothing a session can see names the arm, stewards, or the eval
+        let seen: Vec<String> = [dir, sessions]
+            .iter()
+            .map(|p| p.display().to_string())
+            .chain(
+                env.iter()
+                    .skip(1)
+                    .map(|(_, v)| v.to_string_lossy().into_owned()),
+            )
+            .collect();
+        for p in &seen {
+            for word in ["bare", "block", "full", "stewards", "eval", "results"] {
+                assert!(!p.contains(word), "{p} names {word}");
+            }
+        }
+        if prompt == ADOPT_PROMPT {
+            for (path, text) in &self.adopt_writes {
+                std::fs::write(dir.join(path), text)?;
+            }
+        }
+        std::process::Command::new("sh")
+            .args(["-c", "setsid sleep 300 >/dev/null 2>&1 &"])
+            .current_dir(dir)
+            .status()?;
         std::fs::create_dir_all(sessions)?;
         copy_dir(&self.sample, sessions);
         Ok(Session {
@@ -425,8 +708,13 @@ impl Driver for Replay {
         })
     }
 
-    fn parse(&self, transcript: &Path, duration_s: f64) -> anyhow::Result<Run> {
-        parse(transcript, duration_s)
+    fn parse(
+        &self,
+        transcript: &Path,
+        duration_s: f64,
+        truncation_ok: bool,
+    ) -> anyhow::Result<Run> {
+        parse(transcript, duration_s, truncation_ok)
     }
 }
 
@@ -436,13 +724,16 @@ fn plan(tmp: &Path, runs: u32, max_cost: Option<f64>) -> Plan {
         arms: vec![Arm::Bare],
         runs,
         model: None,
+        thinking: "medium".into(),
         max_cost,
         setup_dir: None,
         evals: Path::new(env!("CARGO_MANIFEST_DIR")).join("evals"),
         results: tmp.join("results"),
-        work: tmp.join("work"),
+        work: neutral_work_dir(tmp),
+        keep_work: false,
         stewards: PathBuf::from(env!("CARGO_BIN_EXE_stewards")),
         path: std::env::var_os("PATH").unwrap(),
+        harness_setup: None,
     }
 }
 
@@ -458,30 +749,59 @@ fn run_files(results: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn summary_json(tmp: &Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(tmp.join("results/summary.json")).unwrap())
+        .unwrap()
+}
+
 #[test]
 fn max_cost_stops_before_the_run_that_would_exceed_it() {
     let tmp = TempDir::new().unwrap();
-    let driver = Replay {
-        sample: sample("subagent"),
-        status: Status::Ok,
-    };
+    let driver = Replay::new(sample("subagent"), Status::Ok);
     // each replayed session costs about $0.00206: two fit under $0.005, a third would not
-    let summary = execute(&driver, &plan(tmp.path(), 3, Some(0.005))).unwrap();
+    let p = plan(tmp.path(), 3, Some(0.005));
+    let summary = execute(&driver, &p).unwrap();
     assert!(summary.stopped_by_max_cost);
     assert_eq!(summary.sessions, 2);
     assert_eq!(run_files(&tmp.path().join("results")).len(), 2);
     assert_eq!(summary.verdict, Verdict::Incomplete);
     assert!(tmp.path().join("results/summary.json").is_file());
     assert!(tmp.path().join("results/summary.md").is_file());
+    // transcripts are kept in the results; the work directory is gone
+    assert!(main_file(&tmp.path().join("results/sessions/001-bare-t1-r1")).is_file());
+    assert!(!p.work.exists());
 }
 
 #[test]
-fn a_timed_out_run_is_recorded_not_dropped() {
+fn a_session_whose_cost_is_unknown_stops_max_cost() {
     let tmp = TempDir::new().unwrap();
-    let driver = Replay {
-        sample: sample("subagent"),
-        status: Status::TimedOut,
-    };
+    let broken = tmp.path().join("broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    copy_dir(&sample("subagent"), &broken);
+    let parent = main_file(&broken);
+    let text = std::fs::read_to_string(&parent).unwrap();
+    std::fs::write(&parent, "not json\n".to_string() + &text).unwrap();
+    let driver = Replay::new(broken, Status::Ok);
+    let summary = execute(&driver, &plan(tmp.path(), 3, Some(100.0))).unwrap();
+    assert_eq!(summary.sessions, 1);
+    assert!(summary.stopped_by_max_cost);
+    assert_eq!(summary.unknown_cost_sessions, ["001-bare-t1-r1"]);
+    let runs = run_files(&tmp.path().join("results"));
+    assert!(
+        runs[0]["error"].as_str().unwrap().contains(":1"),
+        "{}",
+        runs[0]["error"]
+    );
+    // without --max-cost the eval goes on
+    let tmp = TempDir::new().unwrap();
+    let summary = execute(&driver, &plan(tmp.path(), 2, None)).unwrap();
+    assert_eq!(summary.sessions, 2);
+}
+
+#[test]
+fn a_timed_out_run_is_recorded_not_dropped_and_its_leftover_process_killed() {
+    let tmp = TempDir::new().unwrap();
+    let driver = Replay::new(sample("subagent"), Status::TimedOut);
     let summary = execute(&driver, &plan(tmp.path(), 1, None)).unwrap();
     let runs = run_files(&tmp.path().join("results"));
     assert_eq!(runs.len(), 1);
@@ -489,8 +809,13 @@ fn a_timed_out_run_is_recorded_not_dropped() {
     assert_eq!(runs[0]["arm"], "bare");
     assert_eq!(runs[0]["task"], 1);
     assert_eq!(runs[0]["role"], "task");
+    assert_eq!(runs[0]["thinking"], "medium");
     assert_eq!(runs[0]["result"]["main_tokens"]["output"], 743);
-    assert!(runs[0]["transcript"].as_str().unwrap().ends_with(".jsonl"));
+    assert_eq!(runs[0]["leftovers"]["killed"], 1);
+    assert_eq!(runs[0]["next_check"], serde_json::Value::Null);
+    let transcript = PathBuf::from(runs[0]["transcript"].as_str().unwrap());
+    assert!(transcript.starts_with(tmp.path().join("results/sessions")));
+    assert!(transcript.is_file());
     assert_eq!(summary.grades[0].arms[0].not_ok, 1);
 }
 
@@ -513,7 +838,6 @@ fn arms_sh_writes_the_block_init_writes() {
     assert_eq!(&arms[start..end], stewards::guide::block());
 }
 
-#[cfg(unix)]
 #[test]
 fn path_without_stewards_keeps_the_other_tools_of_that_directory() {
     let tmp = TempDir::new().unwrap();
@@ -531,41 +855,93 @@ fn path_without_stewards_keeps_the_other_tools_of_that_directory() {
     assert_eq!(dirs[1], b);
 }
 
+fn full_plan(tmp: &Path) -> Plan {
+    let mut p = plan(tmp, 1, None);
+    p.arms = vec![Arm::Bare, Arm::Full];
+    p
+}
+
+fn setup_error(err: anyhow::Error) -> CliError {
+    let e = err.downcast_ref::<CliError>().unwrap().clone();
+    assert_eq!(e.code, "eval_setup_incomplete", "{e}");
+    e
+}
+
 #[test]
 fn full_arm_sets_the_hand_drawn_units_and_stops_when_adoption_is_not_clean() {
     let tmp = TempDir::new().unwrap();
-    let driver = Replay {
-        sample: sample("subagent"),
-        status: Status::Ok,
-    };
-    let mut p = plan(tmp.path(), 1, None);
-    p.arms = vec![Arm::Bare, Arm::Full];
+    let mut driver = Replay::new(sample("subagent"), Status::Ok);
+    // a tester may add a test file
+    driver.adopt_writes = vec![("api/test_new.py", "pass\n")];
+    let p = full_plan(tmp.path());
     // the replayed adoption session reviews nothing, so `stewards next` still lists jobs
-    let err = execute(&driver, &p).err().unwrap();
-    assert_eq!(
-        err.downcast_ref::<CliError>().unwrap().code,
-        "eval_setup_incomplete"
+    let err = setup_error(execute(&driver, &p).err().unwrap());
+    assert!(
+        err.message.contains("`stewards next` is not clean"),
+        "{}",
+        err.message
     );
-    let adopted = tmp.path().join("work/adopted");
+    let summary = summary_json(tmp.path());
+    let adopted = PathBuf::from(summary["adoption"]["workdir"].as_str().unwrap());
     assert_eq!(
         std::fs::read_to_string(adopted.join(".stewards/units.toml")).unwrap(),
         std::fs::read_to_string(p.evals.join("full-units.toml")).unwrap()
     );
-    assert_eq!(
-        stewards::eval::unowned_files(&adopted).unwrap(),
-        [".gitignore"]
-    );
-    let summary: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(tmp.path().join("results/summary.json")).unwrap(),
-    )
-    .unwrap();
-    let note = summary["units_note"].as_str().unwrap();
+    let note = summary["setup"]["units"].as_str().unwrap();
     assert!(
         note.contains("set by hand")
             && note.contains("proposed cli and left 5 tracked file(s) unowned"),
         "{note}"
     );
+    assert_eq!(
+        summary["setup"]["added_paths"],
+        serde_json::json!(["AGENTS.md", "api/test_new.py"])
+    );
     assert_eq!(summary["adoption"]["label"], "001-adopt");
+    assert_eq!(summary["adoption"]["leftovers"]["killed"], 1);
+    // the runner's own check: exit 1 with jobs listed
+    let check = next_check(&p.stewards, &adopted).unwrap();
+    assert_eq!(check.exit_code, Some(1));
+    assert!(check.jobs.unwrap() > 0);
     // no full or bare task run started after the failed setup
     assert_eq!(run_files(&tmp.path().join("results")).len(), 1);
+}
+
+#[test]
+fn adoption_that_changes_the_fixtures_code_stops_the_eval() {
+    let tmp = TempDir::new().unwrap();
+    let mut driver = Replay::new(sample("subagent"), Status::Ok);
+    driver.adopt_writes = vec![("api/items.py", "fixed\n"), ("api/new.py", "x\n")];
+    let err = setup_error(execute(&driver, &full_plan(tmp.path())).err().unwrap());
+    assert!(err.message.contains("M api/items.py"), "{}", err.message);
+    assert!(err.message.contains("A api/new.py"), "{}", err.message);
+    assert!(err.fix.contains("api/test_*.py"), "{}", err.fix);
+}
+
+#[test]
+fn a_setup_dir_must_be_a_clean_git_repository() {
+    let tmp = TempDir::new().unwrap();
+    let driver = Replay::new(sample("subagent"), Status::Ok);
+    let mut p = full_plan(tmp.path());
+    let setup = tmp.path().join("setup");
+    std::fs::create_dir_all(&setup).unwrap();
+    p.setup_dir = Some(setup.clone());
+    let err = setup_error(execute(&driver, &p).err().unwrap());
+    assert!(
+        err.message.contains("not a git repository"),
+        "{}",
+        err.message
+    );
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&setup)
+        .status()
+        .unwrap();
+    std::fs::write(setup.join("loose"), "").unwrap();
+    let err = setup_error(execute(&driver, &p).err().unwrap());
+    assert!(
+        err.message.contains("uncommitted changes"),
+        "{}",
+        err.message
+    );
 }

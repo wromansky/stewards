@@ -136,9 +136,9 @@ enum Command {
         #[arg(long)]
         arm: Option<String>,
         /// Repeatable; all six when omitted
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=6))]
         task: Vec<u32>,
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
         runs: u32,
         #[arg(long, value_name = "usd")]
         max_cost: Option<f64>,
@@ -147,9 +147,15 @@ enum Command {
         no_developers: bool,
         #[arg(long, value_name = "id")]
         model: Option<String>,
+        /// The thinking level of every session
+        #[arg(long, default_value = "medium", value_parser = ["off", "minimal", "low", "medium", "high", "xhigh", "max"])]
+        thinking: String,
         /// An adopted fixture to copy for the full arm
         #[arg(long, value_name = "dir")]
         setup_dir: Option<PathBuf>,
+        /// Keep each run's fixture copy instead of deleting it after the run
+        #[arg(long)]
+        keep_work: bool,
     },
     /// Shell completions
     Completions { shell: String },
@@ -265,7 +271,9 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
             max_cost,
             no_developers,
             model,
+            thinking,
             setup_dir,
+            keep_work,
         } => eval::run(
             g,
             eval::Flags {
@@ -276,7 +284,9 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
                 max_cost,
                 no_developers,
                 model: model.as_deref(),
+                thinking: &thinking,
                 setup_dir: setup_dir.as_deref(),
+                keep_work,
             },
         ),
         Command::Completions { shell } => completions::run(g, &shell, Cli::command()),

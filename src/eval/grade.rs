@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use super::{Arm, Plan, RitualSteps, Run, RunRecord, RunRole, Status};
+use super::{
+    Arm, Plan, RITUAL_NOTE, RITUAL_STEPS, RitualSteps, Run, RunRecord, RunRole, SetupNotes, Status,
+};
 use crate::output::Human;
 
 /// Medians of `full` over `bare`: main context at most this share, total at most this share.
@@ -62,7 +64,11 @@ pub struct ArmStats {
     pub not_ok: usize,
     pub main_tokens: Option<f64>,
     pub total_tokens: Option<f64>,
+    /// Main session only.
     pub files_opened: Option<f64>,
+    /// The whole session tree.
+    pub files_opened_tree: Option<f64>,
+    pub peak_main_context: Option<f64>,
     pub cost_usd: Option<f64>,
     /// Each step present in a majority of runs; `None` outside the `full` arms.
     pub ritual: Option<RitualSteps>,
@@ -70,21 +76,20 @@ pub struct ArmStats {
 
 pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
     let ritual = arm.is_full().then(|| {
-        let has = |name: &str| {
-            let yes = runs
-                .iter()
-                .filter(|r| r.result.as_ref().is_some_and(|x| x.ritual_steps.get(name)))
-                .count();
-            yes * 2 > runs.len()
-        };
-        RitualSteps {
-            status: has("status"),
-            route: has("route"),
-            brief: has("brief"),
-            next: has("next"),
-            submit: has("submit"),
-            check_green: has("check_green"),
-        }
+        RITUAL_STEPS
+            .iter()
+            .map(|&name| {
+                let yes = runs
+                    .iter()
+                    .filter(|r| {
+                        r.result
+                            .as_ref()
+                            .is_some_and(|x| x.ritual_steps.get(name) == Some(&true))
+                    })
+                    .count();
+                (name, yes * 2 > runs.len())
+            })
+            .collect()
     });
     ArmStats {
         arm,
@@ -93,6 +98,8 @@ pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
         main_tokens: median_of(runs, |r| Some(r.main_tokens.sum() as f64)),
         total_tokens: median_of(runs, |r| Some(r.total_tokens.sum() as f64)),
         files_opened: median_of(runs, |r| Some(r.files_opened.len() as f64)),
+        files_opened_tree: median_of(runs, |r| Some(r.files_opened_tree.len() as f64)),
+        peak_main_context: median_of(runs, |r| Some(r.peak_main_context as f64)),
         cost_usd: median_of(runs, |r| r.cost_usd),
         ritual,
     }
@@ -105,6 +112,18 @@ pub struct Criterion {
     pub value: f64,
     pub limit: f64,
     pub ok: bool,
+    /// Nothing to compare (`files_opened` 0 on both sides): not ok, and not a measured failure.
+    pub unmeasured: bool,
+}
+
+/// A report-only ratio of `full` over `bare` medians, outside the verdict.
+#[derive(Debug, Clone, Serialize)]
+pub struct Ratio {
+    pub name: &'static str,
+    pub full: Option<f64>,
+    pub bare: Option<f64>,
+    /// `None` when either median is missing or `bare` is 0.
+    pub ratio: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,6 +135,8 @@ pub struct TaskGrade {
     pub arms: Vec<ArmStats>,
     /// Empty when the verdict is `incomplete`.
     pub criteria: Vec<Criterion>,
+    /// Cost and peak main context, `full` over `bare`; they do not change the verdict.
+    pub report_only: Vec<Ratio>,
 }
 
 fn runs_of(records: &[RunRecord], task: u32, arm: Arm, role: RunRole) -> Vec<&RunRecord> {
@@ -162,7 +183,11 @@ pub fn grade_task(task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> 
         }
         for r in rs {
             if r.status != Status::Ok {
-                reasons.push(format!("{what} run {}: {}", r.run, r.status.as_str()));
+                let why = r
+                    .failure
+                    .as_ref()
+                    .map_or(String::new(), |f| format!(" ({f})"));
+                reasons.push(format!("{what} run {}: {}{why}", r.run, r.status.as_str()));
             } else if r.result.is_none() {
                 reasons.push(format!(
                     "{what} run {}: {}",
@@ -172,12 +197,32 @@ pub fn grade_task(task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> 
             }
         }
     }
+    let report_only = full
+        .map(|f| {
+            let stat = |a: Arm| stats.iter().find(|s| s.arm == a);
+            let (b, f) = (stat(Arm::Bare), stat(f));
+            let ratio = |name, m: fn(&ArmStats) -> Option<f64>| {
+                let (full, bare) = (f.and_then(m), b.and_then(m));
+                Ratio {
+                    name,
+                    full,
+                    bare,
+                    ratio: full.zip(bare.filter(|b| *b > 0.0)).map(|(f, b)| f / b),
+                }
+            };
+            vec![
+                ratio("cost_usd", |s| s.cost_usd),
+                ratio("peak_main_context", |s| s.peak_main_context),
+            ]
+        })
+        .unwrap_or_default();
     let incomplete = |reasons: Vec<String>, stats: Vec<ArmStats>| TaskGrade {
         task,
         verdict: Verdict::Incomplete,
         reasons,
         arms: stats,
         criteria: vec![],
+        report_only: report_only.clone(),
     };
     let Some(full) = full.filter(|_| reasons.is_empty()) else {
         return incomplete(reasons, stats);
@@ -196,6 +241,7 @@ pub fn grade_task(task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> 
             value,
             limit,
             ok: value <= limit,
+            unmeasured: false,
         })
     };
     push(
@@ -210,29 +256,43 @@ pub fn grade_task(task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> 
     );
     if task == 6 {
         let bare4 = arm_stats(Arm::Bare, &runs_of(records, 4, Arm::Bare, RunRole::Task));
-        push(
-            "files_opened",
-            ratio(f.files_opened, bare4.files_opened),
-            FILES_LIMIT,
-        );
+        if f.files_opened == Some(0.0) && bare4.files_opened == Some(0.0) {
+            criteria.push(Criterion {
+                name: "files_opened",
+                value: 0.0,
+                limit: FILES_LIMIT,
+                ok: false,
+                unmeasured: true,
+            });
+            reasons.push("files_opened unmeasured: 0 files opened on both sides".into());
+        } else {
+            push(
+                "files_opened",
+                ratio(f.files_opened, bare4.files_opened),
+                FILES_LIMIT,
+            );
+        }
     }
-    if let Some(steps) = f.ritual {
-        let present = RitualSteps::NAMES.iter().filter(|n| steps.get(n)).count();
-        let missing: Vec<&str> = RitualSteps::NAMES
+    if let Some(steps) = &f.ritual {
+        let missing: Vec<&str> = RITUAL_STEPS
             .into_iter()
-            .filter(|n| !steps.get(n))
+            .filter(|n| steps.get(n) != Some(&true))
             .collect();
         criteria.push(Criterion {
             name: "ritual",
-            value: present as f64,
-            limit: RitualSteps::NAMES.len() as f64,
+            value: (RITUAL_STEPS.len() - missing.len()) as f64,
+            limit: RITUAL_STEPS.len() as f64,
             ok: missing.is_empty(),
+            unmeasured: false,
         });
         if !missing.is_empty() {
             reasons.push(format!("ritual steps missing: {}", missing.join(", ")));
         }
     }
-    for c in criteria.iter().filter(|c| !c.ok && c.name != "ritual") {
+    for c in criteria
+        .iter()
+        .filter(|c| !c.ok && !c.unmeasured && c.name != "ritual")
+    {
         reasons.push(format!("{} {:.2} over {:.2}", c.name, c.value, c.limit));
     }
     let failed = |n: &str| criteria.iter().any(|c| c.name == n && !c.ok);
@@ -249,6 +309,7 @@ pub fn grade_task(task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> 
         reasons,
         arms: stats,
         criteria,
+        report_only,
     }
 }
 
@@ -264,21 +325,14 @@ pub fn suite_verdict(grades: &[TaskGrade]) -> Verdict {
     }
 }
 
-/// The adoption session's numbers, kept apart from the graded runs.
-#[derive(Debug, Clone, Serialize)]
-pub struct Adoption {
-    pub label: String,
-    pub status: Status,
-    pub main_tokens: Option<u64>,
-    pub total_tokens: Option<u64>,
-    pub cost_usd: Option<f64>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct Summary {
     pub results: PathBuf,
     pub harness: &'static str,
+    /// The harness setup the sessions ran with (for Pi: the eval's agent directory).
+    pub harness_setup: Option<String>,
     pub model: Option<String>,
+    pub thinking: String,
     pub arms: Vec<Arm>,
     pub tasks: Vec<u32>,
     pub runs_per_arm: u32,
@@ -286,15 +340,20 @@ pub struct Summary {
     pub max_cost_usd: Option<f64>,
     /// Summed from the transcripts' own cost figures; sessions without one add nothing.
     pub spent_usd: f64,
+    /// Sessions whose transcript could not be parsed: their cost is unknown, and after one
+    /// `--max-cost` stops the eval, since it can no longer bound the spend.
+    pub unknown_cost_sessions: Vec<String>,
     pub stopped_by_max_cost: bool,
     /// The `--setup-dir` copied for the `full` arms, when one was given.
     pub setup_dir: Option<PathBuf>,
-    pub adoption: Option<Adoption>,
-    /// How the `full` arm's units were set, in plain words.
-    pub units_note: Option<String>,
+    /// The adoption session's record, kept apart from the graded runs.
+    pub adoption: Option<RunRecord>,
+    pub setup: SetupNotes,
+    /// How far to trust the ritual steps.
+    pub ritual_note: &'static str,
+    /// Runs whose session tree used a model other than the requested one.
+    pub model_mismatches: Vec<String>,
     pub verdict: Verdict,
-    /// One line per task with the verdict `warn`.
-    pub warnings: Vec<String>,
     pub grades: Vec<TaskGrade>,
 }
 
@@ -302,27 +361,23 @@ pub fn summarize(
     plan: &Plan,
     records: &[RunRecord],
     stopped: bool,
-    units_note: Option<String>,
+    unknown_cost: &[String],
+    setup: SetupNotes,
 ) -> Summary {
     let grades: Vec<TaskGrade> = plan
         .tasks
         .iter()
         .map(|&t| grade_task(t, records, &plan.arms, plan.runs))
         .collect();
-    let adoption = records.iter().find(|r| r.task.is_none()).map(|r| Adoption {
-        label: r.label.clone(),
-        status: r.status,
-        main_tokens: r.result.as_ref().map(|x| x.main_tokens.sum()),
-        total_tokens: r.result.as_ref().map(|x| x.total_tokens.sum()),
-        cost_usd: r.result.as_ref().and_then(|x| x.cost_usd),
-    });
     Summary {
         results: plan.results.clone(),
         harness: "pi",
+        harness_setup: plan.harness_setup.clone(),
         model: plan
             .model
             .clone()
             .or_else(|| records.iter().find_map(|r| r.model.clone())),
+        thinking: plan.thinking.clone(),
         arms: plan.arms.clone(),
         tasks: plan.tasks.clone(),
         runs_per_arm: plan.runs,
@@ -332,16 +387,21 @@ pub fn summarize(
             .iter()
             .filter_map(|r| r.result.as_ref().and_then(|x| x.cost_usd))
             .sum(),
+        unknown_cost_sessions: unknown_cost.to_vec(),
         stopped_by_max_cost: stopped,
         setup_dir: plan.setup_dir.clone(),
-        adoption,
-        units_note,
-        verdict: suite_verdict(&grades),
-        warnings: grades
+        adoption: records.iter().find(|r| r.task.is_none()).cloned(),
+        setup,
+        ritual_note: RITUAL_NOTE,
+        model_mismatches: records
             .iter()
-            .filter(|g| g.verdict == Verdict::Warn)
-            .map(|g| format!("task {}: {}", g.task, g.reasons.join("; ")))
+            .filter(|r| r.model_mismatch)
+            .map(|r| {
+                let models = r.result.as_ref().map_or(vec![], |x| x.models.clone());
+                format!("{}: {}", r.label, models.join(", "))
+            })
             .collect(),
+        verdict: suite_verdict(&grades),
         grades,
     }
 }
@@ -350,15 +410,20 @@ fn num(x: Option<f64>) -> String {
     x.map_or("null".into(), |x| format!("{x:.0}"))
 }
 
+fn usd(x: Option<f64>) -> String {
+    x.map_or("null".into(), |c| format!("{c:.2}"))
+}
+
 /// The short human table written to `summary.md`.
 pub fn render(s: &Summary) -> String {
     let mut out = vec![
         format!("# eval: {}", s.verdict.as_str()),
         String::new(),
         format!(
-            "{} sessions, model {}, spent ${:.2}{}{}",
+            "{} sessions, model {}, thinking {}, spent ${:.2}{}{}",
             s.sessions,
             s.model.as_deref().unwrap_or("(harness default)"),
+            s.thinking,
             s.spent_usd,
             s.max_cost_usd
                 .map_or(String::new(), |m| format!(" of ${m:.2}")),
@@ -370,38 +435,71 @@ pub fn render(s: &Summary) -> String {
         ),
         format!("results: {}", s.results.display()),
     ];
+    if !s.unknown_cost_sessions.is_empty() {
+        out.push(format!(
+            "cost unknown (transcript not parsed): {}; --max-cost cannot bound the spend after one, so it stops the eval",
+            s.unknown_cost_sessions.join(", ")
+        ));
+    }
+    if let Some(h) = &s.harness_setup {
+        out.push(h.clone());
+    }
     if let Some(a) = &s.adoption {
+        let r = a.result.as_ref();
         out.push(format!(
             "adoption ({}): {}, main {}, total {}, ${}",
             a.label,
             a.status.as_str(),
-            num(a.main_tokens.map(|x| x as f64)),
-            num(a.total_tokens.map(|x| x as f64)),
-            a.cost_usd.map_or("null".into(), |c| format!("{c:.2}"))
+            num(r.map(|x| x.main_tokens.sum() as f64)),
+            num(r.map(|x| x.total_tokens.sum() as f64)),
+            usd(r.and_then(|x| x.cost_usd))
         ));
     }
-    if let Some(note) = &s.units_note {
-        out.push(note.clone());
+    out.extend(s.setup.units.clone());
+    if !s.setup.added_paths.is_empty() {
+        out.push(format!(
+            "adoption added: {}",
+            s.setup.added_paths.join(", ")
+        ));
     }
+    if !s.setup.bug_gaps.is_empty() {
+        out.push(format!(
+            "bug gaps on the adopted cards (a bug task may start already known): {}",
+            s.setup.bug_gaps.join("; ")
+        ));
+    }
+    if !s.model_mismatches.is_empty() {
+        out.push(format!(
+            "other models used: {}",
+            s.model_mismatches.join("; ")
+        ));
+    }
+    out.push(s.ritual_note.to_string());
     out.push(String::new());
-    out.push("| task | arm | runs | not ok | main | total | files | cost | ritual |".into());
-    out.push("|---|---|---|---|---|---|---|---|---|".into());
+    out.push(
+        "| task | arm | runs | not ok | main | total | peak main | files main | files tree | cost | ritual |"
+            .into(),
+    );
+    out.push("|---|---|---|---|---|---|---|---|---|---|---|".into());
+    let count = |x: Option<f64>| x.map_or("null".into(), |x| format!("{x}"));
     for g in &s.grades {
         for a in &g.arms {
-            let ritual = a.ritual.map_or("n/a".to_string(), |r| {
-                let n = RitualSteps::NAMES.iter().filter(|n| r.get(n)).count();
-                format!("{n}/6")
+            let ritual = a.ritual.as_ref().map_or("n/a".to_string(), |r| {
+                let n = r.values().filter(|v| **v).count();
+                format!("{n}/{}", RITUAL_STEPS.len())
             });
             out.push(format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                 g.task,
                 a.arm.as_str(),
                 a.runs,
                 a.not_ok,
                 num(a.main_tokens),
                 num(a.total_tokens),
-                a.files_opened.map_or("null".into(), |x| format!("{x}")),
-                a.cost_usd.map_or("null".into(), |c| format!("{c:.2}")),
+                num(a.peak_main_context),
+                count(a.files_opened),
+                count(a.files_opened_tree),
+                usd(a.cost_usd),
                 ritual
             ));
         }
@@ -413,7 +511,23 @@ pub fn render(s: &Summary) -> String {
         } else {
             format!(": {}", g.reasons.join("; "))
         };
-        out.push(format!("- task {}: {}{why}", g.task, g.verdict.as_str()));
+        let report: Vec<String> = g
+            .report_only
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} {}",
+                    r.name,
+                    r.ratio.map_or("null".into(), |x| format!("{x:.2}"))
+                )
+            })
+            .collect();
+        out.push(format!(
+            "- task {}: {}{why} (report-only, full/bare: {})",
+            g.task,
+            g.verdict.as_str(),
+            report.join(", ")
+        ));
     }
     out.join("\n") + "\n"
 }

@@ -315,13 +315,13 @@ static ERRORS: [ErrorRow; 31] = [
     ),
     e(
         "harness_missing",
-        "`eval` and the harness binary (`pi`) is not on PATH",
+        "`eval` and the harness binary (`pi`) is not on PATH, or pi-subagents is not installed in the Pi agent directory",
         "install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`)",
     ),
     e(
         "eval_setup_incomplete",
-        "`eval`'s adopted fixture for the `full` arm leaves tracked files unowned or does not reach a clean `stewards next`",
-        "read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` an adopted copy where `stewards next` exits 0",
+        "`eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted",
+        "read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0",
     ),
     e(
         "not_implemented",

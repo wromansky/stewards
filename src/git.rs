@@ -56,17 +56,30 @@ pub fn snapshot(root: &Path) -> Result<String> {
     let real = root.join(run(root, &["rev-parse", "--git-path", "index"], None)?.trim());
     // pid + counter: unique across processes and across threads of one process
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let temp = TempIndex(std::env::temp_dir().join(format!(
+    let path = std::env::temp_dir().join(format!(
         "stewards-index-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
-    )));
-    match std::fs::copy(&real, &temp.0) {
-        Ok(_) => {}
-        // no index yet: git starts from an empty one
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+    ));
+    // create_new: never follow or reuse whatever already sits at the path
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("create {}", path.display()))?;
+    let temp = TempIndex(path);
+    match std::fs::File::open(&real) {
+        Ok(mut index) => {
+            std::io::copy(&mut index, &mut file)
+                .with_context(|| format!("copy {}", real.display()))?;
+        }
+        // no index yet: start from an empty one (git rejects a zero-byte index file)
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            run(root, &["read-tree", "--empty"], Some(&temp.0))?;
+        }
         Err(e) => return Err(e).with_context(|| format!("copy {}", real.display())),
     }
+    drop(file);
     run(root, &["add", "-A"], Some(&temp.0))?;
     Ok(run(root, &["write-tree"], Some(&temp.0))?
         .trim()
@@ -177,20 +190,30 @@ pub fn head(root: &Path) -> Result<String> {
     Ok(run(root, &["rev-parse", "HEAD"], None)?.trim().to_string())
 }
 
+/// HEAD's commit sha; `None` before the first commit, an error for any other failure.
+pub fn head_commit(root: &Path) -> Result<Option<String>> {
+    let head = run_raw(root, &["rev-parse", "--verify", "--quiet", "HEAD"], None)?;
+    match head.status.code() {
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&head.stdout).trim().to_string(),
+        )),
+        // --quiet: exit 1 with no message means HEAD has no commit yet
+        Some(1) => Ok(None),
+        _ => bail!(
+            "git rev-parse HEAD: {}",
+            String::from_utf8_lossy(&head.stderr).trim()
+        ),
+    }
+}
+
 /// Current branch name (`HEAD` when detached), then the last commit subject on the next line
 /// (none before the first commit).
 pub fn task_text(root: &Path) -> Result<String> {
     let branch = run(root, &["branch", "--show-current"], None)?;
     let branch = branch.trim();
-    let head = run_raw(root, &["rev-parse", "--verify", "--quiet", "HEAD"], None)?;
-    let subject = match head.status.code() {
-        Some(0) => run(root, &["log", "-1", "--format=%s"], None)?,
-        // --quiet: exit 1 with no message means HEAD has no commit yet
-        Some(1) => String::new(),
-        _ => bail!(
-            "git rev-parse HEAD: {}",
-            String::from_utf8_lossy(&head.stderr).trim()
-        ),
+    let subject = match head_commit(root)? {
+        Some(_) => run(root, &["log", "-1", "--format=%s"], None)?,
+        None => String::new(),
     };
     let branch = if branch.is_empty() { "HEAD" } else { branch };
     Ok(format!("{branch}\n{}", subject.trim()).trim().to_string())

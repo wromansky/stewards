@@ -278,3 +278,47 @@ fn task_text_on_a_detached_head_names_head() {
 fn task_text_outside_a_repo_is_an_error() {
     assert!(git::task_text(TempDir::new().unwrap().path()).is_err());
 }
+
+const TEMP_INDEX_CHILD: &str = "STEWARDS_TEMP_INDEX_CHILD";
+
+/// Runs `snapshot_refuses_a_symlink_at_its_temp_index_path_child` alone in a fresh process, so
+/// its first temp index name is `stewards-index-<child pid>-0` under a private TMPDIR.
+#[cfg(unix)]
+#[test]
+fn snapshot_refuses_a_symlink_at_its_temp_index_path() {
+    let tmp = TempDir::new().unwrap();
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "snapshot_refuses_a_symlink_at_its_temp_index_path_child",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env(TEMP_INDEX_CHILD, "1")
+        .env("TMPDIR", tmp.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(stdout.contains("1 passed"), "{stdout}");
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "run by snapshot_refuses_a_symlink_at_its_temp_index_path"]
+fn snapshot_refuses_a_symlink_at_its_temp_index_path_child() {
+    if std::env::var_os(TEMP_INDEX_CHILD).is_none() {
+        return;
+    }
+    let r = repo();
+    write(r.path(), "a.txt", "a\n");
+    run_git(r.path(), &["add", "a.txt"]);
+    let tmp = std::env::temp_dir();
+    let victim = tmp.join("victim");
+    std::fs::write(&victim, "precious").unwrap();
+    let planted = tmp.join(format!("stewards-index-{}-0", std::process::id()));
+    std::os::unix::fs::symlink(&victim, &planted).unwrap();
+    assert!(git::snapshot(r.path()).is_err());
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+    assert!(planted.is_symlink());
+}

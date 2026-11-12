@@ -1,4 +1,6 @@
 use std::cmp::Reverse;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -40,9 +42,9 @@ impl Router {
         let mut compiled = Vec::new();
         for unit in units {
             let mut globs = Vec::new();
+            // Patterns stay as written: `\` is the glob escape, not a path separator.
             for pattern in &unit.paths {
-                let pattern = normalize(pattern);
-                let glob = GlobBuilder::new(&pattern)
+                let glob = GlobBuilder::new(pattern)
                     .literal_separator(true)
                     .build()
                     .map_err(|e| {
@@ -52,7 +54,7 @@ impl Router {
                             "fix paths in .stewards/units.toml",
                         )
                     })?;
-                globs.push((glob.compile_matcher(), specificity(&pattern)));
+                globs.push((glob.compile_matcher(), specificity(pattern)));
             }
             compiled.push((unit.name.clone(), globs));
         }
@@ -62,7 +64,9 @@ impl Router {
         })
     }
 
-    fn tool_owned(&self, path: &str) -> bool {
+    /// True for `.stewards/**` and `docs_path/**`, which no unit owns; `path` is repo-relative
+    /// with forward slashes.
+    pub fn tool_owned(&self, path: &str) -> bool {
         let under =
             |dir: &str| path == dir || path.strip_prefix(dir).is_some_and(|r| r.starts_with('/'));
         under(".stewards") || under(&self.docs_path)
@@ -150,59 +154,45 @@ fn lexical_absolute(cwd: &Path, path: &str) -> PathBuf {
 pub fn run(g: &Global, paths: &[String]) -> Result<ExitCode> {
     let cwd = std::env::current_dir()?.canonicalize()?;
     let ws = crate::workspace::discover(&cwd, g.repo.as_deref())?;
-    let roots = ws
-        .repos
-        .iter()
-        .map(|r| r.root.canonicalize())
-        .collect::<std::io::Result<Vec<_>>>()?;
     // A lone repo must be initialized; in a workspace an uninitialized repo just owns nothing.
     if !ws.is_workspace
-        && let Some(repo) = ws.repos.first().filter(|r| r.loaded.is_none())
+        && let Some(repo) = ws.repos.first()
     {
-        return Err(CliError::new(
-            "no_stewards_dir",
-            format!("no .stewards/ in {}", repo.root.display()),
-            "stewards init",
-        )
-        .into());
+        repo.loaded()?;
     }
-    let mut routers: Vec<Option<Router>> = ws.repos.iter().map(|_| None).collect();
+    let mut routers: HashMap<&Path, Router> = HashMap::new();
     let mut routes = Vec::new();
     for path in paths {
         let abs = lexical_absolute(&cwd, path);
-        // The deepest root wins, so a repo nested in another owns its own files.
-        let (i, root) = roots
-            .iter()
-            .enumerate()
-            .filter(|(_, root)| abs.starts_with(root))
-            .max_by_key(|(_, root)| root.components().count())
-            .ok_or_else(|| {
-                CliError::new(
-                    "path_outside_repo",
-                    if ws.is_workspace {
-                        format!("{path} is outside every repo of the workspace")
-                    } else {
-                        format!("{path} is outside the repo at {}", roots[0].display())
-                    },
-                    "pass a path inside the repo",
-                )
-            })?;
-        let repo = &ws.repos[i];
+        let repo = ws.repo_containing(&abs).ok_or_else(|| {
+            CliError::new(
+                "path_outside_repo",
+                if ws.is_workspace {
+                    format!("{path} is outside every repo of the workspace")
+                } else {
+                    format!(
+                        "{path} is outside the repo at {}",
+                        ws.repos[0].root.display()
+                    )
+                },
+                "pass a path inside the repo",
+            )
+        })?;
         let unit = match &repo.loaded {
             None => None,
             Some(loaded) => {
-                if routers[i].is_none() {
-                    routers[i] = Some(Router::new(&loaded.units, &loaded.repo.docs_path)?);
-                }
+                let router = match routers.entry(&repo.root) {
+                    Entry::Occupied(e) => e.into_mut(),
+                    Entry::Vacant(e) => {
+                        e.insert(Router::new(&loaded.units, &loaded.repo.docs_path)?)
+                    }
+                };
                 let rel = abs
-                    .strip_prefix(root)
-                    .expect("filtered on starts_with")
+                    .strip_prefix(repo.root.canonicalize()?)
+                    .expect("repo_containing checked starts_with")
                     .to_string_lossy()
                     .replace('\\', "/");
-                routers[i]
-                    .as_ref()
-                    .and_then(|router| router.owner(&rel))
-                    .map(|unit| ws.display_name(repo, unit))
+                router.owner(&rel).map(|unit| ws.display_name(repo, unit))
             }
         };
         routes.push(Route {

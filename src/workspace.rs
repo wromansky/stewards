@@ -16,6 +16,8 @@ pub struct Repo {
 pub struct Workspace {
     pub repos: Vec<Repo>,
     pub is_workspace: bool,
+    /// `--repo` narrowed `repos` to the one named.
+    pub selected: bool,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +75,7 @@ pub fn discover(cwd: &Path, only: Option<&str>) -> anyhow::Result<Workspace> {
     Ok(Workspace {
         repos,
         is_workspace,
+        selected: only.is_some(),
     })
 }
 
@@ -106,7 +109,63 @@ fn workspace_roots(file: &Path) -> anyhow::Result<Vec<PathBuf>> {
         .collect()
 }
 
+impl Repo {
+    /// The repo's `.stewards/` contents; `no_stewards_dir` when it has none.
+    pub fn loaded(&self) -> anyhow::Result<&Loaded> {
+        Ok(self.loaded.as_ref().ok_or_else(|| {
+            CliError::new(
+                "no_stewards_dir",
+                format!("no .stewards/ in {}", self.root.display()),
+                "stewards init",
+            )
+        })?)
+    }
+}
+
 impl Workspace {
+    /// The repo whose root is the deepest one containing `path`, so a nested repo owns its own
+    /// files. `path` must be canonical.
+    pub fn repo_containing(&self, path: &Path) -> Option<&Repo> {
+        self.repos
+            .iter()
+            .filter_map(|r| {
+                let root = r.root.canonicalize().ok()?;
+                path.starts_with(&root)
+                    .then(|| (root.components().count(), r))
+            })
+            .max_by_key(|(depth, _)| *depth)
+            .map(|(_, r)| r)
+    }
+
+    /// The repo containing `cwd`, or the lone repo (which `--repo` may have picked from beside it).
+    pub fn current_repo(&self, cwd: &Path) -> anyhow::Result<&Repo> {
+        let lone = if self.repos.len() == 1 {
+            self.repos.first()
+        } else {
+            None
+        };
+        Ok(self.repo_containing(cwd).or(lone).ok_or_else(|| {
+            CliError::new(
+                "not_in_repo",
+                "the current directory is not inside a repo",
+                "run inside a repo or pass --repo <name>",
+            )
+        })?)
+    }
+
+    /// Each repo with its `.stewards/`. Uninitialized repos are skipped as siblings in a
+    /// workspace; a lone repo, or the one `--repo` picked, must be initialized.
+    pub fn loaded_repos(&self) -> anyhow::Result<Vec<(&Repo, &Loaded)>> {
+        let mut out = Vec::new();
+        for repo in &self.repos {
+            match &repo.loaded {
+                None if self.is_workspace && !self.selected => {}
+                _ => out.push((repo, repo.loaded()?)),
+            }
+        }
+        Ok(out)
+    }
+
     /// `<repo>/<unit>` in a workspace, `<unit>` alone otherwise.
     pub fn display_name(&self, repo: &Repo, unit: &str) -> String {
         if self.is_workspace {

@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::anchors::{Resolution, resolve};
 use crate::git;
-use crate::model::{Anchor, Loaded, Reviewed, UnitCard, UnitDef};
+use crate::model::{Anchor, Reviewed, UnitCard};
 use crate::output::{CliError, Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, discover};
@@ -25,19 +25,9 @@ pub fn fingerprint(tree: &[(String, String)], unit: &str, router: &Router) -> St
     format!("sha256:{hex}")
 }
 
-fn require_loaded(repo: &Repo) -> Result<&Loaded> {
-    Ok(repo.loaded.as_ref().ok_or_else(|| {
-        CliError::new(
-            "no_stewards_dir",
-            format!("no .stewards/ in {}", repo.root.display()),
-            "stewards init",
-        )
-    })?)
-}
-
 /// Writes `[reviewed]` for `unit` at snapshot `tree` into its card, keeping the role marks and the rest.
 pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed> {
-    let loaded = require_loaded(repo)?;
+    let loaded = repo.loaded()?;
     if !loaded.units.iter().any(|u| u.name == unit) {
         let names: Vec<_> = loaded.units.iter().map(|u| u.name.as_str()).collect();
         anyhow::bail!(CliError::new(
@@ -59,7 +49,7 @@ pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed> {
     let marks = card.reviewed.take();
     let reviewed = Reviewed {
         // no commits yet: the commit is display-only, so empty is fine
-        commit: git::head(&repo.root).unwrap_or_default(),
+        commit: git::head_commit(&repo.root)?.unwrap_or_default(),
         fingerprint: fingerprint(&entries, unit, &router),
         tree: tree.to_string(),
         tester: marks.as_ref().and_then(|r| r.tester.clone()),
@@ -92,11 +82,7 @@ pub struct CheckReport {
 /// (by plain or display name).
 pub fn check(ws: &Workspace, filter: Option<&str>) -> Result<CheckReport> {
     let mut report = CheckReport::default();
-    for repo in &ws.repos {
-        let loaded = match &repo.loaded {
-            None if ws.is_workspace => continue,
-            _ => require_loaded(repo)?,
-        };
+    for (repo, loaded) in ws.loaded_repos()? {
         let root = &repo.root;
         let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
         let entries = git::ls_tree(root, &git::snapshot(root)?)?;
@@ -136,15 +122,18 @@ pub fn check(ws: &Workspace, filter: Option<&str>) -> Result<CheckReport> {
 
             let interfaces = card.map_or(&[][..], |c| &c.interface);
             let anchors = card.map_or(&[][..], |c| &c.anchors);
-            let texts = interfaces
+            // Only an interface's anchor is text; a card `[[anchor]]` is already parsed.
+            let targets = interfaces
                 .iter()
-                .map(|i| i.anchor.clone())
-                .chain(anchors.iter().map(|a| format!("{}::{}", a.path, a.name)));
-            for text in texts {
-                let dead = match Anchor::parse(&text) {
-                    Ok(a) => !matches!(resolve(root, &a), Resolution::Found { .. }),
-                    Err(_) => true,
-                };
+                .map(|i| (i.anchor.clone(), Anchor::parse(&i.anchor).ok()))
+                .chain(
+                    anchors
+                        .iter()
+                        .map(|a| (format!("{}::{}", a.path, a.name), Some(a.clone()))),
+                );
+            for (text, anchor) in targets {
+                let dead =
+                    anchor.is_none_or(|a| !matches!(resolve(root, &a), Resolution::Found { .. }));
                 if dead {
                     report.failures.push(finding(
                         "dead_anchor",
@@ -198,16 +187,9 @@ pub fn check(ws: &Workspace, filter: Option<&str>) -> Result<CheckReport> {
                 anchor: None,
             });
         }
-        // A catch-all unit owns every path except the tool-owned ones, which are never unowned.
-        let all = UnitDef {
-            name: "all".into(),
-            purpose: String::new(),
-            paths: vec!["**".into()],
-        };
-        let routable = Router::new(&[all], &loaded.repo.docs_path)?;
         for path in tracked
             .iter()
-            .filter(|p| router.owner(p).is_none() && routable.owner(p).is_some())
+            .filter(|p| router.owner(p).is_none() && !router.tool_owned(p))
         {
             report.warnings.push(Finding {
                 kind: "unowned",
@@ -267,27 +249,7 @@ impl Human for Stamped {
 pub fn run_stamp(g: &Global, unit: &str) -> Result<ExitCode> {
     let cwd = std::env::current_dir()?.canonicalize()?;
     let ws = discover(&cwd, g.repo.as_deref())?;
-    // With `--repo` the one repo may sit beside the current directory rather than around it.
-    let repo = ws
-        .repos
-        .iter()
-        .find(|r| {
-            r.root
-                .canonicalize()
-                .is_ok_and(|root| cwd.starts_with(root))
-        })
-        .or(if ws.repos.len() == 1 {
-            ws.repos.first()
-        } else {
-            None
-        })
-        .ok_or_else(|| {
-            CliError::new(
-                "not_in_repo",
-                "the current directory is not inside a repo",
-                "run inside a repo or pass --repo <name>",
-            )
-        })?;
+    let repo = ws.current_repo(&cwd)?;
     let reviewed = stamp(repo, unit, &git::snapshot(&repo.root)?)?;
     emit(
         &Stamped {

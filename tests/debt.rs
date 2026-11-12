@@ -5,6 +5,8 @@ use std::path::Path;
 
 use common::{fixture, git, stewards};
 use serde_json::Value;
+use stewards::debt::is_debt_line;
+use tempfile::TempDir;
 
 fn debt(dir: &Path) -> Vec<Value> {
     let out = stewards(dir, &["debt"]);
@@ -102,4 +104,43 @@ fn human_output_groups_by_unit() {
     let out = stewards(tmp.path(), &["debt", "--human"]);
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("## api\n\n- src/api/items.py:14: # simplified:"));
+}
+
+#[test]
+fn each_comment_marker_counts() {
+    for line in [
+        "# simplified: x",
+        "x = 1  // simplified: x",
+        "-- simplified: x",
+        "; simplified: x",
+        "/* simplified: x */",
+        " * simplified: x",
+        "<!-- simplified: x -->",
+    ] {
+        assert!(is_debt_line(line), "{line}");
+    }
+}
+
+#[test]
+fn a_marker_before_the_last_of_two_simplified_counts() {
+    assert!(is_debt_line(r#"s = "simplified: a"  # simplified: b"#));
+}
+
+#[cfg(unix)]
+#[test]
+fn tracked_symlink_to_a_directory_is_skipped() {
+    let tmp = fixture("single");
+    std::os::unix::fs::symlink("src", tmp.path().join("link")).unwrap();
+    git(tmp.path(), &["add", "-A"]);
+    assert_eq!(items_of(&debt(tmp.path()), "api".into()).len(), 1);
+}
+
+#[test]
+fn uninitialized_lone_repo_is_no_stewards_dir() {
+    let tmp = TempDir::new().unwrap();
+    git(tmp.path(), &["init", "-q"]);
+    let out = stewards(tmp.path(), &["debt"]);
+    assert_eq!(out.status.code(), Some(2));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["code"], "no_stewards_dir");
 }

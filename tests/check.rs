@@ -6,9 +6,10 @@ use std::path::Path;
 
 use common::{fixture, git, stewards};
 use serde_json::Value;
-use stewards::check::fingerprint;
+use stewards::check::{check, fingerprint};
 use stewards::model::{UnitDef, load_repo};
 use stewards::route::Router;
+use stewards::workspace::discover;
 
 fn run(dir: &Path, args: &[&str]) -> (i32, Value) {
     let out = stewards(dir, args);
@@ -281,4 +282,78 @@ fn fingerprint_covers_owned_files_not_merely_matched_ones() {
         fingerprint(&tree, "first", &router),
         fingerprint(&[], "first", &router)
     );
+}
+
+#[test]
+fn library_check_with_a_unit_filter_keeps_only_that_units_findings() {
+    let repo = fixture("single");
+    let ws = discover(repo.path(), None).unwrap();
+    let report = check(&ws, Some("store")).unwrap();
+    let found: Vec<_> = report
+        .failures
+        .iter()
+        .chain(&report.warnings)
+        .map(|f| (f.kind, f.unit.as_deref()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("unreviewed", Some("store")),
+            ("uncovered_interface", Some("store"))
+        ]
+    );
+}
+
+#[test]
+fn stamping_keeps_bug_gaps_multiline_doc_prose_and_role_marks_exactly() {
+    let repo = fixture("single");
+    let card = repo.path().join(".stewards/units/api.toml");
+    let text = fs::read_to_string(&card).unwrap();
+    let doc_at = text.find("[doc]").unwrap();
+    let rest = r#"[reviewed]
+commit = "old"
+fingerprint = "sha256:old"
+tree = "old"
+tester = "tester-tree"
+documenter = "documenter-tree"
+[[gap]]
+kind = "bug"
+title = "list crashes on empty store"
+anchor = "src/api/items.py::list_items"
+note = "seen in prod"
+repro = """
+GET /items
+with an empty store"""
+severity = "high"
+issue = "https://example.invalid/issues/7"
+[doc]
+overview = """First line.
+Second line with 'quotes' and \"double\" ones."""
+how_it_works = """
+Leading newline is trimmed by TOML.
+
+Blank line above, trailing newline below.
+"""
+how_to_change = "tab\there\nback\\slash \"\"\" triple\n"
+"#;
+    fs::write(&card, format!("{}{rest}", &text[..doc_at])).unwrap();
+    let before = load_repo(repo.path()).unwrap().cards["api"].clone();
+    let bug = &before.gaps[1];
+    assert!(bug.repro.is_some() && bug.severity.is_some() && bug.issue.is_some());
+    let doc = before.doc.as_ref().unwrap();
+    assert!(doc.overview.contains('\n') && doc.how_it_works.contains("\n\n"));
+    assert!(doc.how_to_change.contains("\\slash \"\"\""));
+
+    assert_eq!(run(repo.path(), &["stamp", "api"]).0, 0);
+    let after = load_repo(repo.path()).unwrap().cards["api"].clone();
+    assert_eq!(
+        serde_json::to_value(&after.gaps).unwrap(),
+        serde_json::to_value(&before.gaps).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&after.doc).unwrap(),
+        serde_json::to_value(&before.doc).unwrap()
+    );
+    let (b, a) = (before.reviewed.unwrap(), after.reviewed.unwrap());
+    assert_eq!((a.tester, a.documenter), (b.tester, b.documenter));
 }

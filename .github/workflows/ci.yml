@@ -1,8 +1,11 @@
 name: ci
 on:
   push:
-    branches: [main]
+    branches: [main, "feat/**"]
   pull_request:
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -11,6 +14,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo test --no-fail-fast
+      # The suite runs git and the file system in parallel threads; a second pass catches flaky tests.
+      - run: cargo test --no-fail-fast

@@ -1,0 +1,9 @@
+unit = "store"
+[[interface]]
+id = "save-item"
+anchor = "src/store/db.py::save_item"
+contract = "stores an item and returns its id"
+[[interface]]
+id = "count-items"
+anchor = "src/store/db.py::count_items"
+contract = "number of stored items"

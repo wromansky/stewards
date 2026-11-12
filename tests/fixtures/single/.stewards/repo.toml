@@ -1,0 +1,26 @@
+schema = 1
+name = "single"
+test_roots = ["tests"]
+docs_path = "docs/units"
+[commands]
+test = ["pytest"]
+lint = ["ruff check"]
+timeout_seconds = 600
+[budgets]
+maintainer = 24000
+tester = 24000
+documenter = 16000
+validator = 8000
+architect = 16000
+developer = 20000
+memory = 2000
+[pack]
+exclude = [".env*", "*.pem", "*.key", "*secret*", "*credential*", "id_rsa*"]
+[[flow]]
+name = "create-item"
+units = ["api", "store"]
+entry = "src/api/items.py::create_item"
+check = "pytest tests -k create_item"
+[[decision]]
+title = "store has no HTTP knowledge"
+why = "api translates requests; store only persists"

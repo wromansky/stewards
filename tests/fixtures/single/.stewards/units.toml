@@ -1,0 +1,9 @@
+[[unit]]
+name = "api"
+purpose = "HTTP surface"
+paths = ["src/api/**", "tests/api/**"]
+
+[[unit]]
+name = "store"
+purpose = "item persistence"
+paths = ["src/store/**", "tests/store/**"]

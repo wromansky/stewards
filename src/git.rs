@@ -221,3 +221,33 @@ pub fn task_text(root: &Path) -> Result<String> {
     let branch = if branch.is_empty() { "HEAD" } else { branch };
     Ok(format!("{branch}\n{}", subject.trim()).trim().to_string())
 }
+
+/// The files each of the last `n` commits touched (merge commits list none); empty with no commits.
+pub fn recent_commit_files(root: &Path, n: usize) -> Result<Vec<Vec<String>>> {
+    if run(root, &["rev-parse", "--verify", "-q", "HEAD"], None).is_err() {
+        return Ok(vec![]);
+    }
+    let limit = format!("-{n}");
+    // \x01 on its own line starts each commit; no path is named that
+    let out = run(
+        root,
+        &[
+            "log",
+            &limit,
+            "--no-renames",
+            "--name-only",
+            "--format=%x01",
+        ],
+        None,
+    )?;
+    Ok(out
+        .split('\x01')
+        .skip(1)
+        .map(|c| {
+            c.lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .collect())
+}

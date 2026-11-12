@@ -129,7 +129,7 @@ fn build(
     snapshot: &str,
 ) -> Result<String> {
     let diff = mode == Mode::Review || role == Role::Tester;
-    let pack = pack::pack(repo, unit, role, task, diff)?;
+    let pack = pack::pack(repo, unit, role, task, diff, snapshot)?;
     let loaded = repo.loaded()?;
     let bug = match role {
         Role::Validator => {

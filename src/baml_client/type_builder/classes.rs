@@ -240,6 +240,26 @@ impl CardPatchClassBuilder {
             .get_property("gaps")
             .expect("CardPatch.gaps is statically defined in .baml and should always be present")
     }
+
+    /// Access the `remove_interface` field builder.
+    pub fn property_remove_interface(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("remove_interface")
+            .expect("CardPatch.remove_interface is statically defined in .baml and should always be present")
+    }
+
+    /// Access the `remove_anchors` field builder.
+    pub fn property_remove_anchors(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("remove_anchors").expect(
+            "CardPatch.remove_anchors is statically defined in .baml and should always be present",
+        )
+    }
+
+    /// Access the `remove_gaps` field builder.
+    pub fn property_remove_gaps(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("remove_gaps").expect(
+            "CardPatch.remove_gaps is statically defined in .baml and should always be present",
+        )
+    }
 }
 
 /// Wrapper for the `CheckRun` class builder.

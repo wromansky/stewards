@@ -22,6 +22,7 @@ Answer in JSON using this schema:
     }
   ],
   card_patch: {
+    // entries to add or update, by id; the rest of the card is kept
     interface: [
       {
         id: string,
@@ -30,6 +31,7 @@ Answer in JSON using this schema:
         contract: string,
       }
     ] or null,
+    // entries to add, by path and name; the rest of the card is kept
     anchors: [
       {
         path: string,
@@ -37,6 +39,7 @@ Answer in JSON using this schema:
         name: string,
       }
     ] or null,
+    // entries to add or update, by title; the rest of the card is kept
     gaps: [
       {
         kind: 'gap' or 'future' or 'bug',
@@ -47,6 +50,12 @@ Answer in JSON using this schema:
         repro: string or null,
       }
     ] or null,
+    // ids of interface entries to remove
+    remove_interface: string[] or null,
+    // path::name of anchors to remove
+    remove_anchors: string[] or null,
+    // titles of gaps to remove
+    remove_gaps: string[] or null,
   } or null,
   tester_needed: bool,
   pulled_anchors: string[],

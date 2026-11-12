@@ -310,6 +310,17 @@ impl Human for Written {
     }
 }
 
+/// `--stdout`'s brief text, printed as it is through `emit`, which never panics on a closed pipe.
+#[derive(Serialize)]
+struct BriefText(String);
+
+impl Human for BriefText {
+    /// `emit` ends the output with a newline; a brief text always ends with one already.
+    fn render(&self) -> String {
+        self.0.strip_suffix('\n').unwrap_or(&self.0).to_string()
+    }
+}
+
 #[derive(Serialize)]
 struct Jobs {
     jobs: Vec<Job>,
@@ -373,7 +384,7 @@ fn developer(
         )?);
     }
     if stdout {
-        print!("{}", texts.concat());
+        emit(&BriefText(texts.concat()), true);
         return Ok(ExitCode::SUCCESS);
     }
     let mut jobs = vec![];
@@ -446,7 +457,8 @@ pub fn run(
         Mode::Review
     };
     if stdout {
-        print!("{}", build(repo, unit, role, mode, &task, &snapshot)?);
+        let text = build(repo, unit, role, mode, &task, &snapshot)?;
+        emit(&BriefText(text), true);
         return Ok(ExitCode::SUCCESS);
     }
     let (path, bytes) = write(repo, unit, role, mode, &task, &snapshot)?;

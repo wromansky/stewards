@@ -314,11 +314,22 @@ fn output_into_a_pipe_closed_early_does_not_panic() {
     let home = tempfile::TempDir::new().unwrap();
     // ~120 KB of output: more than a pipe buffer, so the write meets the closed pipe.
     let paths: Vec<String> = (0..3000).map(|n| format!("src/api/f{n}.py")).collect();
-    for human in [false, true] {
+    let route: Vec<&str> = std::iter::once("route")
+        .chain(paths.iter().map(String::as_str))
+        .collect();
+    let task = "x".repeat(120_000);
+    let brief = [
+        "brief",
+        "api",
+        "--role",
+        "maintainer",
+        "--task",
+        &task,
+        "--stdout",
+    ];
+    for args in [&route[..], &[&route[..], &["--human"]].concat(), &brief] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_stewards"))
-            .arg("route")
-            .args(&paths)
-            .args(human.then_some("--human"))
+            .args(args)
             .current_dir(repo.path())
             .env("STEWARDS_HOME", home.path())
             .stdout(Stdio::piped())

@@ -212,7 +212,10 @@ fn example(role: Role, mode: Mode) -> Value {
     let card_patch = json!({
         "interface": [{"id": "create-item", "anchor": "src/api.rs::create_item", "contract": "POST /items returns 201"}],
         "anchors": [{"path": "src/api.rs", "name": "router"}],
-        "gaps": [{"kind": "gap", "title": "no paging", "anchor": "src/api.rs::list", "note": "list returns everything", "repro": "cargo test list_pages"}]
+        "gaps": [{"kind": "gap", "title": "no paging", "anchor": "src/api.rs::list", "note": "list returns everything", "repro": "cargo test list_pages"}],
+        "remove_interface": ["delete-item"],
+        "remove_anchors": ["src/api.rs::old_router"],
+        "remove_gaps": ["no auth"]
     });
     let mut v = match (role, mode) {
         (Role::Maintainer, Mode::Review) => json!({

@@ -53,11 +53,15 @@ class Gap {
   repro string?
 }
 
-// Each list present is the full new list for that part of the card; absent or null leaves it unchanged.
+// Lists upsert by key (interface id, anchor path and name, gap title); removal is only through the
+// remove lists. Absent or null leaves that part unchanged.
 class CardPatch {
-  interface Interface[]?
-  anchors Anchor[]?
-  gaps Gap[]?
+  interface Interface[]? @description("entries to add or update, by id; the rest of the card is kept")
+  anchors Anchor[]? @description("entries to add, by path and name; the rest of the card is kept")
+  gaps Gap[]? @description("entries to add or update, by title; the rest of the card is kept")
+  remove_interface string[]? @description("ids of interface entries to remove")
+  remove_anchors string[]? @description("path::name of anchors to remove")
+  remove_gaps string[]? @description("titles of gaps to remove")
 }
 
 class MaintainerReviewAnswer {

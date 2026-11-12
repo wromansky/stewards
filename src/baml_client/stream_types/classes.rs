@@ -76,6 +76,12 @@ pub struct CardPatch {
     pub anchors: Option<Vec<Anchor>>,
 
     pub gaps: Option<Vec<Gap>>,
+
+    pub remove_interface: Option<Vec<String>>,
+
+    pub remove_anchors: Option<Vec<String>>,
+
+    pub remove_gaps: Option<Vec<String>>,
 }
 
 impl ::std::convert::AsRef<CardPatch> for CardPatch {

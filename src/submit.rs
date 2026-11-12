@@ -452,57 +452,63 @@ fn maintainer(
             && router.owner(&a.path) == Some(unit)
             && matches!(resolve(root, a), Resolution::Found { .. })
     };
-    check_patch(&mut problems, patch.as_ref(), alive);
+    let old = card_of(loaded, unit);
+    check_patch(&mut problems, patch.as_ref(), &old, alive);
     check_common(&mut problems, pulled, notes);
     if !problems.is_empty() {
         return Err(rejected(problems));
     }
 
-    let old = card_of(loaded, unit);
+    // Each list upserts by key and keeps the rest of the card; only the remove lists remove.
     let mut card = old.clone();
     let patch = patch.clone().unwrap_or_default();
-    let patched = patch.interface.is_some() || patch.anchors.is_some() || patch.gaps.is_some();
-    if let Some(list) = patch.interface {
-        card.interface = list
-            .into_iter()
-            .map(|i| model::Interface {
-                id: i.id,
-                anchor: i.anchor,
-                contract: i.contract,
-            })
-            .collect();
+    let patched = patch.interface.is_some()
+        || patch.anchors.is_some()
+        || patch.gaps.is_some()
+        || patch.remove_interface.is_some()
+        || patch.remove_anchors.is_some()
+        || patch.remove_gaps.is_some();
+    for i in patch.interface.into_iter().flatten() {
+        let i = model::Interface {
+            id: i.id,
+            anchor: i.anchor,
+            contract: i.contract,
+        };
+        put(&mut card.interface, i, |o, n| o.id == n.id);
     }
-    if let Some(list) = patch.anchors {
-        card.anchors = list
-            .into_iter()
-            .map(|a| model::Anchor {
-                path: a.path,
-                name: a.name,
-            })
-            .collect();
+    for a in patch.anchors.into_iter().flatten() {
+        let a = model::Anchor {
+            path: a.path,
+            name: a.name,
+        };
+        put(&mut card.anchors, a, |o, n| o == n);
     }
-    if let Some(list) = patch.gaps {
-        card.gaps = list
-            .into_iter()
-            .map(|g| {
-                // severity and issue are the tool's: a gap keeps them across a patch, by title
-                let kept = old.gaps.iter().find(|o| o.title == g.title);
-                model::Gap {
-                    kind: match g.kind {
-                        types::GapKind::Gap => GapKind::Gap,
-                        types::GapKind::Future => GapKind::Future,
-                        types::GapKind::Bug => GapKind::Bug,
-                    },
-                    title: g.title,
-                    anchor: g.anchor,
-                    note: g.note,
-                    repro: g.repro,
-                    severity: kept.and_then(|o| o.severity.clone()),
-                    issue: kept.and_then(|o| o.issue.clone()),
-                }
-            })
-            .collect();
+    for g in patch.gaps.into_iter().flatten() {
+        // severity and issue are the tool's: a gap keeps them across a patch, by title
+        let kept = old.gaps.iter().find(|o| o.title == g.title);
+        let g = model::Gap {
+            kind: match g.kind {
+                types::GapKind::Gap => GapKind::Gap,
+                types::GapKind::Future => GapKind::Future,
+                types::GapKind::Bug => GapKind::Bug,
+            },
+            title: g.title,
+            anchor: g.anchor,
+            note: g.note,
+            repro: g.repro,
+            severity: kept.and_then(|o| o.severity.clone()),
+            issue: kept.and_then(|o| o.issue.clone()),
+        };
+        put(&mut card.gaps, g, |o, n| o.title == n.title);
     }
+    let remove = |list: Option<Vec<String>>| list.unwrap_or_default();
+    let ids = remove(patch.remove_interface);
+    card.interface.retain(|i| !ids.contains(&i.id));
+    let anchors = remove(patch.remove_anchors);
+    card.anchors
+        .retain(|a| !anchors.contains(&format!("{}::{}", a.path, a.name)));
+    let titles = remove(patch.remove_gaps);
+    card.gaps.retain(|g| !titles.contains(&g.title));
     let mut changed = vec![];
     changes(
         &mut changed,
@@ -1734,15 +1740,93 @@ fn spaced_name(out: &mut Problems, field: &str, name: &str) -> bool {
     spaced
 }
 
-/// Checks the patch's fields and lists; an anchor `alive` rejects is `answer_dead_anchor`.
+/// Replaces the first entry of `list` that is `same` as `item`, or appends `item`.
+fn put<T>(list: &mut Vec<T>, item: T, same: impl Fn(&T, &T) -> bool) {
+    match list.iter_mut().find(|o| same(o, &item)) {
+        Some(o) => *o = item,
+        None => list.push(item),
+    }
+}
+
+/// Checks the patch's fields and lists against `card`, the card it patches; an anchor `alive`
+/// rejects is `answer_dead_anchor`.
 fn check_patch(
     out: &mut Problems,
     patch: Option<&CardPatch>,
+    card: &UnitCard,
     alive: impl Fn(&model::Anchor) -> bool,
 ) {
     let Some(p) = patch else {
         return;
     };
+    // A removal names a key the card has, so a typo cannot pass, and one the patch does not
+    // also add or update. `keys` are the card's, `upserted` the patch list's.
+    let removals = |out: &mut Problems,
+                    list: &str,
+                    cap: usize,
+                    remove: &Option<Vec<String>>,
+                    keys: Vec<String>,
+                    upserted: Vec<String>| {
+        let remove = remove.iter().flatten();
+        check_list(out, &format!("card_patch.{list}"), remove.clone().count());
+        for (i, key) in remove.enumerate() {
+            let field = format!("card_patch.{list}[{i}]");
+            check_text(out, &field, key, cap, true);
+            let problem = if list == "remove_anchors" && model::Anchor::parse(key).is_err() {
+                format!("`{key}` is not `path::name`")
+            } else if !keys.contains(key) {
+                format!("`{key}` is not on the card; a removal names an existing entry")
+            } else if upserted.contains(key) {
+                format!("`{key}` is also added or updated by this patch; give it in one list")
+            } else {
+                continue;
+            };
+            out.push((
+                "answer_parse_failed",
+                FieldError {
+                    field,
+                    problem,
+                    example: if keys.is_empty() {
+                        "the card has none".into()
+                    } else {
+                        format!("one of: {}", keys.join(", "))
+                    },
+                },
+            ));
+        }
+    };
+    let anchor_key = |path: &str, name: &str| format!("{path}::{name}");
+    removals(
+        out,
+        "remove_interface",
+        ID_CAP,
+        &p.remove_interface,
+        card.interface.iter().map(|i| i.id.clone()).collect(),
+        p.interface.iter().flatten().map(|i| i.id.clone()).collect(),
+    );
+    removals(
+        out,
+        "remove_anchors",
+        LINE_CAP,
+        &p.remove_anchors,
+        card.anchors
+            .iter()
+            .map(|a| anchor_key(&a.path, &a.name))
+            .collect(),
+        p.anchors
+            .iter()
+            .flatten()
+            .map(|a| anchor_key(&a.path, &a.name))
+            .collect(),
+    );
+    removals(
+        out,
+        "remove_gaps",
+        ID_CAP,
+        &p.remove_gaps,
+        card.gaps.iter().map(|g| g.title.clone()).collect(),
+        p.gaps.iter().flatten().map(|g| g.title.clone()).collect(),
+    );
     let dead = |out: &mut Problems, field: String, anchor: Option<model::Anchor>| {
         if anchor
             .as_ref()

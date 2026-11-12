@@ -820,9 +820,14 @@ Details the shapes leave open: enum values are lowercase snake case
 (`approve|changes`, `critical|medium|low`, `gap|future|bug`, the rungs as
 `not_needed` … `no_check`). A nullable field may be absent or null; every
 other field and every list is required; unknown fields, duplicate fields,
-and any text around the JSON are errors. `card_patch` has three optional
-lists (`interface`, `anchors`, `gaps`); a list that is present is the full
-new list for that part of the card, which is how a patch closes a gap. A
+and any text around the JSON are errors. `card_patch` has six optional
+lists. `interface`, `anchors`, and `gaps` upsert by key (interface `id`,
+anchor path and name, gap `title`): an entry replaces the one with its key
+or is appended, and every entry the patch does not name is kept, in order.
+Only `remove_interface` (ids), `remove_anchors` (`path::name`), and
+`remove_gaps` (titles) remove, which is how a patch closes a gap; a removal
+must name a key the card has and the patch does not also upsert, and a
+removed anchor need not resolve. A
 patch gap is `{kind, title, anchor?, note, repro?}`; severity and issue are
 the tool's. `scenario_patch` upserts scenarios by id. A plan is `{title,
 steps[] {unit, change, interfaces[], check}}`. A unit proposal is `{name,

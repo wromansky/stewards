@@ -241,12 +241,12 @@ fn stdout_prints_the_brief_and_writes_nothing() {
         &["brief", "api", "--role", "maintainer", "--stdout"],
     );
     assert!(out.status.success());
-    assert!(
-        String::from_utf8(out.stdout)
-            .unwrap()
-            .starts_with("<!-- stewards-job ")
-    );
+    let printed = String::from_utf8(out.stdout).unwrap();
+    assert!(printed.starts_with("<!-- stewards-job "));
     assert!(!dir.path().join(".stewards/briefs").exists());
+    // byte for byte the brief a plain `brief` writes, with no newline added or lost
+    let written = brief(dir.path(), home.path(), &["api", "--role", "maintainer"]);
+    assert_eq!(printed, written);
 }
 
 #[test]

@@ -247,9 +247,8 @@ fn patch_adding_an_interface_keeps_the_rest_of_the_card() {
     let before = card(dir.path());
     explain_job(dir.path(), home.path());
     let mut a = explain("short");
+    // only the new entry: a new id is appended after the card's own
     a["card_patch"] = json!({"interface": [
-        {"id": "create-item", "anchor": "src/api/items.py::create_item",
-         "contract": "POST /items; 201 with body; 422 on invalid"},
         {"id": "list-items", "anchor": "src/api/items.py::list_items", "contract": "GET /items"}]});
     let (code, v) = submit(dir.path(), home.path(), &a);
     assert_eq!(code, 0, "{v}");
@@ -258,8 +257,8 @@ fn patch_adding_an_interface_keeps_the_rest_of_the_card() {
         "api maintainer: explained; card: +interface list-items; 0 tasks"
     );
     let after = card(dir.path());
-    assert_eq!(after.interface.len(), 2);
-    assert_eq!(after.interface[1].id, "list-items");
+    let ids: Vec<&str> = after.interface.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ids, ["create-item", "list-items"]);
     assert_eq!(after.anchors, before.anchors);
     assert_eq!(after.gaps.len(), 1);
     assert_eq!(after.gaps[0].title, before.gaps[0].title);
@@ -267,16 +266,21 @@ fn patch_adding_an_interface_keeps_the_rest_of_the_card() {
     assert_eq!(after.reviewed.unwrap().tree, before.reviewed.unwrap().tree);
 }
 
-#[test]
-fn patch_replacing_gaps_keeps_a_bugs_severity_and_issue() {
-    let (dir, home) = setup();
-    let path = dir.path().join(CARD);
+/// Appends `toml` to the fixture's api card.
+fn append_card(dir: &Path, toml: &str) {
+    let path = dir.join(CARD);
     let mut text = fs::read_to_string(&path).unwrap();
-    text.push_str(
-        "\n[[gap]]\nkind = \"bug\"\ntitle = \"count off\"\nnote = \"\"\n\
-         severity = \"medium\"\nissue = \"https://example.invalid/1\"\n",
-    );
+    text.push_str(toml);
     fs::write(&path, text).unwrap();
+}
+
+const COUNT_OFF_BUG: &str = "\n[[gap]]\nkind = \"bug\"\ntitle = \"count off\"\nnote = \"\"\n\
+                             severity = \"medium\"\nissue = \"https://example.invalid/1\"\n";
+
+#[test]
+fn patch_updating_a_gap_keeps_its_severity_and_issue_and_the_other_gaps() {
+    let (dir, home) = setup();
+    append_card(dir.path(), COUNT_OFF_BUG);
     review_job(dir.path(), home.path());
     let mut a = review("changes");
     a["card_patch"] = json!({"gaps": [
@@ -285,11 +289,13 @@ fn patch_replacing_gaps_keeps_a_bugs_severity_and_issue() {
     let (code, v) = submit(dir.path(), home.path(), &a);
     assert_eq!(code, 0, "{v}");
     let gaps = card(dir.path()).gaps;
-    assert_eq!(gaps.len(), 2);
-    assert_eq!(gaps[0].note, "now with a note");
-    assert_eq!(gaps[0].severity.as_deref(), Some("medium"));
-    assert_eq!(gaps[0].issue.as_deref(), Some("https://example.invalid/1"));
-    assert_eq!(gaps[1].severity, None);
+    let titles: Vec<&str> = gaps.iter().map(|g| g.title.as_str()).collect();
+    assert_eq!(titles, ["no pagination on list", "count off", "new bug"]);
+    assert_eq!(gaps[0].note, "list returns every item");
+    assert_eq!(gaps[1].note, "now with a note");
+    assert_eq!(gaps[1].severity.as_deref(), Some("medium"));
+    assert_eq!(gaps[1].issue.as_deref(), Some("https://example.invalid/1"));
+    assert_eq!(gaps[2].severity, None);
 }
 
 #[test]
@@ -605,7 +611,7 @@ fn a_patch_with_null_gaps_leaves_gaps_alone() {
     let before = card(dir.path()).gaps;
     review_job(dir.path(), home.path());
     let mut a = review("changes");
-    a["card_patch"] = json!({"anchors": [], "gaps": null});
+    a["card_patch"] = json!({"remove_anchors": ["src/api/items.py::router"], "gaps": null});
     let (code, v) = submit(dir.path(), home.path(), &a);
     assert_eq!(code, 0, "{v}");
     let after = card(dir.path());
@@ -619,7 +625,8 @@ fn summary_names_each_card_change() {
     let (dir, home) = setup();
     review_job(dir.path(), home.path());
     let mut a = review("changes");
-    a["card_patch"] = json!({"anchors": [], "gaps": [], "interface": [
+    a["card_patch"] = json!({"remove_anchors": ["src/api/items.py::router"],
+        "remove_gaps": ["no pagination on list"], "interface": [
         {"id": "create-item", "anchor": "src/api/items.py::create_item",
          "contract": "POST /items; 201 with body; 422 on invalid"},
         {"id": "count-items", "anchor": "src/api/items.py::list_items", "contract": "GET"}]});
@@ -631,6 +638,247 @@ fn summary_names_each_card_change() {
             "; card: +interface count-items, -anchor src/api/items.py::router, \
              -gap no pagination on list;"
         ),
+        "{summary}"
+    );
+}
+
+/// Four interfaces after the fixture's create-item, so the card has five.
+const MORE_INTERFACES: &str = "\n[[interface]]\nid = \"list-items\"\n\
+     anchor = \"src/api/items.py::list_items\"\ncontract = \"GET /items\"\n\
+     [[interface]]\nid = \"route-table\"\nanchor = \"src/api/items.py::router\"\n\
+     contract = \"routes\"\n[[interface]]\nid = \"count-items\"\n\
+     anchor = \"src/api/items.py::list_items\"\ncontract = \"GET /items/count\"\n\
+     [[interface]]\nid = \"health\"\nanchor = \"src/api/items.py::router\"\n\
+     contract = \"GET /health\"\n";
+
+/// Submits `patch` in a review (`explain` false) or an explain job; asserts it is accepted.
+fn patched(dir: &Path, home: &Path, explain_mode: bool, patch: Value) -> Value {
+    let mut a = if explain_mode {
+        explain_job(dir, home);
+        explain("e")
+    } else {
+        review_job(dir, home);
+        review("changes")
+    };
+    a["card_patch"] = patch;
+    let (code, v) = submit(dir, home, &a);
+    assert_eq!(code, 0, "{v}");
+    v
+}
+
+fn interfaces(c: &UnitCard) -> Vec<Value> {
+    c.interface
+        .iter()
+        .map(|i| serde_json::to_value(i).unwrap())
+        .collect()
+}
+
+/// The regression for the data loss: a patch that names one interface used to replace them all.
+#[test]
+fn one_interface_entry_updates_it_and_keeps_the_others_unchanged_in_order() {
+    for explain_mode in [false, true] {
+        let (dir, home) = setup();
+        append_card(dir.path(), MORE_INTERFACES);
+        let before = interfaces(&card(dir.path()));
+        assert_eq!(before.len(), 5);
+        let v = patched(
+            dir.path(),
+            home.path(),
+            explain_mode,
+            json!({"interface": [{"id": "route-table", "anchor": "src/api/items.py::router",
+                                  "contract": "routes, now sorted"}]}),
+        );
+        assert!(
+            v["summary"]
+                .as_str()
+                .unwrap()
+                .contains("; card: ~interface route-table;"),
+            "{v}"
+        );
+        let after = interfaces(&card(dir.path()));
+        assert_eq!(after.len(), 5, "explain {explain_mode}");
+        for i in [0, 1, 3, 4] {
+            assert_eq!(after[i], before[i], "explain {explain_mode}");
+        }
+        assert_eq!(after[2]["id"], "route-table");
+        assert_eq!(after[2]["contract"], "routes, now sorted");
+    }
+}
+
+#[test]
+fn remove_interface_removes_exactly_the_named_ids() {
+    for explain_mode in [false, true] {
+        let (dir, home) = setup();
+        append_card(dir.path(), MORE_INTERFACES);
+        let before = card(dir.path());
+        let v = patched(
+            dir.path(),
+            home.path(),
+            explain_mode,
+            json!({"remove_interface": ["list-items", "count-items"]}),
+        );
+        assert!(
+            v["summary"]
+                .as_str()
+                .unwrap()
+                .contains("; card: -interface list-items, -interface count-items;"),
+            "{v}"
+        );
+        let after = card(dir.path());
+        let ids: Vec<&str> = after.interface.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["create-item", "route-table", "health"]);
+        assert_eq!(after.anchors, before.anchors);
+        assert_eq!(after.gaps.len(), before.gaps.len());
+    }
+}
+
+#[test]
+fn a_patch_of_only_remove_lists_removes_from_each_part() {
+    let (dir, home) = setup();
+    append_card(dir.path(), COUNT_OFF_BUG);
+    patched(
+        dir.path(),
+        home.path(),
+        false,
+        json!({"remove_interface": ["create-item"], "remove_anchors": ["src/api/items.py::router"],
+               "remove_gaps": ["no pagination on list"]}),
+    );
+    let after = card(dir.path());
+    assert!(after.interface.is_empty());
+    assert!(after.anchors.is_empty());
+    let titles: Vec<&str> = after.gaps.iter().map(|g| g.title.as_str()).collect();
+    assert_eq!(titles, ["count off"]);
+    assert_eq!(after.gaps[0].severity.as_deref(), Some("medium"));
+}
+
+#[test]
+fn removing_a_key_the_card_does_not_have_is_rejected() {
+    for (list, key) in [
+        ("remove_interface", "create-itme"),
+        ("remove_anchors", "src/api/items.py::routr"),
+        ("remove_anchors", "no separator"),
+        ("remove_gaps", "no paging"),
+    ] {
+        let mut a = review("changes");
+        a["card_patch"] = json!({ list: [key] });
+        rejected(&a, "answer_parse_failed", &format!("card_patch.{list}[0]"));
+    }
+}
+
+#[test]
+fn the_same_key_added_and_removed_is_rejected() {
+    let mut a = review("changes");
+    a["card_patch"] = json!({"remove_interface": ["create-item"], "interface": [
+        {"id": "create-item", "anchor": "src/api/items.py::create_item", "contract": "c"}]});
+    rejected(&a, "answer_parse_failed", "card_patch.remove_interface[0]");
+    let mut a = review("changes");
+    a["card_patch"] = json!({"remove_gaps": ["no pagination on list"], "gaps": [
+        {"kind": "gap", "title": "no pagination on list", "note": ""}]});
+    rejected(&a, "answer_parse_failed", "card_patch.remove_gaps[0]");
+    let mut a = review("changes");
+    a["card_patch"] = json!({"remove_anchors": ["src/api/items.py::router"],
+                             "anchors": [{"path": "src/api/items.py", "name": "router"}]});
+    rejected(&a, "answer_parse_failed", "card_patch.remove_anchors[0]");
+}
+
+#[test]
+fn remove_lists_keep_the_list_cap_and_character_checks() {
+    let mut a = review("changes");
+    a["card_patch"] = json!({"remove_gaps": vec!["no pagination on list"; 201]});
+    rejected(&a, "answer_too_long", "card_patch.remove_gaps");
+    let mut a = review("changes");
+    a["card_patch"] = json!({"remove_interface": ["create\u{202E}item"]});
+    rejected(&a, "answer_parse_failed", "card_patch.remove_interface[0]");
+}
+
+#[test]
+fn remove_gaps_removes_by_title_and_keeps_the_others() {
+    let (dir, home) = setup();
+    append_card(dir.path(), COUNT_OFF_BUG);
+    patched(
+        dir.path(),
+        home.path(),
+        true,
+        json!({"remove_gaps": ["no pagination on list"]}),
+    );
+    let gaps = card(dir.path()).gaps;
+    assert_eq!(gaps.len(), 1);
+    assert_eq!(gaps[0].title, "count off");
+    assert_eq!(gaps[0].issue.as_deref(), Some("https://example.invalid/1"));
+}
+
+#[test]
+fn an_anchor_is_added_once_and_remove_anchors_removes_it() {
+    let (dir, home) = setup();
+    let list_items = json!({"path": "src/api/items.py", "name": "list_items"});
+    let router = json!({"path": "src/api/items.py", "name": "router"});
+    for _ in 0..2 {
+        patched(
+            dir.path(),
+            home.path(),
+            false,
+            json!({"anchors": [list_items, router]}),
+        );
+        let names: Vec<String> = card(dir.path())
+            .anchors
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(names, ["router", "list_items"]);
+    }
+    patched(
+        dir.path(),
+        home.path(),
+        false,
+        json!({"remove_anchors": ["src/api/items.py::list_items"]}),
+    );
+    let names: Vec<String> = card(dir.path())
+        .anchors
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(names, ["router"]);
+}
+
+#[test]
+fn a_dead_anchor_and_one_with_a_keyword_can_be_removed() {
+    let (dir, home) = setup();
+    append_card(
+        dir.path(),
+        "\n[[anchor]]\npath = \"src/api/gone.py\"\nname = \"gone\"\n\
+         [[anchor]]\npath = \"src/api/items.py\"\nname = \"def create_item\"\n",
+    );
+    patched(
+        dir.path(),
+        home.path(),
+        false,
+        json!({"remove_anchors": ["src/api/gone.py::gone", "src/api/items.py::def create_item"]}),
+    );
+    let names: Vec<String> = card(dir.path())
+        .anchors
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(names, ["router"]);
+}
+
+#[test]
+fn summary_marks_an_added_an_updated_and_a_removed_interface() {
+    let (dir, home) = setup();
+    append_card(dir.path(), MORE_INTERFACES);
+    let v = patched(
+        dir.path(),
+        home.path(),
+        false,
+        json!({"interface": [
+            {"id": "create-item", "anchor": "src/api/items.py::create_item", "contract": "POST"},
+            {"id": "delete-item", "anchor": "src/api/items.py::create_item", "contract": "DELETE"}],
+          "remove_interface": ["health"]}),
+    );
+    let summary = v["summary"].as_str().unwrap();
+    assert!(
+        summary
+            .contains("; card: ~interface create-item, +interface delete-item, -interface health;"),
         "{summary}"
     );
 }

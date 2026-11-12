@@ -274,7 +274,14 @@ fn assemble(
                 serde_json::json!({"n": n, "title": t.title, "change": t.change,
                                                  "files": t.files, "check": t.check}),
             );
-            Some(card.map_or(vec![], |c| c.anchors.clone()))
+            // a developer sees only the anchors in its lane
+            let anchors = card.map_or(vec![], |c| c.anchors.clone());
+            Some(
+                anchors
+                    .into_iter()
+                    .filter(|a| t.files.contains(&a.path))
+                    .collect(),
+            )
         }
         Role::Maintainer => {
             p.purpose = Some(def.purpose.clone());
@@ -386,12 +393,6 @@ fn assemble(
                 .map(|a| window(root, &entries, a, &exclude, &mut p.dropped))
                 .collect(),
         );
-    }
-    // a developer sees source only in its lane
-    if let (Some((_, t)), Some(list)) = (dev, &mut p.anchors) {
-        for a in list.iter_mut().filter(|a| !t.files.contains(&a.path)) {
-            a.source = None;
-        }
     }
     p.fit(budget);
     Ok(p)

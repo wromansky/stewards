@@ -436,8 +436,9 @@ Fingerprint: sha256 over the sorted `path blob` lines of `git ls-tree -r
 <snapshot>` for the files the unit owns by route.
 
 Unit names match `[a-z0-9][a-z0-9_-]*` (they become file names); anything
-else is `invalid_toml`. `.stewards/**` and `docs_path/**` are tool-owned:
-never routed, never reported as unowned.
+else is `invalid_toml`. `.stewards/**`, `docs_path/**`, and `.git/**` (any
+path with a `.git` component) are tool-owned, compared ignoring ASCII case:
+never routed, never reported as unowned, so no unit ever owns them.
 
 ## Command surface
 
@@ -582,7 +583,9 @@ route; group per unit.
   it is dead: an anchor can never read outside the repo or reach an
   excluded file through a link. An anchor is alive only when its path is a
   file in the repo's snapshot tree (tracked, modified, or untracked and not
-  ignored), so `.git/` and ignored files are dead and never inlined. Card text printed on one line has its
+  ignored), so `.git/` and ignored files are dead and never inlined. No unit
+  ever owns `.git/**` (any path with a `.git` component, in any ASCII case),
+  so it is never in a lane, a fingerprint, or a patch anchor. Card text printed on one line has its
   control characters replaced; purpose and prose in a rendered pack sit in
   fences longer than any backtick run they contain; rendered docs escape
   card text and refuse a `docs_path` at or outside the repo root.

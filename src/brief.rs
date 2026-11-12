@@ -387,25 +387,38 @@ fn developer(
             brief_path: repo.root.join(format!("{stem}.md")),
         });
     }
+    for rel in developer_files_past(&repo.root, unit, tasks.len())? {
+        repo.remove(&rel)?;
+    }
+    emit(&Jobs { jobs }, g.human);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The repo-relative `<unit>-developer-<n>.md` and `<unit>-developer-<n>.answer.json` of `unit`
+/// with task number `n` past `last`; `n` is written as a plain number from 1, so
+/// `api-developer-01.md` and `api-developer-x.md` are not job files.
+pub(crate) fn developer_files_past(root: &Path, unit: &str, last: usize) -> Result<Vec<String>> {
     let prefix = format!("{unit}-developer-");
-    let past_end = |name: &str| {
+    let past = |name: &str| {
         name.strip_prefix(&prefix)
             .and_then(|r| {
                 r.strip_suffix(".md")
                     .or_else(|| r.strip_suffix(".answer.json"))
             })
-            .and_then(|n| n.parse::<usize>().ok())
-            .is_some_and(|n| n > tasks.len())
+            .and_then(|d| d.parse::<usize>().ok().filter(|n| n.to_string() == d))
+            .is_some_and(|n| n > last)
     };
-    let names: Vec<String> = std::fs::read_dir(repo.root.join(".stewards/briefs"))?
+    let dir = match std::fs::read_dir(root.join(".stewards/briefs")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        r => r?,
+    };
+    let mut rels: Vec<String> = dir
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|name| past_end(name))
+        .filter(|name| past(name))
+        .map(|name| format!(".stewards/briefs/{name}"))
         .collect();
-    for name in names {
-        repo.remove(&format!(".stewards/briefs/{name}"))?;
-    }
-    emit(&Jobs { jobs }, g.human);
-    Ok(ExitCode::SUCCESS)
+    rels.sort();
+    Ok(rels)
 }
 
 pub fn run(

@@ -170,6 +170,9 @@ pub(crate) fn submit_file(
     if let Some(u) = unit {
         files.push(format!(".stewards/units/{u}.toml"));
         files.push(format!(".stewards/units/{u}.test.toml"));
+        if role == Role::Maintainer {
+            files.push(tasks_rel(u));
+        }
         // a bad docs_path is the documenter's own error, reported after the answer's
         if role == Role::Documenter
             && let Ok(pages) = docs::pages(loaded, Some(u))
@@ -579,47 +582,33 @@ fn maintainer(
         _ => unreachable!("a maintainer answer parses to a maintainer variant"),
     };
 
-    // The writes, last: the card, the task list, the tester brief, then the retired job's brief.
-    // A link at any of their paths is refused here, before the first of them.
+    // The writes, last, in one checked step: the card, the task list (and with none, every
+    // developer job file of the unit), the tester brief, then the retired job's brief.
     let card_rel = format!(".stewards/units/{unit}.toml");
     let tasks_rel = tasks_rel(unit);
-    let tester_rel = brief::rel_path(Some(unit), Role::Tester);
-    let tester_answer = format!(".stewards/briefs/{unit}-tester.answer.json");
+    let mut checked = vec![tasks_rel.as_str()];
+    let mut changes = vec![];
+    if let Some(text) = card_text {
+        checked.push(&card_rel);
+        changes.push((card_rel.clone(), Some(text)));
+    }
+    let tasks_text = tasks
+        .as_ref()
+        .map(serde_json::to_string_pretty)
+        .transpose()?;
+    changes.push((tasks_rel.clone(), tasks_text));
+    if tasks.is_none() {
+        let files = brief::developer_files_past(root, unit, 0)?;
+        changes.extend(files.into_iter().map(|rel| (rel, None)));
+    }
+    if let Some(text) = tester_text {
+        let rel = brief::rel_path(Some(unit), Role::Tester);
+        out.tester_brief = Some(root.join(&rel));
+        changes.push((rel, Some(text)));
+        changes.push((format!(".stewards/briefs/{unit}-tester.answer.json"), None));
+    }
     let brief_rel = brief::rel_path(Some(unit), Role::Maintainer);
-    let planned = [
-        (card_text.is_some(), &card_rel),
-        (true, &tasks_rel),
-        (tester_needed, &tester_rel),
-        (tester_needed, &tester_answer),
-        (true, &brief_rel),
-    ];
-    for (_, rel) in planned.iter().filter(|(writes, _)| *writes) {
-        safe_path(root, rel, false)?;
-    }
-    if card_text.is_some() {
-        check_unchanged(root, before, &[&card_rel])?;
-    }
-    let mut written: Vec<&str> = vec![];
-    if let Some(text) = &card_text {
-        repo.write(&card_rel, text.as_bytes())
-            .map_err(|e| after_writes(e, &written))?;
-        written.push(&card_rel);
-    }
-    match &tasks {
-        Some(t) => repo.write(&tasks_rel, serde_json::to_string_pretty(t)?.as_bytes()),
-        None => repo.remove(&tasks_rel),
-    }
-    .map_err(|e| after_writes(e, &written))?;
-    written.push(&tasks_rel);
-    if let Some(text) = &tester_text {
-        let path = brief::write_text(repo, Some(unit), Role::Tester, text)
-            .map_err(|e| after_writes(e, &written))?;
-        out.tester_brief = Some(path);
-        written.push(&tester_rel);
-    }
-    // a submitted job is done: a replay of the same answer finds no brief
-    repo.remove(&brief_rel)
-        .map_err(|e| after_writes(e, &written))?;
+    write_remove_and_retire(repo, before, &checked, &changes, &brief_rel)?;
     Ok(out)
 }
 
@@ -1266,16 +1255,34 @@ fn check_unchanged(root: &Path, before: &Before, rels: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Writes each `(rel, text)` in order, then removes the job's brief. A link at any of the paths is
-/// refused, and a file changed since `before` was recorded is `card_changed`, before the first
-/// write.
+/// Writes each `(rel, text)` in order, then removes the job's brief, through
+/// `write_remove_and_retire`.
 pub fn write_and_retire(
     repo: &Repo,
     before: &Before,
     writes: &[(String, String)],
     brief_rel: &str,
 ) -> Result<()> {
-    for rel in writes
+    let changes: Vec<(String, Option<String>)> = writes
+        .iter()
+        .map(|(rel, text)| (rel.clone(), Some(text.clone())))
+        .collect();
+    let checked: Vec<&str> = writes.iter().map(|(rel, _)| rel.as_str()).collect();
+    write_remove_and_retire(repo, before, &checked, &changes, brief_rel)
+}
+
+/// Writes each `(rel, Some(text))` and removes each `(rel, None)` in order, then removes the job's
+/// brief: the one checked write step of every submit. A link at any of the paths is refused, and
+/// a `checked` file changed since `before` was recorded is `card_changed`, before the first
+/// change; job files (briefs and their answers) are changed unchecked.
+pub fn write_remove_and_retire(
+    repo: &Repo,
+    before: &Before,
+    checked: &[&str],
+    changes: &[(String, Option<String>)],
+    brief_rel: &str,
+) -> Result<()> {
+    for rel in changes
         .iter()
         .map(|(rel, _)| rel.as_str())
         .chain([brief_rel])
@@ -1284,12 +1291,14 @@ pub fn write_and_retire(
     }
     // simplified: the check and the writes are not atomic, so a write landing between them is
     // still lost; a lock file would close that window if it shows up in practice.
-    let rels: Vec<&str> = writes.iter().map(|(rel, _)| rel.as_str()).collect();
-    check_unchanged(&repo.root, before, &rels)?;
+    check_unchanged(&repo.root, before, checked)?;
     let mut written: Vec<&str> = vec![];
-    for (rel, text) in writes {
-        repo.write(rel, text.as_bytes())
-            .map_err(|e| after_writes(e, &written))?;
+    for (rel, text) in changes {
+        match text {
+            Some(text) => repo.write(rel, text.as_bytes()),
+            None => repo.remove(rel),
+        }
+        .map_err(|e| after_writes(e, &written))?;
         written.push(rel);
     }
     // a submitted job is done: a replay of the same answer finds no brief

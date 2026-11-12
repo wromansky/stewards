@@ -1,14 +1,14 @@
 // `.stewards/telemetry/<yyyy-mm>.jsonl`: one line per submit, sizes and counts only.
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::output::CliError;
+use crate::check::one_line;
+use crate::workspace::{Repo, safe_path};
 
 #[derive(Debug, Serialize)]
 pub struct Record {
@@ -24,32 +24,12 @@ pub struct Record {
     pub timestamp: String,
 }
 
-pub fn append(root: &Path, record: &Record) -> Result<()> {
+pub fn append(repo: &Repo, record: &Record) -> Result<()> {
     let rel = format!(".stewards/telemetry/{}.jsonl", &record.timestamp[..7]);
-    append_under_stewards(root, &rel, &serde_json::to_string(record)?)
-}
-
-/// Every telemetry write: appends `line` to `root/rel`, refusing a path through a symlink, which a
-/// hostile repo could commit to point a write outside `.stewards/`.
-fn append_under_stewards(root: &Path, rel: &str, line: &str) -> Result<()> {
-    let mut path = root.to_path_buf();
-    for c in Path::new(rel).components() {
-        path.push(c);
-        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-            bail!(CliError::new(
-                "unsafe_path",
-                format!("{rel} passes through the symlink {}", path.display()),
-                "replace the symlink with a plain file or directory",
-            ));
-        }
-    }
-    std::fs::create_dir_all(path.parent().expect("a file has a parent"))?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
-    writeln!(file, "{line}")?;
-    Ok(())
+    repo.append(
+        &rel,
+        format!("{}\n", serde_json::to_string(record)?).as_bytes(),
+    )
 }
 
 /// `2026-11-12T00:45:03Z`, by Howard Hinnant's `civil_from_days`; times before the epoch print as
@@ -75,9 +55,11 @@ pub fn rfc3339(t: SystemTime) -> String {
 }
 
 /// Submits and mean pack bytes per role, and total pulled anchors; null with no telemetry files.
+/// Only regular files are read, and never through a symlinked `.stewards` or telemetry dir.
 /// simplified: unreadable files and lines are skipped, since telemetry must never fail `status`.
 pub fn summary(root: &Path) -> Value {
-    let Ok(dir) = std::fs::read_dir(root.join(".stewards/telemetry")) else {
+    let dir = safe_path(root, ".stewards/telemetry", false).and_then(|d| Ok(std::fs::read_dir(d)?));
+    let Ok(dir) = dir else {
         return Value::Null;
     };
     let mut seen_file = false;
@@ -85,7 +67,8 @@ pub fn summary(root: &Path) -> Value {
     let mut pulled = 0;
     for entry in dir.flatten() {
         let path = entry.path();
-        if path.extension().is_none_or(|e| e != "jsonl") {
+        let regular = entry.file_type().is_ok_and(|t| t.is_file());
+        if !regular || path.extension().is_none_or(|e| e != "jsonl") {
             continue;
         }
         seen_file = true;
@@ -111,4 +94,22 @@ pub fn summary(root: &Path) -> Value {
         "mean_pack_bytes": roles.iter().map(|(r, (n, b))| (r.clone(), json!(b / n))).collect::<serde_json::Map<_, _>>(),
         "pulled_anchors": pulled,
     })
+}
+
+/// The `summary` as short lines for `--human`: one per role, then the pulled anchors.
+pub fn human(summary: &Value) -> Vec<String> {
+    let mut out: Vec<String> = summary["submits"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(role, n)| {
+            format!(
+                "- {}: {n} submit(s), mean pack {} bytes",
+                one_line(role),
+                summary["mean_pack_bytes"][role]
+            )
+        })
+        .collect();
+    out.push(format!("- pulled anchors: {}", summary["pulled_anchors"]));
+    out
 }

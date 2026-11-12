@@ -120,6 +120,11 @@ pub fn has_object(root: &Path, sha: &str) -> bool {
         && run(root, &["cat-file", "-e", &format!("{sha}^{{tree}}")], None).is_ok()
 }
 
+/// True when `sha` names a tree object itself; a commit, a blob, or an unknown name is false.
+pub fn is_tree(root: &Path, sha: &str) -> bool {
+    run(root, &["cat-file", "-t", "--end-of-options", sha], None).is_ok_and(|t| t.trim() == "tree")
+}
+
 const DIFF: [&str; 4] = ["diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/"];
 
 pub fn diff_names(root: &Path, from: &str, to: &str) -> Result<Vec<String>> {

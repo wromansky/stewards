@@ -43,12 +43,32 @@ pub fn fingerprint(tree: &[(String, String)], unit: &str, router: &Router) -> St
     format!("sha256:{hex}")
 }
 
+/// The `[reviewed]` a stamp of `unit` at snapshot `tree` records, keeping the role marks of `marks`.
+pub fn reviewed_at(
+    repo: &Repo,
+    unit: &str,
+    tree: &str,
+    marks: Option<&Reviewed>,
+) -> Result<Reviewed> {
+    let loaded = repo.loaded()?;
+    let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+    let entries = git::ls_tree(&repo.root, tree)?;
+    Ok(Reviewed {
+        // no commits yet: the commit is display-only, so empty is fine
+        commit: git::head_commit(&repo.root)?.unwrap_or_default(),
+        fingerprint: fingerprint(&entries, unit, &router),
+        tree: tree.to_string(),
+        // A role with no mark measures from the stamp. Keep that baseline when the stamp moves,
+        // or a pending tester or documenter job would vanish the moment the maintainer approves.
+        tester: marks.map(|r| r.tester.clone().unwrap_or_else(|| r.tree.clone())),
+        documenter: marks.map(|r| r.documenter.clone().unwrap_or_else(|| r.tree.clone())),
+    })
+}
+
 /// Writes `[reviewed]` for `unit` at snapshot `tree` into its card, keeping the role marks and the rest.
 pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed> {
     let loaded = repo.loaded()?;
     loaded.unit(unit)?;
-    let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
-    let entries = git::ls_tree(&repo.root, tree)?;
     let mut card = loaded.cards.get(unit).cloned().unwrap_or_else(|| UnitCard {
         unit: unit.to_string(),
         reviewed: None,
@@ -57,19 +77,7 @@ pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed> {
         gaps: vec![],
         doc: None,
     });
-    let marks = card.reviewed.take();
-    let reviewed = Reviewed {
-        // no commits yet: the commit is display-only, so empty is fine
-        commit: git::head_commit(&repo.root)?.unwrap_or_default(),
-        fingerprint: fingerprint(&entries, unit, &router),
-        tree: tree.to_string(),
-        // A role with no mark measures from the stamp. Keep that baseline when the stamp moves,
-        // or a pending tester or documenter job would vanish the moment the maintainer approves.
-        tester: marks
-            .as_ref()
-            .map(|r| r.tester.clone().unwrap_or_else(|| r.tree.clone())),
-        documenter: marks.map(|r| r.documenter.unwrap_or(r.tree)),
-    };
+    let reviewed = reviewed_at(repo, unit, tree, card.reviewed.as_ref())?;
     card.reviewed = Some(reviewed.clone());
     repo.write(
         &format!(".stewards/units/{unit}.toml"),

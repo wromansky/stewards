@@ -105,7 +105,8 @@ impl Human for StatusReport {
         }
         if let Some(t) = self.telemetry.as_ref().filter(|t| !t.is_null()) {
             out.push(String::new());
-            out.push(format!("Telemetry: {t}"));
+            out.push("Telemetry:".into());
+            out.extend(crate::telemetry::human(t));
         }
         out.join("\n")
     }

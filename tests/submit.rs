@@ -15,6 +15,7 @@ use tempfile::TempDir;
 
 const CARD: &str = ".stewards/units/api.toml";
 const ANSWER: &str = ".stewards/briefs/api-maintainer.answer.json";
+const BRIEF: &str = ".stewards/briefs/api-maintainer.md";
 
 /// A copy of the single fixture and an empty STEWARDS_HOME.
 fn setup() -> (TempDir, TempDir) {
@@ -109,6 +110,10 @@ fn rejected(answer: &Value, code: &str, field: &str) {
     assert!(fields.contains(&field), "{v}");
     assert_eq!(fs::read(dir.path().join(CARD)).unwrap(), before);
     assert!(!dir.path().join(".stewards/telemetry").exists());
+    assert!(
+        dir.path().join(BRIEF).is_file(),
+        "a failed submit keeps the brief"
+    );
 }
 
 #[test]
@@ -120,9 +125,9 @@ fn approve_stamps_the_brief_snapshot_so_a_later_edit_stays_stale() {
         "router = []",
         "router = [1]",
     );
+    let header = read_header(&dir.path().join(".stewards/briefs/api-maintainer.md")).unwrap();
     let (code, v) = submit(dir.path(), home.path(), &review("approve"));
     assert_eq!(code, 0, "{v}");
-    let header = read_header(&dir.path().join(".stewards/briefs/api-maintainer.md")).unwrap();
     assert_eq!(card(dir.path()).reviewed.unwrap().tree, header.snapshot);
     assert_eq!(
         v["summary"],
@@ -167,8 +172,11 @@ fn changes_does_not_stamp_and_names_the_developer_brief() {
     assert_eq!(code, 0, "{v}");
     assert_eq!(
         v["summary"],
-        "api maintainer: changes; 1 finding (one_line src/api/items.py:4); card unchanged; \
-         next: stewards brief api --role developer"
+        format!(
+            "api maintainer: changes; 1 finding (one_line src/api/items.py:4); card unchanged; \
+             next: stewards -C {} brief api --role developer",
+            dir.path().canonicalize().unwrap().display()
+        )
     );
     assert_eq!(fs::read(dir.path().join(CARD)).unwrap(), before);
     assert_eq!(freshness(dir.path(), home.path()), "unreviewed");
@@ -189,6 +197,8 @@ fn explain_prints_the_explanation_truncated_and_does_not_stamp() {
     assert!(v["tester_brief"].is_null());
     assert_eq!(freshness(dir.path(), home.path()), "unreviewed");
 
+    explain_job(dir.path(), home.path());
+    fs::write(dir.path().join(ANSWER), explain(&long).to_string()).unwrap();
     let out = spawn(
         dir.path(),
         home.path(),
@@ -226,7 +236,7 @@ fn patch_adding_an_interface_keeps_the_rest_of_the_card() {
     assert_eq!(code, 0, "{v}");
     assert_eq!(
         v["summary"],
-        "api maintainer: explained; card: +1 interface; 0 tasks"
+        "api maintainer: explained; card: +interface list-items; 0 tasks"
     );
     let after = card(dir.path());
     assert_eq!(after.interface.len(), 2);
@@ -320,7 +330,9 @@ fn tester_needed_writes_the_tester_brief() {
     a["tester_needed"] = json!(true);
     let (code, v) = submit(dir.path(), home.path(), &a);
     assert_eq!(code, 0, "{v}");
-    assert_eq!(v["tester_brief"], ".stewards/briefs/api-tester.md");
+    let tester = dir.path().canonicalize().unwrap();
+    let tester = tester.join(".stewards/briefs/api-tester.md");
+    assert_eq!(v["tester_brief"], tester.to_str().unwrap());
     let h = read_header(&dir.path().join(".stewards/briefs/api-tester.md")).unwrap();
     assert_eq!(h.role, Role::Tester);
     assert_eq!(h.task, "add a count endpoint");
@@ -418,13 +430,13 @@ fn status_telemetry_summarises_two_submits() {
 #[test]
 fn a_symlinked_card_is_not_written_through() {
     let (dir, home) = setup();
+    explain_job(dir.path(), home.path());
     let outside = TempDir::new().unwrap();
     let target = outside.path().join("api.toml");
     fs::copy(dir.path().join(CARD), &target).unwrap();
     fs::remove_file(dir.path().join(CARD)).unwrap();
     std::os::unix::fs::symlink(&target, dir.path().join(CARD)).unwrap();
     let before = fs::read(&target).unwrap();
-    explain_job(dir.path(), home.path());
     let mut a = explain("e");
     a["card_patch"] = json!({"anchors": []});
     let (code, v) = submit(dir.path(), home.path(), &a);
@@ -454,4 +466,313 @@ fn rfc3339_converts_known_timestamps() {
     assert_eq!(at(1_709_208_000), "2024-02-29T12:00:00Z");
     assert_eq!(at(1_700_000_000), "2023-11-14T22:13:20Z");
     assert_eq!(at(4_102_444_799), "2099-12-31T23:59:59Z");
+}
+
+/// The brief's header JSON, changed by `change` and written back.
+fn edit_header(dir: &Path, change: impl FnOnce(&mut Value)) {
+    let path = dir.join(BRIEF);
+    let text = fs::read_to_string(&path).unwrap();
+    let (first, rest) = text.split_once('\n').unwrap();
+    let json = first
+        .strip_prefix("<!-- stewards-job ")
+        .and_then(|l| l.strip_suffix(" -->"))
+        .unwrap();
+    let mut header: Value = serde_json::from_str(json).unwrap();
+    change(&mut header);
+    fs::write(&path, format!("<!-- stewards-job {header} -->\n{rest}")).unwrap();
+}
+
+/// Submits `answer` against a brief whose header `change` edited; asserts `no_brief`, nothing written.
+fn header_rejected(change: impl FnOnce(&Path, &mut Value)) {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    edit_header(dir.path(), |h| change(dir.path(), h));
+    let before = fs::read(dir.path().join(CARD)).unwrap();
+    let mut a = review("approve");
+    a["card_patch"] = json!({"anchors": []});
+    let (code, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("no_brief")), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not usable")
+    );
+    assert!(v["error"]["fix"].as_str().unwrap().contains("fresh brief"));
+    assert_eq!(fs::read(dir.path().join(CARD)).unwrap(), before);
+    assert!(!dir.path().join(".stewards/telemetry").exists());
+    assert!(dir.path().join(BRIEF).is_file());
+}
+
+#[test]
+fn approve_with_a_card_patch_stamps_and_patches() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let header = read_header(&dir.path().join(BRIEF)).unwrap();
+    let mut a = review("approve");
+    a["card_patch"] = json!({"interface": [
+        {"id": "create-item", "anchor": "src/api/items.py::create_item", "contract": "POST"},
+        {"id": "list-items", "anchor": "src/api/items.py::list_items", "contract": "GET"}]});
+    let (code, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!(code, 0, "{v}");
+    let after = card(dir.path());
+    assert_eq!(after.reviewed.unwrap().tree, header.snapshot);
+    let ids: Vec<&str> = after.interface.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ids, ["create-item", "list-items"]);
+    assert_eq!(
+        v["summary"],
+        format!(
+            "api maintainer: approve; card: ~interface create-item, +interface list-items; stamped {}",
+            &header.snapshot[..7]
+        )
+    );
+}
+
+#[test]
+fn tester_and_documenter_marks_survive_a_patch_and_a_stamp() {
+    let (dir, home) = setup();
+    assert_eq!(run(dir.path(), home.path(), &["stamp", "api"]).0, 0);
+    let mut c = card(dir.path());
+    let r = c.reviewed.as_mut().unwrap();
+    r.tester = Some("tester-mark".into());
+    r.documenter = Some("documenter-mark".into());
+    fs::write(dir.path().join(CARD), toml::to_string(&c).unwrap()).unwrap();
+    edit(
+        &dir.path().join("src/api/items.py"),
+        "router = []",
+        "router = [1]",
+    );
+    for verdict in ["changes", "approve"] {
+        review_job(dir.path(), home.path());
+        let mut a = review(verdict);
+        a["card_patch"] = json!({"gaps": []});
+        let (code, v) = submit(dir.path(), home.path(), &a);
+        assert_eq!(code, 0, "{v}");
+        let r = card(dir.path()).reviewed.unwrap();
+        assert_eq!(r.tester.as_deref(), Some("tester-mark"), "{verdict}");
+        assert_eq!(
+            r.documenter.as_deref(),
+            Some("documenter-mark"),
+            "{verdict}"
+        );
+    }
+}
+
+#[test]
+fn mixed_problems_are_answer_parse_failed_and_only_too_long_is_answer_too_long() {
+    let mut a = review("changes");
+    a["notes"] = json!("x".repeat(2001));
+    a["card_patch"] = json!({"gaps": [{"kind": "gap", "title": "a\u{7}b", "note": ""}]});
+    rejected(&a, "answer_parse_failed", "notes");
+    let mut a = review("changes");
+    a["notes"] = json!("x".repeat(2001));
+    a["pulled_anchors"] = json!(["y".repeat(301)]);
+    rejected(&a, "answer_too_long", "pulled_anchors[0]");
+}
+
+#[test]
+fn a_patch_with_null_gaps_leaves_gaps_alone() {
+    let (dir, home) = setup();
+    let before = card(dir.path()).gaps;
+    review_job(dir.path(), home.path());
+    let mut a = review("changes");
+    a["card_patch"] = json!({"anchors": [], "gaps": null});
+    let (code, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!(code, 0, "{v}");
+    let after = card(dir.path());
+    assert!(after.anchors.is_empty());
+    assert_eq!(after.gaps.len(), before.len());
+    assert_eq!(after.gaps[0].title, before[0].title);
+}
+
+#[test]
+fn summary_names_each_card_change() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let mut a = review("changes");
+    a["card_patch"] = json!({"anchors": [], "gaps": [], "interface": [
+        {"id": "create-item", "anchor": "src/api/items.py::create_item",
+         "contract": "POST /items; 201 with body; 422 on invalid"},
+        {"id": "count-items", "anchor": "src/api/items.py::list_items", "contract": "GET"}]});
+    let (code, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!(code, 0, "{v}");
+    let summary = v["summary"].as_str().unwrap();
+    assert!(
+        summary.contains(
+            "; card: +interface count-items, -anchor src/api/items.py::router, \
+             -gap no pagination on list;"
+        ),
+        "{summary}"
+    );
+}
+
+#[test]
+fn rfc3339_converts_year_end_and_mid_november() {
+    let at = |secs| rfc3339(UNIX_EPOCH + Duration::from_secs(secs));
+    assert_eq!(at(1_735_603_200), "2024-12-31T00:00:00Z");
+    assert_eq!(at(1_735_689_599), "2024-12-31T23:59:59Z");
+    assert_eq!(at(1_794_444_303), "2026-11-12T00:45:03Z");
+}
+
+#[test]
+fn a_second_submit_after_success_is_no_brief() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    assert_eq!(submit(dir.path(), home.path(), &review("changes")).0, 0);
+    assert!(!dir.path().join(BRIEF).exists());
+    assert!(dir.path().join(ANSWER).is_file(), "the answer is kept");
+    let args = ["submit", "api", "--role", "maintainer", "--file", ANSWER];
+    let (code, v) = run(dir.path(), home.path(), &args);
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("no_brief")), "{v}");
+}
+
+#[test]
+fn a_header_mode_edited_from_explain_to_review_is_still_a_job() {
+    let (dir, home) = setup();
+    explain_job(dir.path(), home.path());
+    edit_header(dir.path(), |h| h["mode"] = json!("review"));
+    let (code, v) = submit(dir.path(), home.path(), &review("changes"));
+    assert_eq!(code, 0, "{v}");
+}
+
+#[test]
+fn a_header_with_another_unit_is_no_brief() {
+    header_rejected(|_, h| h["unit"] = json!("store"));
+}
+
+#[test]
+fn a_header_with_another_role_is_no_brief() {
+    header_rejected(|_, h| h["role"] = json!("tester"));
+}
+
+#[test]
+fn a_header_snapshot_of_head_is_no_brief() {
+    header_rejected(|_, h| h["snapshot"] = json!("HEAD"));
+}
+
+#[test]
+fn a_header_snapshot_of_a_commit_is_no_brief() {
+    header_rejected(|dir, h| {
+        h["snapshot"] = json!(common::git(dir, &["rev-parse", "HEAD"]).trim());
+    });
+}
+
+#[test]
+fn a_header_snapshot_of_a_blob_is_no_brief() {
+    header_rejected(|dir, h| {
+        let blob = common::git(dir, &["rev-parse", "HEAD:src/api/items.py"]);
+        h["snapshot"] = json!(blob.trim());
+    });
+}
+
+#[test]
+fn a_patch_anchor_in_git_config_is_dead() {
+    let mut a = review("changes");
+    a["card_patch"] = json!({"anchors": [{"path": ".git/config", "name": "core"}]});
+    rejected(&a, "answer_dead_anchor", "card_patch.anchors[0]");
+}
+
+#[test]
+fn a_patch_anchor_in_another_units_file_is_dead() {
+    let mut a = review("changes");
+    a["card_patch"] = json!({"interface": [
+        {"id": "save", "anchor": "src/store/db.py::save_item", "contract": "c"}]});
+    rejected(&a, "answer_dead_anchor", "card_patch.interface[0].anchor");
+}
+
+#[test]
+fn an_oversize_or_irregular_answer_file_is_usage() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let mut big = review("changes").to_string();
+    big.push_str(&" ".repeat(256 * 1024));
+    let (code, v) = submit_text(dir.path(), home.path(), &big);
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("usage")), "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("256 KiB"));
+    let args = [
+        "submit",
+        "api",
+        "--role",
+        "maintainer",
+        "--file",
+        ".stewards",
+    ];
+    let (code, v) = run(dir.path(), home.path(), &args);
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("usage")), "{v}");
+    assert!(dir.path().join(BRIEF).is_file());
+}
+
+#[test]
+fn a_list_of_201_entries_is_answer_too_long() {
+    let mut a = review("changes");
+    a["pulled_anchors"] = json!(vec!["src/api/items.py::router"; 201]);
+    rejected(&a, "answer_too_long", "pulled_anchors");
+}
+
+#[test]
+fn a_title_with_a_direction_override_is_rejected() {
+    let mut a = review("changes");
+    a["card_patch"] = json!({"gaps": [{"kind": "gap", "title": "ok\u{202E}txt.exe", "note": ""}]});
+    rejected(&a, "answer_parse_failed", "card_patch.gaps[0].title");
+}
+
+#[test]
+fn reported_errors_are_one_line_and_capped() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let mut a = review("changes");
+    let key = format!("\u{1b}[31m{}", "k".repeat(400));
+    a[key.as_str()] = json!(1);
+    let (code, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!(code, 2, "{v}");
+    let errors = v["error"]["errors"].as_array().unwrap();
+    assert!(!errors.is_empty());
+    for e in errors {
+        for k in ["field", "problem"] {
+            let text = e[k].as_str().unwrap();
+            assert!(text.chars().count() <= 200, "{text}");
+            assert!(!text.chars().any(char::is_control), "{text:?}");
+        }
+    }
+}
+
+#[test]
+fn a_failed_write_names_what_was_already_written() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    // a directory where the tester brief goes: the card is written, the brief cannot be
+    let tester = dir.path().join(".stewards/briefs/api-tester.md");
+    fs::remove_file(&tester).unwrap();
+    fs::create_dir(&tester).unwrap();
+    let mut a = review("approve");
+    a["tester_needed"] = json!(true);
+    let (code, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!(code, 2, "{v}");
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("submit had already written .stewards/units/api.toml"),
+        "{message}"
+    );
+    assert!(card(dir.path()).reviewed.is_some());
+    assert!(dir.path().join(BRIEF).is_file());
+}
+
+#[test]
+fn status_telemetry_human_is_short_lines() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let bytes = read_header(&dir.path().join(BRIEF)).unwrap().bytes;
+    assert_eq!(submit(dir.path(), home.path(), &review("changes")).0, 0);
+    let out = spawn(
+        dir.path(),
+        home.path(),
+        &["status", "--telemetry", "--human"],
+    );
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.ends_with(&format!(
+            "\n\nTelemetry:\n- maintainer: 1 submit(s), mean pack {bytes} bytes\n- pulled anchors: 0\n"
+        )),
+        "{text}"
+    );
 }

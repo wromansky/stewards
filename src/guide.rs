@@ -1,5 +1,4 @@
 // `guide` and the AGENTS.md block.
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Context;
@@ -7,6 +6,7 @@ use serde::Serialize;
 
 use crate::harness::{self, GENERIC_DELEGATION, HARNESSES};
 use crate::output::{Global, Human, emit};
+use crate::workspace::Repo;
 
 const START: &str = "<!-- stewards:start -->";
 const END: &str = "<!-- stewards:end -->";
@@ -47,9 +47,10 @@ pub fn block() -> &'static str {
     BLOCK
 }
 
-/// Puts the block at the top of `agents_md` (creating it), or replaces the text between
-/// existing markers. Returns whether the file changed.
-pub fn upsert_block(agents_md: &Path) -> anyhow::Result<bool> {
+/// Puts the block at the top of the repo's `AGENTS.md` (creating it), or replaces the text
+/// between existing markers. Returns whether the file changed.
+pub fn upsert_block(repo: &Repo) -> anyhow::Result<bool> {
+    let agents_md = &repo.root.join("AGENTS.md");
     let old = match std::fs::read_to_string(agents_md) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -66,7 +67,7 @@ pub fn upsert_block(agents_md: &Path) -> anyhow::Result<bool> {
     if new == old {
         return Ok(false);
     }
-    std::fs::write(agents_md, new).with_context(|| agents_md.display().to_string())?;
+    repo.write("AGENTS.md", new.as_bytes())?;
     Ok(true)
 }
 
@@ -176,7 +177,7 @@ const fn e(code: &'static str, when: &'static str, fix: &'static str) -> ErrorRo
     ErrorRow { code, when, fix }
 }
 
-static ERRORS: [ErrorRow; 16] = [
+static ERRORS: [ErrorRow; 27] = [
     e(
         "not_a_git_repo",
         "no `.git` above cwd",
@@ -239,13 +240,13 @@ static ERRORS: [ErrorRow; 16] = [
     ),
     e(
         "baml_runtime_unavailable",
-        "the native lib can't load",
+        "`--direct` and the native lib is not found",
         "set `BAML_LIBRARY_PATH` to the library, or set `STEWARDS_BAML_DOWNLOAD=1` to let stewards download it",
     ),
     e(
         "no_api_key",
-        "`--direct` with no provider key",
-        "export `ANTHROPIC_API_KEY` (or the configured provider's key)",
+        "`--direct` and the configured provider's key is unset or blank",
+        "export the variable named (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`)",
     ),
     e(
         "tracker_auth",
@@ -257,6 +258,57 @@ static ERRORS: [ErrorRow; 16] = [
         "unsupported harness name",
         "one of the listed harnesses",
     ),
+    e(
+        "usage",
+        "bad arguments, a bad `-C`, or a role given with or without a unit wrongly",
+        "run `stewards <command> --help`",
+    ),
+    e(
+        "not_in_repo",
+        "the current directory is in no repo of the workspace",
+        "run inside a repo or pass `--repo <name>`",
+    ),
+    e(
+        "unknown_repo",
+        "`--repo` names no repo",
+        "one of the listed repos",
+    ),
+    e(
+        "path_outside_repo",
+        "`route` given a path in no repo",
+        "pass a path inside the repo",
+    ),
+    e(
+        "already_initialized",
+        "`init` where `.stewards/` files exist",
+        "edit `.stewards/units.toml` instead",
+    ),
+    e(
+        "no_brief",
+        "no brief, or an unreadable header, for the job",
+        "run the brief command named",
+    ),
+    e(
+        "no_direct_model",
+        "`--direct` with no `[models.direct]` entry for the role, or an unsupported provider",
+        "set `[models.direct] <role> = \"<provider>/<model>\"` in the user config",
+    ),
+    e(
+        "direct_call_failed",
+        "the model call failed (fixed text, never the prompt or key)",
+        "rerun with `BAML_LOG=info`",
+    ),
+    e(
+        "unsafe_path",
+        "a path the tool reads or writes in a repo is not plain names, or passes through a symlink",
+        "remove the symlink at `<path>`; stewards never writes through links",
+    ),
+    e(
+        "not_implemented",
+        "a command or flag not built yet",
+        "use a release that has it",
+    ),
+    e("internal", "any other failure", "report a bug"),
 ];
 
 const fn t(term: &'static str, definition: &'static str) -> Term {

@@ -105,11 +105,13 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// Runs the built `stewards` binary in `dir`.
+/// Runs the built `stewards` binary in `dir`, with an empty STEWARDS_HOME.
 pub fn stewards(dir: &Path, args: &[&str]) -> Output {
+    let home = TempDir::new().unwrap();
     Command::new(env!("CARGO_BIN_EXE_stewards"))
         .args(args)
         .current_dir(dir)
+        .env("STEWARDS_HOME", home.path())
         .output()
         .unwrap()
 }

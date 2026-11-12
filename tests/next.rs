@@ -87,7 +87,9 @@ fn never_stamped_unit_gets_a_maintainer_job_listing_all_its_files() {
         ]
     );
     assert_eq!(job["command"], "stewards brief store --role maintainer");
-    assert_eq!(job["brief_path"], ".stewards/briefs/store-maintainer.md");
+    let brief = repo.path().canonicalize().unwrap();
+    let brief = brief.join(".stewards/briefs/store-maintainer.md");
+    assert_eq!(job["brief_path"], brief.to_str().unwrap());
 }
 
 #[test]

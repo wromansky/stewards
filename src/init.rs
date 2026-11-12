@@ -1,7 +1,6 @@
 // `init` step 1: propose units from repository facts (no LLM) and write the starting files.
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
@@ -10,7 +9,8 @@ use serde::Serialize;
 use crate::model::{SCHEMA, UnitDef};
 use crate::output::{CliError, Global, Human, emit, not_implemented};
 use crate::route::Router;
-use crate::{git, guide, workspace};
+use crate::workspace::{self, Repo};
+use crate::{git, guide};
 
 /// Commits of history that co-change is counted over.
 const COMMITS: usize = 500;
@@ -366,15 +366,9 @@ impl Human for Init {
     }
 }
 
-fn write_file(root: &Path, rel: &str, text: &str) -> Result<()> {
-    let path = root.join(rel);
-    std::fs::create_dir_all(path.parent().expect("a file has a parent"))?;
-    std::fs::write(&path, text).with_context(|| path.display().to_string())
-}
-
 /// Appends the `.stewards` ignore lines that are missing; returns whether it wrote.
-fn append_gitignore(root: &Path) -> Result<bool> {
-    let path = root.join(".gitignore");
+fn append_gitignore(repo: &Repo) -> Result<bool> {
+    let path = repo.root.join(".gitignore");
     let old = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -393,7 +387,7 @@ fn append_gitignore(root: &Path) -> Result<bool> {
     }
     new += &missing.join("\n");
     new.push('\n');
-    std::fs::write(&path, new).with_context(|| path.display().to_string())?;
+    repo.write(".gitignore", new.as_bytes())?;
     Ok(true)
 }
 
@@ -513,10 +507,9 @@ pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
         .collect();
 
     let test_roots: Vec<String> = test_roots.into_iter().collect();
-    write_file(
-        &root,
+    repo.write(
         ".stewards/units.toml",
-        &toml::to_string(&UnitsOut { unit: &defs })?,
+        toml::to_string(&UnitsOut { unit: &defs })?.as_bytes(),
     )?;
     let repo_toml = RepoOut {
         schema: SCHEMA,
@@ -526,15 +519,18 @@ pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
             test: &test_commands,
         },
     };
-    write_file(&root, ".stewards/repo.toml", &toml::to_string(&repo_toml)?)?;
+    repo.write(
+        ".stewards/repo.toml",
+        toml::to_string(&repo_toml)?.as_bytes(),
+    )?;
     let mut wrote = vec![
         ".stewards/units.toml".to_string(),
         ".stewards/repo.toml".to_string(),
     ];
-    if append_gitignore(&root)? {
+    if append_gitignore(repo)? {
         wrote.push(".gitignore".into());
     }
-    if guide::upsert_block(&root.join("AGENTS.md"))? {
+    if guide::upsert_block(repo)? {
         wrote.push("AGENTS.md".into());
     }
     emit(

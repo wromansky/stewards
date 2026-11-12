@@ -3,6 +3,7 @@ use std::process::Command;
 
 use serde_json::Value;
 use stewards::guide::{block, upsert_block};
+use stewards::workspace::Repo;
 use tempfile::TempDir;
 
 /// Runs `stewards guide <args>` with an empty environment plus `env`, outside any git repo.
@@ -134,35 +135,38 @@ fn all_names_every_harness() {
 }
 
 #[test]
-fn errors_lists_every_code_in_the_spec_table() {
+fn errors_match_the_design_error_code_table() {
+    let design = include_str!("../DESIGN.md");
+    let table = design
+        .split("| code | when | fix text |\n|---|---|---|\n")
+        .nth(1)
+        .expect("DESIGN.md has the error-code table");
+    let rows: Vec<Vec<String>> = table
+        .lines()
+        .take_while(|l| l.starts_with("| `"))
+        .map(|l| {
+            let cells: Vec<&str> = l.trim_matches('|').split(" | ").map(str::trim).collect();
+            assert_eq!(cells.len(), 3, "{l}");
+            vec![
+                cells[0].trim_matches('`').to_string(),
+                cells[1].to_string(),
+                cells[2].to_string(),
+            ]
+        })
+        .collect();
+    assert!(rows.len() > 20);
     let (v, _) = guide(&[], &["--errors"]);
-    let codes: Vec<_> = v["errors"]
+    let listed: Vec<Vec<String>> = v["errors"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|e| e["code"].as_str().unwrap())
+        .map(|e| {
+            ["code", "when", "fix"]
+                .map(|k| e[k].as_str().unwrap().to_string())
+                .to_vec()
+        })
         .collect();
-    assert_eq!(
-        codes,
-        [
-            "not_a_git_repo",
-            "no_stewards_dir",
-            "schema_too_new",
-            "invalid_toml",
-            "unknown_unit",
-            "unknown_role",
-            "answer_parse_failed",
-            "answer_dead_anchor",
-            "answer_too_long",
-            "command_not_allowed",
-            "command_timeout",
-            "workspace_repo_missing",
-            "baml_runtime_unavailable",
-            "no_api_key",
-            "tracker_auth",
-            "harness_unknown"
-        ]
-    );
+    assert_eq!(listed, rows);
 }
 
 #[test]
@@ -196,10 +200,19 @@ fn agents_md(dir: &Path) -> std::path::PathBuf {
     dir.join("AGENTS.md")
 }
 
+/// An uninitialized repo rooted at `dir`.
+fn repo(dir: &Path) -> Repo {
+    Repo {
+        name: "repo".into(),
+        root: dir.to_path_buf(),
+        loaded: None,
+    }
+}
+
 #[test]
 fn upsert_creates_a_missing_file() {
     let dir = TempDir::new().unwrap();
-    assert!(upsert_block(&agents_md(dir.path())).unwrap());
+    assert!(upsert_block(&repo(dir.path())).unwrap());
     let text = std::fs::read_to_string(agents_md(dir.path())).unwrap();
     assert_eq!(text, format!("{}\n", block()));
 }
@@ -208,7 +221,7 @@ fn upsert_creates_a_missing_file() {
 fn upsert_puts_the_block_on_top_and_keeps_other_content() {
     let dir = TempDir::new().unwrap();
     std::fs::write(agents_md(dir.path()), "# Mine\n\nrules\n").unwrap();
-    assert!(upsert_block(&agents_md(dir.path())).unwrap());
+    assert!(upsert_block(&repo(dir.path())).unwrap());
     let text = std::fs::read_to_string(agents_md(dir.path())).unwrap();
     assert_eq!(text, format!("{}\n\n# Mine\n\nrules\n", block()));
 }
@@ -218,7 +231,7 @@ fn upsert_replaces_an_older_block_in_place() {
     let dir = TempDir::new().unwrap();
     let old = "# Top\n\n<!-- stewards:start -->\nold text\n<!-- stewards:end -->\n\n# Bottom\n";
     std::fs::write(agents_md(dir.path()), old).unwrap();
-    assert!(upsert_block(&agents_md(dir.path())).unwrap());
+    assert!(upsert_block(&repo(dir.path())).unwrap());
     let text = std::fs::read_to_string(agents_md(dir.path())).unwrap();
     assert_eq!(text, format!("# Top\n\n{}\n\n# Bottom\n", block()));
 }
@@ -227,9 +240,9 @@ fn upsert_replaces_an_older_block_in_place() {
 fn second_upsert_changes_nothing() {
     let dir = TempDir::new().unwrap();
     std::fs::write(agents_md(dir.path()), "# Mine\n").unwrap();
-    upsert_block(&agents_md(dir.path())).unwrap();
+    upsert_block(&repo(dir.path())).unwrap();
     let first = std::fs::read(agents_md(dir.path())).unwrap();
-    assert!(!upsert_block(&agents_md(dir.path())).unwrap());
+    assert!(!upsert_block(&repo(dir.path())).unwrap());
     assert_eq!(std::fs::read(agents_md(dir.path())).unwrap(), first);
 }
 
@@ -304,7 +317,7 @@ fn upsert_keeps_crlf_content_byte_for_byte() {
     let dir = TempDir::new().unwrap();
     let old = "# Mine\r\n\r\nrules\r\n";
     std::fs::write(agents_md(dir.path()), old).unwrap();
-    assert!(upsert_block(&agents_md(dir.path())).unwrap());
+    assert!(upsert_block(&repo(dir.path())).unwrap());
     let text = std::fs::read(agents_md(dir.path())).unwrap();
     assert!(text.ends_with(old.as_bytes()));
     assert_eq!(text.len(), block().len() + 2 + old.len());
@@ -314,7 +327,7 @@ fn upsert_keeps_crlf_content_byte_for_byte() {
 fn upsert_keeps_content_without_trailing_newline() {
     let dir = TempDir::new().unwrap();
     std::fs::write(agents_md(dir.path()), "# Mine\nno newline").unwrap();
-    assert!(upsert_block(&agents_md(dir.path())).unwrap());
+    assert!(upsert_block(&repo(dir.path())).unwrap());
     let text = std::fs::read_to_string(agents_md(dir.path())).unwrap();
     assert_eq!(text, format!("{}\n\n# Mine\nno newline", block()));
 }
@@ -324,7 +337,7 @@ fn upsert_replacing_a_block_keeps_crlf_and_missing_final_newline_outside_it() {
     let dir = TempDir::new().unwrap();
     let old = "# Top\r\n<!-- stewards:start -->\r\nold\r\n<!-- stewards:end -->\r\nend";
     std::fs::write(agents_md(dir.path()), old).unwrap();
-    assert!(upsert_block(&agents_md(dir.path())).unwrap());
+    assert!(upsert_block(&repo(dir.path())).unwrap());
     let text = std::fs::read_to_string(agents_md(dir.path())).unwrap();
     assert_eq!(text, format!("# Top\r\n{}\r\nend", block()));
 }

@@ -242,3 +242,134 @@ fn write_over_a_file_keeps_its_permissions() {
         0o600
     );
 }
+/// Links `repo/rel` to a new file `outside/name` holding SECRET; returns the target.
+fn link_to_secret(repo: &Path, rel: &str, outside: &Path) -> std::path::PathBuf {
+    let target = outside.join("secret");
+    fs::write(&target, SECRET).unwrap();
+    let link = repo.join(rel);
+    fs::create_dir_all(link.parent().unwrap()).unwrap();
+    symlink(&target, &link).unwrap();
+    target
+}
+
+fn assert_unsafe(repo: &Path, args: &[&str]) {
+    let (code, v) = run(repo, args);
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (2, &"unsafe_path".into()),
+        "{v}"
+    );
+}
+
+#[test]
+fn brief_through_a_symlinked_brief_file_is_unsafe_path() {
+    let repo = fixture("single");
+    let outside = TempDir::new().unwrap();
+    let rel = ".stewards/briefs/api-maintainer.md";
+    let target = link_to_secret(repo.path(), rel, outside.path());
+    assert_unsafe(repo.path(), &["brief", "api", "--role", "maintainer"]);
+    assert_eq!(fs::read(&target).unwrap(), SECRET);
+}
+
+#[test]
+fn next_through_a_symlinked_brief_file_is_unsafe_path() {
+    let repo = fixture("single");
+    let outside = TempDir::new().unwrap();
+    let rel = ".stewards/briefs/api-maintainer.md";
+    let target = link_to_secret(repo.path(), rel, outside.path());
+    assert_unsafe(repo.path(), &["next"]);
+    assert_eq!(fs::read(&target).unwrap(), SECRET);
+}
+
+#[test]
+fn brief_through_a_symlinked_briefs_dir_is_unsafe_path() {
+    let repo = fixture("single");
+    let outside = TempDir::new().unwrap();
+    fs::write(outside.path().join("keep"), SECRET).unwrap();
+    symlink(outside.path(), repo.path().join(".stewards/briefs")).unwrap();
+    let before = snapshot_dir(outside.path());
+    assert_unsafe(repo.path(), &["brief", "api", "--role", "maintainer"]);
+    assert_unsafe(repo.path(), &["next"]);
+    assert_eq!(snapshot_dir(outside.path()), before);
+}
+
+#[test]
+fn docs_through_a_symlinked_page_is_unsafe_path() {
+    let repo = fixture("single");
+    let outside = TempDir::new().unwrap();
+    let target = link_to_secret(repo.path(), "docs/units/api.md", outside.path());
+    assert_unsafe(repo.path(), &["docs", "api"]);
+    assert_eq!(fs::read(&target).unwrap(), SECRET);
+}
+
+/// A committed repo with no `.stewards/`, at `<tmp>/repo`.
+fn uninitialized(tmp: &TempDir) -> std::path::PathBuf {
+    let root = tmp.path().join("repo");
+    fs::create_dir_all(root.join("src/app")).unwrap();
+    fs::write(root.join("src/app/main.py"), "x = 1\n").unwrap();
+    common::git(&root, &["init", "-q"]);
+    common::git(&root, &["add", "-A"]);
+    common::git(
+        &root,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t.invalid",
+            "commit",
+            "-q",
+            "--no-gpg-sign",
+            "-m",
+            "x",
+        ],
+    );
+    root
+}
+
+#[test]
+fn init_through_a_symlinked_agents_md_is_unsafe_path() {
+    let tmp = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let root = uninitialized(&tmp);
+    let target = link_to_secret(&root, "AGENTS.md", outside.path());
+    assert_unsafe(&root, &["init"]);
+    assert_eq!(fs::read(&target).unwrap(), SECRET);
+}
+
+#[test]
+fn init_through_a_symlinked_gitignore_is_unsafe_path() {
+    let tmp = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let root = uninitialized(&tmp);
+    let target = link_to_secret(&root, ".gitignore", outside.path());
+    assert_unsafe(&root, &["init"]);
+    assert_eq!(fs::read(&target).unwrap(), SECRET);
+}
+
+const TELEMETRY_LINE: &str = "{\"role\":\"maintainer\",\"bytes\":10,\"pulled_anchors\":[]}\n";
+
+#[test]
+fn status_telemetry_reads_only_regular_files() {
+    let repo = fixture("single");
+    let outside = TempDir::new().unwrap();
+    let real = outside.path().join("real.jsonl");
+    fs::write(&real, TELEMETRY_LINE).unwrap();
+    let dir = repo.path().join(".stewards/telemetry");
+    fs::create_dir_all(dir.join("sub.jsonl")).unwrap();
+    symlink(&real, dir.join("link.jsonl")).unwrap();
+    let (_, v) = run(repo.path(), &["status", "--telemetry"]);
+    assert!(v["telemetry"].is_null(), "{v}");
+    fs::write(dir.join("2026-11.jsonl"), TELEMETRY_LINE).unwrap();
+    let (_, v) = run(repo.path(), &["status", "--telemetry"]);
+    assert_eq!(v["telemetry"]["submits"]["maintainer"], 1, "{v}");
+}
+
+#[test]
+fn status_telemetry_does_not_follow_a_symlinked_dir() {
+    let repo = fixture("single");
+    let outside = TempDir::new().unwrap();
+    fs::write(outside.path().join("2026-11.jsonl"), TELEMETRY_LINE).unwrap();
+    symlink(outside.path(), repo.path().join(".stewards/telemetry")).unwrap();
+    let (_, v) = run(repo.path(), &["status", "--telemetry"]);
+    assert!(v["telemetry"].is_null(), "{v}");
+}

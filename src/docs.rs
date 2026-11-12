@@ -103,21 +103,18 @@ pub fn run(g: &Global, unit: Option<&str>) -> anyhow::Result<ExitCode> {
 
     let mut wrote = Vec::new();
     for (name, text) in pages {
-        let path = loaded.root.join(docs_path).join(&name);
-        if std::fs::read_to_string(&path).is_ok_and(|old| old == text) {
+        let rel = docs_path
+            .join(&name)
+            .components()
+            .filter(|c| matches!(c, Component::Normal(_)))
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if std::fs::read_to_string(repo.root.join(&rel)).is_ok_and(|old| old == text) {
             continue;
         }
-        std::fs::create_dir_all(path.parent().expect("a page has a parent"))?;
-        std::fs::write(&path, &text)?;
-        wrote.push(
-            docs_path
-                .join(&name)
-                .components()
-                .filter(|c| matches!(c, Component::Normal(_)))
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/"),
-        );
+        repo.write(&rel, text.as_bytes())?;
+        wrote.push(rel);
     }
     emit(&DocsReport { wrote }, g.human);
     Ok(ExitCode::SUCCESS)

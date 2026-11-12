@@ -1,7 +1,7 @@
 // Git CLI wrappers: ls-files, snapshot, ls-tree, diffs, head.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 
@@ -54,12 +54,13 @@ impl Drop for TempIndex {
 /// Works on a copy of the index; the real index, HEAD, and refs are untouched.
 pub fn snapshot(root: &Path) -> Result<String> {
     let real = root.join(run(root, &["rev-parse", "--git-path", "index"], None)?.trim());
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let temp = TempIndex(
-        std::env::temp_dir().join(format!("stewards-index-{}-{nanos}", std::process::id())),
-    );
+    // pid + counter: unique across processes and across threads of one process
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let temp = TempIndex(std::env::temp_dir().join(format!(
+        "stewards-index-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )));
     match std::fs::copy(&real, &temp.0) {
         Ok(_) => {}
         // no index yet: git starts from an empty one

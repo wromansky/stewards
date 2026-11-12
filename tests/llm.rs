@@ -100,6 +100,16 @@ fn every_answer_shape_parses() {
 }
 
 #[test]
+fn mode_serializes_lowercase_for_the_brief_header() {
+    assert_eq!(serde_json::to_value(Mode::Review).unwrap(), "review");
+    assert_eq!(serde_json::to_value(Mode::Explain).unwrap(), "explain");
+    assert_eq!(
+        serde_json::from_value::<Mode>(json!("explain")).unwrap(),
+        Mode::Explain
+    );
+}
+
+#[test]
 fn card_patch_remove_lists_parse_and_must_be_string_lists() {
     for mode in [Mode::Review, Mode::Explain] {
         let mut v = if mode == Mode::Review {

@@ -79,3 +79,27 @@ given = "brief --stdout for a maintainer"
 expect = "prints byte for byte the brief a plain brief writes, and writes no file"
 level = "integration"
 command = "cargo test --test brief stdout_prints_the_brief_and_writes_nothing"
+
+[[scenario]]
+id = "submit-caps-fix-task-text"
+interface = "submit-file"
+given = "a changes review whose findings join into a fix task longer than 20,000 characters"
+expect = "answer_too_long on findings and no write"
+level = "integration"
+command = "cargo test --test submit findings_whose_fix_task_passes_the_task_cap_are_answer_too_long"
+
+[[scenario]]
+id = "submit-long-fix-task-under-cap"
+interface = "submit-file"
+given = "a changes review whose joined findings pass 4500 characters but stay under the task cap"
+expect = "the submit succeeds and the developer brief reads the fix task"
+level = "integration"
+command = "cargo test --test submit changes_with_long_findings_writes_a_fix_task_the_developer_brief_reads"
+
+[[scenario]]
+id = "tester-bug-anchor-from-interface"
+interface = "card-patch"
+given = "a tester bug naming an interface, and a repeat of a bug whose card gap has an anchor"
+expect = "the gap anchor is the named interface's anchor; a bug naming no interface keeps the gap's existing anchor"
+level = "integration"
+command = "cargo test --test submit_roles tester_repeated_bug_sets_the_anchor_only_when_it_names_an_interface"

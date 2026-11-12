@@ -1,0 +1,33 @@
+unit = "git"
+
+[[scenario]]
+id = "origin_url_none_without_origin"
+interface = "origin_url"
+given = "repo with no origin remote (or only an upstream remote)"
+expect = "None"
+level = "integration"
+command = "cargo test --test git origin_url_is_none_without_an_origin_remote"
+
+[[scenario]]
+id = "origin_url_returns_origin"
+interface = "origin_url"
+given = "repo with origin remote https://h/o/name.git"
+expect = "Some(that url)"
+level = "integration"
+command = "cargo test --test git origin_url_is_the_origin_remote_url"
+
+[[scenario]]
+id = "origin_url_none_outside_repo"
+interface = "origin_url"
+given = "a directory that is not a git repo"
+expect = "None"
+level = "integration"
+command = "cargo test --test git origin_url_is_none_outside_a_repo"
+
+[[scenario]]
+id = "origin_url_none_when_url_empty"
+interface = "origin_url"
+given = "origin remote whose url is configured empty"
+expect = "None"
+level = "integration"
+command = "cargo test --test git -- --ignored origin_url_is_none_when_the_url_is_empty"

@@ -15,3 +15,19 @@ given = "unit `store` with 12 interfaces, 11 of them without a scenario"
 expect = "one uncovered_interface warning for the unit listing the first 10 uncovered ids joined by commas, then ` (+1 more)`"
 level = "integration"
 command = "cargo test --test check uncovered_interfaces_are_one_finding_per_unit_listing_ten_ids"
+
+[[scenario]]
+id = "check-stamp-creates-missing-card"
+interface = "check-stamp"
+given = "unit store has no card file"
+expect = "stamp store exits 0 and the reloaded store card has [reviewed]"
+level = "integration"
+command = "cargo test --test check stamping_a_unit_without_a_card_creates_one"
+
+[[scenario]]
+id = "check-stamp-keeps-card-and-role-marks"
+interface = "check-stamp"
+given = "a card with role marks, gaps, doc prose"
+expect = "stamp keeps them exactly and rewrites only [reviewed]"
+level = "integration"
+command = "cargo test --test check stamping_keeps_role_marks_and_the_rest_of_the_card"

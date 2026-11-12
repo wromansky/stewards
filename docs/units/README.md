@@ -19,8 +19,14 @@
 - brief-submit-cycle: [jobs](jobs.md) → [pack](pack.md) → [llm](llm.md) → [model](model.md) → [git](git.md) → [analysis](analysis.md)
 - next-job-scheduling: [next](next.md) → [analysis](analysis.md) → [git](git.md) → [model](model.md) → [jobs](jobs.md)
 - documenter-card-to-docs-page: [jobs](jobs.md) → [setup](setup.md)
+- maintainer-card-patch: [llm](llm.md) → [jobs](jobs.md) → [model](model.md)
 
 ## Decisions
 
 - Docs fixtures route to setup through a narrower glob than model's tests/fixtures/\*\*: tests/fixtures/docs/\*\* only feeds the docs renderer tests, so setup lists it and the more specific glob wins routing; edits there review the unit that renders docs, not the model unit.
 - Stewards adopts itself with checked-in .stewards cards and generated docs/units pages: Running the tool on its own repo exercises every role on real code; docs/units is rendered from cards so it stays in the repo as generated output, and the AGENTS.md block is the init-written one.
+- A card patch upserts by key and removes only through explicit remove lists: A present list used to replace that whole part of the card, so a maintainer who sent the one interface it changed deleted the rest. interface, anchors, and gaps now upsert by id, path\:\:name, and title and keep every entry not named; remove\_interface, remove\_anchors, and remove\_gaps are the only removal, and each removal must name a key the card has and the patch does not also upsert, so a typo or a contradictory patch is rejected rather than silently dropping entries.
+- Tester and documenter jobs wait for a unit's first stamp: Their marks live in the card's \[reviewed\] block and they measure from the stamp, so before the first maintainer review there is nothing to measure from and every file would look changed. A never-stamped unit gets its maintainer job first; a validator job for an unjudged bug does not wait, since it judges a reproduction, not a diff.
+- The docs index is not part of the documenter's lost-update check: docs/units/README.md is rendered from every card, so documenters of two units in one round both rewrite it; refusing the second as a lost update would block a correct submit. The unit's card and its own page stay checked.
+- A task's change has its own cap above the prose cap: A changes review joins every finding into one fix task, so with several findings the 2000-byte prose cap made a valid review impossible to submit. TASK\_CHANGE\_CAP (20000) applies to task changes only; other prose keeps the 2000 cap.
+- A tester's bug takes the anchor of the interface it names: The anchor shows the validator where the bug is. A bug naming an interface takes that interface's anchor; one naming none keeps the anchor it had, and a repeated bug keeps its severity and issue so a tester's rerun does not undo the validator's judgment.

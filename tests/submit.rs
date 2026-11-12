@@ -209,6 +209,17 @@ fn changes_with_long_findings_writes_a_fix_task_the_developer_brief_reads() {
 }
 
 #[test]
+fn findings_whose_fix_task_passes_the_task_cap_are_answer_too_long() {
+    let finding = |line: u32| {
+        json!({"file": "src/api/items.py", "line": line, "rung": "one_line",
+               "cut": "c".repeat(2000), "replace_with": "r".repeat(2000)})
+    };
+    let mut a = review("changes");
+    a["findings"] = json!((1..=6).map(finding).collect::<Vec<_>>());
+    rejected(&a, "answer_too_long", "findings");
+}
+
+#[test]
 fn explain_prints_the_explanation_truncated_and_does_not_stamp() {
     let (dir, home) = setup();
     explain_job(dir.path(), home.path());

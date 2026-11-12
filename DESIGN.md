@@ -1287,27 +1287,51 @@ paths; done is a `next` with no jobs.
 
 Read this section, then the Build order, then start.
 
-**State (2026-11-12).** Stage 1 is built on `feat/stage-1-core`: schemas,
-workspace, git snapshots, anchors, `route`, `check`, `stamp`, `debt`,
-`status`, `pack`, `next`, each reviewed and fixed, 196 tests. Stacked on it,
-`feat/stage-2-roles` holds the harness table and `guide`, user config and
-memory, `docs`, `init` step 1, and the BAML schemas with `llm.rs`;
-`feat/stage-2b-proof` holds the eval fixture. Nothing is merged to `main`
-but this document. Repo `wromansky/stewards` (public since 2026-11-12), auto-delete of
-merged branches on.
+**State (2026-11-12).** Stages 1 and 2 are built. `main` has stage 1.
+`feat/stage-2-roles` adds the harness table and `guide`, user config and
+memory, `docs`, `init` and `init --draft`, the BAML schemas with `llm.rs`,
+`brief`, `submit` for all six roles, the developer loop, and telemetry:
+about 500 tests. Stewards is adopted on this repository: nine units, their
+cards and test cards, `docs/units/`, and the `AGENTS.md` block are
+committed, written through the tool by role subagents handed only a brief
+path. `feat/stage-2b-proof` holds the eval fixture. CI runs on every push
+to a stage branch. Repo `wromansky/stewards` (public since 2026-11-12),
+auto-delete of merged branches on.
 
-**Next action.** The stage-1 gate, then the stage-2 chain on
-`feat/stage-2-roles`: `brief`, `submit` for the maintainer, `submit` for the
-other roles, the developer role, `init --draft`, then dogfooding on this
-repo. The task list in the build session is the plan; Build cycle says how
-waves run.
+**Next action.** Stage 2b: the eval runner and Pi driver, then the thin
+eval and its go or no-go before any stage 3 work. The task list in the
+build session is the plan; Build cycle says how waves run.
+
+**What dogfooding stage 2 showed (2026-11-12).** About ninety role jobs
+ran on this repository.
+- The loop works from a one-sentence handoff: architect, first reviews,
+  documenters, review rounds on real diffs, a finding turned into a
+  developer fix, a tester's bug judged by a validator.
+- It caught real defects in changes the build had already merged: the docs
+  escaping had dropped `$`, and `origin_url` misreads an empty remote URL.
+- `init` proposes one unit for a crate whose modules sit flat in `src/`;
+  the units here were drawn by hand from the table below.
+- Triggers are coarse. A tester and a documenter are due whenever a file
+  holding an interface anchor changes, and maintainers record most public
+  functions as interfaces, so a small edit in each of eight units cost 33
+  role jobs over two rounds. Candidates: trigger on the changed lines
+  overlapping an interface's own lines; or leave it to the maintainer's
+  `tester_needed` and a matching flag for the documenter.
+- The architect job returns every round in which two stamped units
+  changed, until plans exist (stage 3).
+- A model learns a length cap only by being rejected; the caps belong in
+  the schema text.
+- Two roles can record one bug under two titles.
+- A fix task's lane is the files the findings name, which leaves out the
+  test file a finding asks for; the developer's out-of-lane write is
+  reported, as designed.
+- About one job in fifty did the work and never ran `submit`.
 
 **Deferred, known:** workspace loads every listed repo before applying
 `--repo`, so a broken sibling blocks `--repo good`; the harness table has no
 `parallel` field; an anchor's symlink check runs before the read, not with
-it; rendered docs escape every punctuation character, which is safe but
-ugly raw; `guide --errors` lists only the codes that existed when it was
-written.
+it; the lost-update check and the write are not one atomic step; briefs for
+jobs no longer due stay on disk until overwritten.
 
 **How we work.**
 - Clean room: no text from the adelphi-adlc-plugin repo, ever.

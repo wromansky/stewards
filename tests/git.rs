@@ -390,3 +390,37 @@ fn recent_commit_files_lists_files_per_commit_newest_first() {
     );
     assert_eq!(git::recent_commit_files(p, 1).unwrap().len(), 1);
 }
+
+#[test]
+fn origin_url_is_none_without_an_origin_remote() {
+    let r = repo();
+    assert_eq!(git::origin_url(r.path()), None);
+    run_git(r.path(), &["remote", "add", "upstream", "https://h/u.git"]);
+    assert_eq!(git::origin_url(r.path()), None);
+}
+
+#[test]
+fn origin_url_is_the_origin_remote_url() {
+    let r = repo();
+    run_git(
+        r.path(),
+        &["remote", "add", "origin", "https://h/o/name.git"],
+    );
+    assert_eq!(
+        git::origin_url(r.path()).as_deref(),
+        Some("https://h/o/name.git")
+    );
+}
+
+#[test]
+#[ignore = "bug: git prints the remote name for an empty url, so origin_url returns Some(\"origin\")"]
+fn origin_url_is_none_when_the_url_is_empty() {
+    let r = repo();
+    run_git(r.path(), &["config", "remote.origin.url", ""]);
+    assert_eq!(git::origin_url(r.path()), None);
+}
+
+#[test]
+fn origin_url_is_none_outside_a_repo() {
+    assert_eq!(git::origin_url(TempDir::new().unwrap().path()), None);
+}

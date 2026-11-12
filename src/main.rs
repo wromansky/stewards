@@ -166,8 +166,14 @@ fn main() -> ExitCode {
         direct: cli.direct || std::env::var("STEWARDS_DIRECT").is_ok_and(|v| v == "1"),
     };
     let result = match cli.dir {
-        Some(dir) => std::env::set_current_dir(&dir)
-            .map_err(|e| anyhow::anyhow!("-C {}: {e}", dir.display())),
+        Some(dir) => std::env::set_current_dir(&dir).map_err(|e| {
+            CliError::new(
+                "usage",
+                format!("-C {}: {e}", dir.display()),
+                "pass an existing directory",
+            )
+            .into()
+        }),
         None => Ok(()),
     }
     .and_then(|()| dispatch(&g, cli.command));

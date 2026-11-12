@@ -29,6 +29,8 @@ pub struct RepoConfig {
     pub flows: Vec<Flow>,
     #[serde(default, rename = "decision")]
     pub decisions: Vec<Decision>,
+    #[serde(default)]
+    pub tracker: Option<Tracker>,
 }
 
 fn default_docs_path() -> String {
@@ -120,6 +122,21 @@ pub struct Flow {
 pub struct Decision {
     pub title: String,
     pub why: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tracker {
+    pub kind: TrackerKind,
+    pub project: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrackerKind {
+    Github,
+    Gitlab,
+    Jira,
+    Linear,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

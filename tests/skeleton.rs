@@ -4,7 +4,7 @@ use std::path::Path;
 
 use common::{fixture, git, stewards};
 use serde_json::Value;
-use stewards::model::{Anchor, load_repo};
+use stewards::model::{Anchor, CommandEntry, GapKind, TrackerKind, load_repo};
 use stewards::output::CliError;
 
 fn load_err(root: &Path) -> CliError {
@@ -32,10 +32,45 @@ fn not_implemented_command_prints_the_error_envelope() {
 
 #[test]
 fn clap_errors_are_usage_errors() {
-    let (v, code) = json_error(&["route"]);
+    for (cmd, arg) in [
+        ("route", "<PATHS>"),
+        ("stamp", "<UNIT>"),
+        ("review", "--pr"),
+        ("render", "--harness"),
+        ("completions", "<SHELL>"),
+    ] {
+        let (v, code) = json_error(&[cmd]);
+        assert_eq!(code, Some(2), "{cmd}");
+        assert_eq!(v["error"]["code"], "usage", "{cmd}");
+        assert!(
+            v["error"]["message"].as_str().unwrap().contains(arg),
+            "{cmd}: {v}"
+        );
+    }
+}
+
+#[test]
+fn missing_c_dir_is_a_usage_error() {
+    let (v, code) = json_error(&["-C", "/no/such/dir", "check"]);
     assert_eq!(code, Some(2));
     assert_eq!(v["error"]["code"], "usage");
-    assert!(v["error"]["message"].as_str().unwrap().contains("<PATHS>"));
+    assert_eq!(v["error"]["fix"], "pass an existing directory");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("-C /no/such/dir: ")
+    );
+}
+
+#[test]
+fn human_errors_print_error_and_fix_lines() {
+    let repo = fixture("single");
+    let out = stewards(repo.path(), &["debt", "--human"]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stdout.lines().any(|l| l.starts_with("error:")), "{stdout}");
+    assert!(stdout.lines().any(|l| l.starts_with("fix:")), "{stdout}");
 }
 
 #[test]
@@ -119,8 +154,85 @@ fn single_fixture_loads() {
     assert_eq!(loaded.cards.len(), 2);
     assert_eq!(loaded.tests.len(), 2);
     assert_eq!(loaded.repo.flows[0].units, ["api", "store"]);
-    assert_eq!(loaded.repo.budgets.developer, 24000);
+    assert_eq!(loaded.repo.budgets.developer, 20000);
     assert_eq!(loaded.cards["store"].interface.len(), 2);
+}
+
+#[test]
+fn optional_schema_shapes_load() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    std::fs::create_dir_all(root.join(".stewards/units")).unwrap();
+    std::fs::write(
+        root.join(".stewards/repo.toml"),
+        r#"schema = 1
+name = "shapes"
+[commands]
+test = ["pytest", { cmd = "cargo test", timeout_seconds = 30 }]
+[[flow]]
+name = "f"
+units = ["a"]
+entry = "a.py::f"
+check = "pytest -k f"
+[tracker]
+kind = "gitlab"
+project = "group/project"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".stewards/units.toml"),
+        "[[unit]]\nname = \"a\"\npaths = [\"a.py\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".stewards/units/a.toml"),
+        r#"unit = "a"
+[reviewed]
+commit = "c1"
+fingerprint = "sha256:f1"
+tree = "t1"
+tester = "t2"
+documenter = "t3"
+[[gap]]
+kind = "bug"
+title = "count is off"
+repro = "pytest -k count"
+severity = "high"
+issue = "https://example.invalid/1"
+"#,
+    )
+    .unwrap();
+
+    let loaded = load_repo(root).unwrap();
+    let repo = &loaded.repo;
+    assert!(matches!(&repo.commands.test[..], [
+        CommandEntry::Plain(p),
+        CommandEntry::Timed { cmd, timeout_seconds: 30 },
+    ] if p == "pytest" && cmd == "cargo test"));
+    assert_eq!(repo.flows[0].check.as_deref(), Some("pytest -k f"));
+    let tracker = repo.tracker.as_ref().unwrap();
+    assert_eq!(
+        (tracker.kind, tracker.project.as_str()),
+        (TrackerKind::Gitlab, "group/project")
+    );
+
+    let card = &loaded.cards["a"];
+    let r = card.reviewed.as_ref().unwrap();
+    assert_eq!(
+        (r.commit.as_str(), r.fingerprint.as_str(), r.tree.as_str()),
+        ("c1", "sha256:f1", "t1")
+    );
+    assert_eq!(
+        (r.tester.as_deref(), r.documenter.as_deref()),
+        (Some("t2"), Some("t3"))
+    );
+    let gap = &card.gaps[0];
+    assert_eq!(gap.kind, GapKind::Bug);
+    assert_eq!(gap.repro.as_deref(), Some("pytest -k count"));
+    assert_eq!(gap.severity.as_deref(), Some("high"));
+    assert_eq!(gap.issue.as_deref(), Some("https://example.invalid/1"));
 }
 
 #[test]

@@ -5,9 +5,11 @@ use std::process::ExitCode;
 use anyhow::Result;
 use serde::Serialize;
 
+use crate::brief;
 use crate::check::{CheckReport, changed_since, check_at, one_line, stale_files};
 use crate::debt::{DebtItem, is_debt_line};
 use crate::git;
+use crate::llm::Mode;
 use crate::model::{Anchor, GapKind, Role};
 use crate::output::{Global, Human, emit, not_implemented};
 use crate::route::Router;
@@ -44,7 +46,8 @@ pub struct NextReport {
     pub check: CheckReport,
 }
 
-pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
+/// With `write_briefs`, writes each job's brief and fills its `brief_path`.
+pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<NextReport> {
     let mut jobs = Vec::new();
     // Stamped units changed since their stamps: (name, repo name, task, snapshot, changed files).
     let mut moved: Vec<(String, String, String, String, Vec<String>)> = Vec::new();
@@ -67,6 +70,7 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
             })
         };
         for def in &loaded.units {
+            let first_job = jobs.len();
             let name = ws.display_name(repo, &def.name);
             let owns = |path: &str| router.owner(path) == Some(def.name.as_str());
             let since = |tree: Option<&String>| {
@@ -192,6 +196,14 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
                 let reasons = vec![format!("bug not judged: {}", bug.title)];
                 jobs.push(job(Role::Validator, reasons, vec![]));
             }
+            if write_briefs {
+                for j in &mut jobs[first_job..] {
+                    let unit = Some(def.name.as_str());
+                    let (path, _) =
+                        brief::write(repo, unit, j.role, Mode::Review, &j.task, &j.snapshot)?;
+                    j.brief_path = Some(path);
+                }
+            }
         }
     }
 
@@ -200,6 +212,13 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
     if architect {
         let names: Vec<&str> = moved.iter().map(|(n, ..)| n.as_str()).collect();
         let (_, repo_name, task, snapshot, _) = &moved[0];
+        let brief_path = if write_briefs {
+            let repo = ws.repos.iter().find(|r| &r.name == repo_name);
+            let repo = repo.expect("moved names a loaded repo");
+            Some(brief::write(repo, None, Role::Architect, Mode::Review, task, snapshot)?.0)
+        } else {
+            None
+        };
         jobs.insert(
             0,
             Job {
@@ -212,7 +231,7 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
                     names.join(", ")
                 )],
                 changed: moved.iter().flat_map(|(.., c)| c.clone()).collect(),
-                brief_path: None,
+                brief_path,
                 command: if ws.is_workspace {
                     format!("stewards --repo {repo_name} brief --role architect")
                 } else {
@@ -254,7 +273,7 @@ impl Human for NextReport {
 pub fn run(
     g: &Global,
     task: Option<&str>,
-    _no_brief: bool,
+    no_brief: bool,
     _no_run: bool,
     pr: Option<u64>,
 ) -> Result<ExitCode> {
@@ -262,7 +281,7 @@ pub fn run(
         return not_implemented("next --pr");
     }
     let (_, ws) = here(g)?;
-    let report = next(&ws, task)?;
+    let report = next(&ws, task, !no_brief)?;
     emit(&report, g.human);
     Ok(
         if report.jobs.is_empty() && report.check.failures.is_empty() {

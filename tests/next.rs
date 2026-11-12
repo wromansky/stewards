@@ -87,7 +87,7 @@ fn never_stamped_unit_gets_a_maintainer_job_listing_all_its_files() {
         ]
     );
     assert_eq!(job["command"], "stewards brief store --role maintainer");
-    assert!(job["brief_path"].is_null());
+    assert_eq!(job["brief_path"], ".stewards/briefs/store-maintainer.md");
 }
 
 #[test]

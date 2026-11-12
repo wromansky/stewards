@@ -284,9 +284,9 @@ pub unsafe fn prepare_baml_env() {
     }
 }
 
-/// Calls the role's model through BAML (`--direct`) and returns the answer as JSON text.
-/// `unit` fills the role text; the architect ignores it.
-pub fn direct(role: Role, mode: Mode, unit: &str, brief_text: &str) -> Result<String> {
+/// `direct`'s three guards for the role, in order: a `[models.direct]` entry naming a supported
+/// provider, that provider's key, the native library. Returns the provider, model, and key.
+pub fn direct_guards(role: Role) -> Result<(&'static str, String, String)> {
     let config = crate::user::load_config()?;
     let role_name = match role {
         Role::Developer => "developer",
@@ -330,6 +330,13 @@ pub fn direct(role: Role, mode: Mode, unit: &str, brief_text: &str) -> Result<St
             )
         })?;
     load_runtime()?;
+    Ok((provider, model.to_string(), key))
+}
+
+/// Calls the role's model through BAML (`--direct`) and returns the answer as JSON text.
+/// `unit` fills the role text; the architect ignores it.
+pub fn direct(role: Role, mode: Mode, unit: &str, brief_text: &str) -> Result<String> {
+    let (provider, model, key) = direct_guards(role)?;
 
     let mut registry = baml::ClientRegistry::new();
     // An explicit api_key: without it BAML sends the literal `$OPENAI_API_KEY`.

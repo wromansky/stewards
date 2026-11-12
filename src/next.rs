@@ -179,11 +179,23 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
                 .into_iter()
                 .filter(|p| anchor_paths.contains(p))
                 .collect();
-            if !changed.is_empty() {
-                let reasons = changed
-                    .iter()
-                    .map(|p| format!("interface file changed: {p}"))
-                    .collect();
+            let mut reasons: Vec<String> = changed
+                .iter()
+                .map(|p| format!("interface file changed: {p}"))
+                .collect();
+            // a card a first review drafted has an interface to document
+            let no_docs = card.is_some_and(|c| {
+                !c.interface.is_empty()
+                    && c.doc.as_ref().is_none_or(|d| {
+                        [&d.overview, &d.how_it_works, &d.how_to_change]
+                            .iter()
+                            .all(|s| s.trim().is_empty())
+                    })
+            });
+            if no_docs {
+                reasons.push("no docs yet".into());
+            }
+            if !reasons.is_empty() {
                 jobs.push(job(Role::Documenter, reasons, changed));
             }
 

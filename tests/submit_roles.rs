@@ -405,7 +405,7 @@ fn architect_upserts_a_flow_and_a_decision_and_keeps_comments() {
     );
     assert_eq!(
         v["summary"],
-        "architect: 2 flows upserted (create-item, list-items); 1 decision; 0 unit proposals"
+        "architect: 0 purposes set; 0 unit proposals for you to review; 2 flows upserted (create-item, list-items); 1 decision"
     );
     assert_eq!(v["explanation"], "api then store.");
     let text = fs::read_to_string(d.join(REPO_TOML)).unwrap();
@@ -495,7 +495,7 @@ fn architect_unit_proposals_are_printed_and_not_applied() {
     assert_eq!(v["unit_proposals"], proposals);
     assert_eq!(
         v["summary"],
-        "architect: 0 flows upserted; 0 decisions; 2 unit proposals"
+        "architect: 0 purposes set; 2 unit proposals for you to review; 0 flows upserted; 0 decisions"
     );
     assert_eq!(fs::read(d.join(".stewards/units.toml")).unwrap(), units);
 }
@@ -513,7 +513,7 @@ fn architect_plan_is_accepted_and_reported_as_not_stored() {
     );
     assert_eq!(
         v["summary"],
-        "architect: 0 flows upserted; 0 decisions; 0 unit proposals; plan not stored yet"
+        "architect: 0 purposes set; 0 unit proposals for you to review; 0 flows upserted; 0 decisions; plan not stored yet"
     );
     assert!(!d.join(".stewards/plans").exists());
 }

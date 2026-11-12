@@ -40,6 +40,7 @@ const ERROR_SHOWN: usize = 200;
 const EXAMPLE_SHOWN: usize = 300;
 /// Errors reported in full; the rest are counted in one last entry.
 const ERRORS_SHOWN: usize = 20;
+const UNITS_TOML: &str = ".stewards/units.toml";
 
 /// Each field error with the error code its kind of problem maps to.
 type Problems = Vec<(&'static str, FieldError)>;
@@ -55,11 +56,11 @@ const SHELL_CHARS: &[char] = &[
 ];
 
 #[derive(Serialize, Default)]
-struct Submitted {
+pub(crate) struct Submitted {
     summary: String,
     explanation: Option<String>,
     tester_brief: Option<PathBuf>,
-    /// The architect's; printed for the user to put in units.toml, never applied.
+    /// The architect's that set no purpose; printed for the user to put in units.toml.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unit_proposals: Vec<types::UnitProposal>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,6 +101,21 @@ impl Human for Submitted {
 }
 
 pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<ExitCode> {
+    let cwd = std::env::current_dir()?.canonicalize()?;
+    let ws = discover(&cwd, g.repo.as_deref())?;
+    let out = submit_file(ws.current_repo(&cwd)?, unit, role, file)?;
+    emit(&out, g.human);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Validates the answer in `file` for the job's brief in `repo`, writes the update, and appends
+/// telemetry.
+pub(crate) fn submit_file(
+    repo: &Repo,
+    unit: Option<&str>,
+    role: Role,
+    file: &Path,
+) -> Result<Submitted> {
     // the architect takes no unit and gets ""
     let submit: fn(&Repo, &str, &Header, &str, &Before) -> Result<Submitted> = match role {
         Role::Maintainer => maintainer,
@@ -109,9 +125,6 @@ pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<Ex
         Role::Architect => architect,
         Role::Developer => developer,
     };
-    let cwd = std::env::current_dir()?.canonicalize()?;
-    let ws = discover(&cwd, g.repo.as_deref())?;
-    let repo = ws.current_repo(&cwd)?;
     let loaded = repo.loaded()?;
     if unit.is_some() == (role == Role::Architect) {
         let wants = if role == Role::Architect {
@@ -151,6 +164,9 @@ pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<Ex
     // Every file the job may write, read before the repo is loaded again for the job, so a
     // write by another submit after this read is caught before this one writes.
     let mut files = vec![".stewards/repo.toml".to_string()];
+    if role == Role::Architect {
+        files.push(UNITS_TOML.into());
+    }
     if let Some(u) = unit {
         files.push(format!(".stewards/units/{u}.toml"));
         files.push(format!(".stewards/units/{u}.test.toml"));
@@ -186,8 +202,7 @@ pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<Ex
     if let Err(e) = telemetry::append(repo, &record) {
         out.warning = Some(format!("telemetry not written: {e:#}"));
     }
-    emit(&out, g.human);
-    Ok(ExitCode::SUCCESS)
+    Ok(out)
 }
 
 /// The `n` of a developer answer file named `<unit>-developer-<n>.answer.json`; `usage` for any
@@ -1111,6 +1126,52 @@ fn architect(
         }
         writes.push((rel.to_string(), doc.to_string()));
     }
+    // The one proposal applied: a purpose for an unnamed unit exactly as units.toml has it, which
+    // is how `init --draft` names the units; every other proposal is for the user.
+    let text = before.iter().find(|(rel, _)| rel == UNITS_TOML);
+    let text = text
+        .and_then(|(_, bytes)| bytes.as_deref())
+        .unwrap_or_default();
+    let mut units: toml_edit::DocumentMut = std::str::from_utf8(text)?.parse()?;
+    let mut left = vec![];
+    let mut set = 0;
+    for u in a.unit_proposals {
+        let same = loaded
+            .units
+            .iter()
+            .any(|d| d.name == u.name && d.paths == u.paths);
+        let table = units
+            .get_mut("unit")
+            .and_then(|i| i.as_array_of_tables_mut())
+            .and_then(|l| {
+                l.iter_mut()
+                    .find(|t| t.get("name").and_then(|v| v.as_str()) == Some(&u.name))
+            })
+            .filter(|t| {
+                t.get("purpose")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(str::is_empty)
+            });
+        match table {
+            Some(t) if same => {
+                // the old value's spacing and trailing comment stay
+                let decor = t
+                    .get("purpose")
+                    .and_then(|i| i.as_value())
+                    .map(|v| v.decor().clone());
+                let mut purpose = toml_edit::Value::from(u.purpose.as_str());
+                if let Some(decor) = decor {
+                    *purpose.decor_mut() = decor;
+                }
+                t["purpose"] = toml_edit::Item::Value(purpose);
+                set += 1;
+            }
+            _ => left.push(u),
+        }
+    }
+    if set > 0 {
+        writes.push((UNITS_TOML.to_string(), units.to_string()));
+    }
     write_and_retire(
         repo,
         before,
@@ -1120,10 +1181,11 @@ fn architect(
 
     let names = a.flows.iter().map(|f| f.name.as_str());
     let mut summary = format!(
-        "architect: {}; {}; {}",
+        "architect: {} set; {} for you to review; {}; {}",
+        count(set, "purpose"),
+        count(left.len(), "unit proposal"),
         named(count(names.len(), "flow") + " upserted", names),
         count(a.decisions.len(), "decision"),
-        count(a.unit_proposals.len(), "unit proposal")
     );
     // simplified: a plan is validated but not stored; the plans stage stores and tracks it
     if a.plan.is_some() {
@@ -1132,7 +1194,7 @@ fn architect(
     Ok(Submitted {
         summary,
         explanation: Some(a.explanation.chars().take(EXPLANATION_SHOWN).collect()),
-        unit_proposals: a.unit_proposals,
+        unit_proposals: left,
         pulled_anchors: a.pulled_anchors,
         ..Default::default()
     })

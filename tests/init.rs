@@ -285,9 +285,9 @@ fn a_second_init_refuses_and_changes_nothing() {
 }
 
 #[test]
-fn draft_hooks_and_ci_are_not_implemented() {
+fn hooks_and_ci_are_not_implemented() {
     let (_tmp, dir) = build(&s(&["main.py"]), &[]);
-    for flag in ["--draft", "--hooks", "--ci"] {
+    for flag in ["--hooks", "--ci"] {
         let out = stewards(&dir, &["init", flag]);
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(v["error"]["code"], "not_implemented", "{flag}");

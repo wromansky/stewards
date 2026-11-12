@@ -4,8 +4,18 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{append, edit, fixture, pairs, run, stamp_units, stewards, workspace_fixture};
+use common::{append, edit, pairs, run, stamp_units, stewards, workspace_fixture};
 use serde_json::Value;
+use tempfile::TempDir;
+
+/// The fixture with prose on store's card, so its `no docs yet` documenter job stays out of the
+/// tests of the other triggers.
+fn fixture(name: &str) -> TempDir {
+    let dir = common::fixture(name);
+    let card = dir.path().join(".stewards/units/store.toml");
+    append(&card, "\n[doc]\noverview = \"Keeps the items.\"\n");
+    dir
+}
 
 /// `(unit, role)` of each job.
 fn jobs(v: &Value) -> Vec<(String, String)> {

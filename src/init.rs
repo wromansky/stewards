@@ -6,11 +6,14 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::model::{SCHEMA, UnitDef};
+use crate::llm::{self, Mode};
+use crate::model::{self, Role, SCHEMA, UnitDef};
+use crate::next::{self, Job};
 use crate::output::{CliError, Global, Human, emit, not_implemented};
 use crate::route::Router;
-use crate::workspace::{self, Repo};
-use crate::{git, guide};
+use crate::submit::{self, Submitted};
+use crate::workspace::{self, Repo, Workspace};
+use crate::{brief, git, guide};
 
 /// Commits of history that co-change is counted over.
 const COMMITS: usize = 500;
@@ -26,6 +29,10 @@ const SKIP_DIRS: [&str; 5] = ["vendor", "node_modules", "target", "dist", "build
 const SOURCE_CONTAINERS: [&str; 6] = ["src", "lib", "app", "pkg", "cmd", "internal"];
 const TEST_DIRS: [&str; 4] = ["tests", "test", "spec", "__tests__"];
 const IGNORE_LINES: [&str; 2] = [".stewards/briefs/", ".stewards/telemetry/"];
+/// Step 1 writes these; either existing means the repo is initialized.
+const STARTING_FILES: [&str; 2] = [".stewards/units.toml", ".stewards/repo.toml"];
+const ARCHITECT_TASK: &str =
+    "name and describe each proposed unit; propose merges or splits only where a boundary is wrong";
 
 /// `Some(test command)` for a manifest file name (empty when it implies none), `None` otherwise.
 fn manifest(name: &str) -> Option<&'static str> {
@@ -392,7 +399,7 @@ fn append_gitignore(repo: &Repo) -> Result<bool> {
 }
 
 pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
-    for (set, flag) in [(draft, "--draft"), (hooks, "--hooks"), (ci, "--ci")] {
+    for (set, flag) in [(hooks, "--hooks"), (ci, "--ci")] {
         if set {
             return not_implemented(&format!("init {flag}"));
         }
@@ -419,9 +426,25 @@ pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
                 "run inside a repo or pass --repo <name>",
             )
         })?;
+    let initialized = STARTING_FILES.iter().any(|f| repo.root.join(f).exists());
+    // --draft continues an initialized repo; plain init only starts one
+    let step1 = if draft && initialized {
+        None
+    } else {
+        Some(propose(repo)?)
+    };
+    if !draft {
+        emit(&step1.expect("plain init ran step 1"), g.human);
+        return Ok(ExitCode::SUCCESS);
+    }
+    draft_jobs(g, ws.is_workspace, repo, step1)
+}
+
+/// Step 1: proposes the units and writes the starting files.
+fn propose(repo: &Repo) -> Result<Init> {
     let root = repo.root.canonicalize()?;
     // repo.toml too: rewriting it would drop the user's flows, decisions, and budgets
-    for file in [".stewards/units.toml", ".stewards/repo.toml"] {
+    for file in STARTING_FILES {
         if root.join(file).exists() {
             return Err(CliError::new(
                 "already_initialized",
@@ -542,11 +565,129 @@ pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
     if guide::upsert_block(repo)? {
         wrote.push("AGENTS.md".into());
     }
+    Ok(Init {
+        units: proposed,
+        unowned,
+        wrote,
+    })
+}
+
+#[derive(Serialize)]
+struct Draft {
+    #[serde(flatten)]
+    init: Option<Init>,
+    jobs: Vec<Job>,
+    /// What each job's submit printed, with `--direct`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    submitted: Vec<Submitted>,
+}
+
+impl Human for Draft {
+    fn render(&self) -> String {
+        let mut out: Vec<String> = self.init.iter().map(|i| i.render() + "\n").collect();
+        out.push("## Jobs\n".into());
+        for j in &self.jobs {
+            let who = format!("{} {}", j.unit, j.role.as_str());
+            out.push(format!("- `{}`: {}", who.trim(), j.reasons.join("; ")));
+        }
+        out.extend(self.submitted.iter().map(Submitted::render));
+        out.join("\n")
+    }
+}
+
+/// The bare unit name of a job, `None` for the architect.
+fn unit_of(job: &Job) -> Option<&str> {
+    job.unit.rsplit('/').next().filter(|u| !u.is_empty())
+}
+
+/// `init --draft`: the architect's naming job and a first review for every never-stamped unit,
+/// briefed for agents, or run through `llm::direct` and submitted with `--direct`.
+fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -> Result<ExitCode> {
+    let loaded = model::load_repo(&repo.root)?;
+    let ws = Workspace {
+        repos: vec![Repo {
+            name: loaded.repo.name.clone(),
+            root: repo.root.clone(),
+            loaded: Some(loaded),
+        }],
+        is_workspace,
+        selected: true,
+    };
+    let repo = &ws.repos[0];
+    let snapshot = git::snapshot(&repo.root)?;
+    let mut jobs = vec![Job {
+        unit: String::new(),
+        role: Role::Architect,
+        task: ARCHITECT_TASK.into(),
+        snapshot,
+        reasons: vec!["init --draft".into()],
+        changed: vec![],
+        brief_path: None,
+        command: if is_workspace {
+            format!(
+                "stewards --repo {} brief --role architect --task '{ARCHITECT_TASK}'",
+                repo.name
+            )
+        } else {
+            format!("stewards brief --role architect --task '{ARCHITECT_TASK}'")
+        },
+        debt_added: vec![],
+    }];
+    jobs.extend(
+        next::next(&ws, None, false)?
+            .jobs
+            .into_iter()
+            .filter(|j| j.role == Role::Maintainer && j.reasons == ["never reviewed"]),
+    );
+    let mut submitted = vec![];
+    if g.direct {
+        let texts = jobs
+            .iter()
+            .map(|j| brief::build(repo, unit_of(j), j.role, Mode::Review, &j.task, &j.snapshot))
+            .collect::<Result<Vec<_>>>()?;
+        // every guard before the first model call, so a missing model or key writes nothing
+        for j in &jobs {
+            llm::direct_guards(j.role)?;
+        }
+        for (j, text) in jobs.iter().zip(&texts) {
+            let unit = unit_of(j);
+            let done = || -> Result<Submitted> {
+                let answer = llm::direct(j.role, Mode::Review, unit.unwrap_or_default(), text)?;
+                brief::write_text(repo, unit, j.role, text)?;
+                let brief_rel = brief::rel_path(unit, j.role);
+                let stem = brief_rel.strip_suffix(".md").expect("a brief is .md");
+                let answer_rel = format!("{stem}.answer.json");
+                repo.write(&answer_rel, answer.as_bytes())?;
+                submit::submit_file(repo, unit, j.role, &repo.root.join(answer_rel))
+            };
+            let out = done().map_err(|e| {
+                let note = format!(
+                    "{} of {} init --draft jobs submitted before this one; their results stay",
+                    submitted.len(),
+                    jobs.len()
+                );
+                match e.downcast::<CliError>() {
+                    Ok(mut err) => {
+                        err.message = format!("{}; {note}", err.message);
+                        err.into()
+                    }
+                    Err(e) => e.context(note),
+                }
+            })?;
+            submitted.push(out);
+        }
+    } else {
+        for j in &mut jobs {
+            let unit = unit_of(j);
+            let (path, _) = brief::write(repo, unit, j.role, Mode::Review, &j.task, &j.snapshot)?;
+            j.brief_path = Some(path);
+        }
+    }
     emit(
-        &Init {
-            units: proposed,
-            unowned,
-            wrote,
+        &Draft {
+            init,
+            jobs,
+            submitted,
         },
         g.human,
     );

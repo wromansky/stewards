@@ -150,51 +150,64 @@ fn lexical_absolute(cwd: &Path, path: &str) -> PathBuf {
 pub fn run(g: &Global, paths: &[String]) -> Result<ExitCode> {
     let cwd = std::env::current_dir()?.canonicalize()?;
     let ws = crate::workspace::discover(&cwd, g.repo.as_deref())?;
-    // With `--repo` the one repo may sit beside the current directory rather than around it.
-    let repo = ws
+    let roots = ws
         .repos
         .iter()
-        .find(|r| {
-            r.root
-                .canonicalize()
-                .is_ok_and(|root| cwd.starts_with(root))
-        })
-        .or(if ws.repos.len() == 1 {
-            ws.repos.first()
-        } else {
-            None
-        })
-        .ok_or_else(|| {
-            CliError::new(
-                "not_in_repo",
-                "the current directory is not inside a repo",
-                "run inside a repo or pass --repo <name>",
-            )
-        })?;
-    let loaded = repo.loaded.as_ref().ok_or_else(|| {
-        CliError::new(
+        .map(|r| r.root.canonicalize())
+        .collect::<std::io::Result<Vec<_>>>()?;
+    // A lone repo must be initialized; in a workspace an uninitialized repo just owns nothing.
+    if !ws.is_workspace
+        && let Some(repo) = ws.repos.first().filter(|r| r.loaded.is_none())
+    {
+        return Err(CliError::new(
             "no_stewards_dir",
             format!("no .stewards/ in {}", repo.root.display()),
             "stewards init",
         )
-    })?;
-    let root = repo.root.canonicalize()?;
-    let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+        .into());
+    }
+    let mut routers: Vec<Option<Router>> = ws.repos.iter().map(|_| None).collect();
     let mut routes = Vec::new();
     for path in paths {
-        let rel = lexical_absolute(&cwd, path)
-            .strip_prefix(&root)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .map_err(|_| {
+        let abs = lexical_absolute(&cwd, path);
+        // The deepest root wins, so a repo nested in another owns its own files.
+        let (i, root) = roots
+            .iter()
+            .enumerate()
+            .filter(|(_, root)| abs.starts_with(root))
+            .max_by_key(|(_, root)| root.components().count())
+            .ok_or_else(|| {
                 CliError::new(
                     "path_outside_repo",
-                    format!("{path} is outside the repo at {}", root.display()),
+                    if ws.is_workspace {
+                        format!("{path} is outside every repo of the workspace")
+                    } else {
+                        format!("{path} is outside the repo at {}", roots[0].display())
+                    },
                     "pass a path inside the repo",
                 )
             })?;
+        let repo = &ws.repos[i];
+        let unit = match &repo.loaded {
+            None => None,
+            Some(loaded) => {
+                if routers[i].is_none() {
+                    routers[i] = Some(Router::new(&loaded.units, &loaded.repo.docs_path)?);
+                }
+                let rel = abs
+                    .strip_prefix(root)
+                    .expect("filtered on starts_with")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                routers[i]
+                    .as_ref()
+                    .and_then(|router| router.owner(&rel))
+                    .map(|unit| ws.display_name(repo, unit))
+            }
+        };
         routes.push(Route {
             path: path.clone(),
-            unit: router.owner(&rel).map(String::from),
+            unit,
         });
     }
     emit(&Routes { routes }, g.human);

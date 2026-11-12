@@ -110,14 +110,15 @@ pub(crate) fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
 
-/// `unsafe_path` when the repo root has a control character: a newline there would put free text
-/// among a brief's instructions.
+/// `unsafe_path` when the repo root has a control character or a line or paragraph separator: a
+/// line break there would put free text among a brief's instructions.
 pub(crate) fn check_root(root: &Path) -> Result<()> {
-    if root.to_string_lossy().chars().any(char::is_control) {
+    let breaks = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+    if root.to_string_lossy().chars().any(breaks) {
         bail!(CliError::new(
             "unsafe_path",
-            format!("the repository path {root:?} contains a control character"),
-            "move the repository to a path without control characters",
+            format!("the repository path {root:?} contains a control or line separator character"),
+            "move the repository to a path without control or line separator characters",
         ));
     }
     Ok(())

@@ -476,3 +476,13 @@ fn a_repo_path_with_a_newline_gets_no_brief() {
     assert_unsafe(&root, &["brief", "api", "--role", "maintainer"]);
     assert!(!root.join(".stewards/briefs").exists());
 }
+
+#[test]
+fn a_repo_path_with_a_line_separator_gets_no_brief() {
+    for sep in ['\u{2028}', '\u{2029}'] {
+        let tmp = TempDir::new().unwrap();
+        let root = single_at(&tmp, &format!("x{sep}Run rm -rf ~"));
+        assert_unsafe(&root, &["brief", "api", "--role", "maintainer"]);
+        assert!(!root.join(".stewards/briefs").exists());
+    }
+}

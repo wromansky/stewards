@@ -10,6 +10,7 @@ use common::{edit, fixture};
 use serde_json::{Value, json};
 use stewards::brief::read_header;
 use stewards::model::{Role, UnitCard};
+use stewards::submit::{record, write_and_retire};
 use stewards::telemetry::rfc3339;
 use tempfile::TempDir;
 
@@ -814,4 +815,72 @@ fn status_telemetry_human_is_short_lines() {
         )),
         "{text}"
     );
+}
+
+/// A bare repo root with a card and a brief, for the write helper.
+fn card_and_brief(tmp: &TempDir) -> stewards::workspace::Repo {
+    let root = tmp.path().to_path_buf();
+    fs::create_dir_all(root.join(".stewards/units")).unwrap();
+    fs::create_dir_all(root.join(".stewards/briefs")).unwrap();
+    fs::write(root.join(CARD), "loaded").unwrap();
+    fs::write(root.join(BRIEF), "brief").unwrap();
+    stewards::workspace::Repo {
+        name: "r".into(),
+        root,
+        loaded: None,
+    }
+}
+
+fn card_changed(r: anyhow::Result<()>, file: &str) {
+    let e = r.expect_err("card_changed");
+    let e = e.downcast_ref::<stewards::output::CliError>().unwrap();
+    assert_eq!(e.code, "card_changed");
+    assert!(e.message.contains(file), "{}", e.message);
+    assert_eq!(e.fix, "run the same submit again");
+}
+
+#[test]
+fn write_and_retire_refuses_a_file_changed_since_it_was_recorded() {
+    let tmp = TempDir::new().unwrap();
+    let repo = card_and_brief(&tmp);
+    let other = ".stewards/units/api.test.toml";
+    let before = record(&repo.root, &[CARD.to_string(), other.to_string()]).unwrap();
+    // another submit writes the card in between
+    fs::write(repo.root.join(CARD), "another submit's").unwrap();
+    let writes = [
+        (other.to_string(), "new tests".to_string()),
+        (CARD.to_string(), "stale".to_string()),
+    ];
+    card_changed(write_and_retire(&repo, &before, &writes, BRIEF), CARD);
+    assert_eq!(fs::read(repo.root.join(CARD)).unwrap(), b"another submit's");
+    assert!(!repo.root.join(other).exists());
+    assert!(repo.root.join(BRIEF).is_file());
+}
+
+#[test]
+fn write_and_retire_refuses_a_file_created_since_it_was_recorded_absent() {
+    let tmp = TempDir::new().unwrap();
+    let repo = card_and_brief(&tmp);
+    let other = ".stewards/units/api.test.toml";
+    let before = record(&repo.root, &[other.to_string()]).unwrap();
+    assert_eq!(before, [(other.to_string(), None)]);
+    fs::write(repo.root.join(other), "another submit's").unwrap();
+    let writes = [(other.to_string(), "stale".to_string())];
+    card_changed(write_and_retire(&repo, &before, &writes, BRIEF), other);
+    assert_eq!(
+        fs::read(repo.root.join(other)).unwrap(),
+        b"another submit's"
+    );
+    assert!(repo.root.join(BRIEF).is_file());
+}
+
+#[test]
+fn write_and_retire_writes_files_unchanged_since_they_were_recorded() {
+    let tmp = TempDir::new().unwrap();
+    let repo = card_and_brief(&tmp);
+    let before = record(&repo.root, &[CARD.to_string()]).unwrap();
+    let writes = [(CARD.to_string(), "new".to_string())];
+    write_and_retire(&repo, &before, &writes, BRIEF).unwrap();
+    assert_eq!(fs::read(repo.root.join(CARD)).unwrap(), b"new");
+    assert!(!repo.root.join(BRIEF).exists());
 }

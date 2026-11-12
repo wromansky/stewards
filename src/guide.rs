@@ -177,7 +177,7 @@ const fn e(code: &'static str, when: &'static str, fix: &'static str) -> ErrorRo
     ErrorRow { code, when, fix }
 }
 
-static ERRORS: [ErrorRow; 27] = [
+static ERRORS: [ErrorRow; 28] = [
     e(
         "not_a_git_repo",
         "no `.git` above cwd",
@@ -302,6 +302,11 @@ static ERRORS: [ErrorRow; 27] = [
         "unsafe_path",
         "a path the tool reads or writes in a repo is not plain names, or passes through a symlink",
         "remove the symlink at `<path>`; stewards never writes through links",
+    ),
+    e(
+        "card_changed",
+        "a file `submit` was about to write changed since it was loaded (another submit finished first)",
+        "run the same submit again",
     ),
     e(
         "not_implemented",

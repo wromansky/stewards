@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use crate::anchors::{Resolution, resolve};
@@ -44,6 +44,16 @@ const ERRORS_SHOWN: usize = 20;
 /// Each field error with the error code its kind of problem maps to.
 type Problems = Vec<(&'static str, FieldError)>;
 
+/// Each file a submit may write, with its bytes when submit read it; `None` when it was absent.
+pub type Before = Vec<(String, Option<Vec<u8>>)>;
+
+/// Characters a shell gives meaning to: a stored command is plain argv without them, and
+/// without a newline.
+const SHELL_CHARS: &[char] = &[
+    '\n', ';', '&', '|', '<', '>', '$', '`', '\\', '\'', '"', '(', ')', '{', '}', '*', '?', '~',
+    '#', '!',
+];
+
 #[derive(Serialize, Default)]
 struct Submitted {
     summary: String,
@@ -82,7 +92,7 @@ impl Human for Submitted {
 
 pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<ExitCode> {
     // the architect takes no unit and gets ""
-    let submit: fn(&Repo, &str, &Header, &str) -> Result<Submitted> = match role {
+    let submit: fn(&Repo, &str, &Header, &str, &Before) -> Result<Submitted> = match role {
         Role::Maintainer => maintainer,
         Role::Tester => tester,
         Role::Documenter => documenter,
@@ -121,7 +131,26 @@ pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<Ex
     let header = brief::read_header(&repo.root.join(&brief_rel))?;
     check_header(&repo.root, unit, role, &header, &brief_rel)?;
     let text = read_answer(file)?;
-    let mut out = submit(repo, unit.unwrap_or_default(), &header, &text)?;
+    // Every file the job may write, read before the repo is loaded again for the job, so a
+    // write by another submit after this read is caught before this one writes.
+    let mut files = vec![".stewards/repo.toml".to_string()];
+    if let Some(u) = unit {
+        files.push(format!(".stewards/units/{u}.toml"));
+        files.push(format!(".stewards/units/{u}.test.toml"));
+        // a bad docs_path is the documenter's own error, reported after the answer's
+        if role == Role::Documenter
+            && let Ok(pages) = docs::pages(loaded, Some(u))
+        {
+            files.extend(pages.into_iter().map(|(rel, _)| rel));
+        }
+    }
+    let before = record(&repo.root, &files)?;
+    let repo = &Repo {
+        name: repo.name.clone(),
+        root: repo.root.clone(),
+        loaded: Some(model::load_repo(&repo.root)?),
+    };
+    let mut out = submit(repo, unit.unwrap_or_default(), &header, &text, &before)?;
     let record = telemetry::Record {
         unit: unit.map(String::from),
         role: role.as_str(),
@@ -215,7 +244,13 @@ fn card_of(loaded: &Loaded, unit: &str) -> UnitCard {
     })
 }
 
-fn maintainer(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Submitted> {
+fn maintainer(
+    repo: &Repo,
+    unit: &str,
+    header: &Header,
+    text: &str,
+    before: &Before,
+) -> Result<Submitted> {
     let answer = parse_answer(Role::Maintainer, header.mode, text)?;
     let root = &repo.root;
     let loaded = repo.loaded()?;
@@ -440,6 +475,9 @@ fn maintainer(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Su
     for (_, rel) in planned.iter().filter(|(writes, _)| *writes) {
         safe_path(root, rel, false)?;
     }
+    if card_text.is_some() {
+        check_unchanged(root, before, &[&card_rel])?;
+    }
     let mut written: Vec<&str> = vec![];
     if let Some(text) = &card_text {
         repo.write(&card_rel, text.as_bytes())
@@ -458,7 +496,13 @@ fn maintainer(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Su
     Ok(out)
 }
 
-fn tester(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Submitted> {
+fn tester(
+    repo: &Repo,
+    unit: &str,
+    header: &Header,
+    text: &str,
+    before: &Before,
+) -> Result<Submitted> {
     let Answer::Tester(a) = parse_answer(Role::Tester, header.mode, text)? else {
         unreachable!("a tester answer parses to the tester variant")
     };
@@ -605,7 +649,12 @@ fn tester(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Submit
             toml::to_string(&card)?,
         ));
     }
-    write_and_retire(repo, &writes, &brief::rel_path(Some(unit), Role::Tester))?;
+    write_and_retire(
+        repo,
+        before,
+        &writes,
+        &brief::rel_path(Some(unit), Role::Tester),
+    )?;
 
     let ids = a.scenario_patch.iter().map(|s| s.id.as_str());
     let titles = a.bugs.iter().map(|b| b.title.as_str());
@@ -623,26 +672,25 @@ fn tester(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Submit
     })
 }
 
-fn documenter(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Submitted> {
+fn documenter(
+    repo: &Repo,
+    unit: &str,
+    header: &Header,
+    text: &str,
+    before: &Before,
+) -> Result<Submitted> {
     let Answer::Documenter(a) = parse_answer(Role::Documenter, header.mode, text)? else {
         unreachable!("a documenter answer parses to the documenter variant")
     };
     let mut p = vec![];
-    check_text(&mut p, "doc.overview", &a.doc.overview, PROSE_CAP, false);
-    check_text(
-        &mut p,
-        "doc.how_it_works",
-        &a.doc.how_it_works,
-        PROSE_CAP,
-        false,
-    );
-    check_text(
-        &mut p,
-        "doc.how_to_change",
-        &a.doc.how_to_change,
-        PROSE_CAP,
-        false,
-    );
+    for (field, value) in [
+        ("doc.overview", &a.doc.overview),
+        ("doc.how_it_works", &a.doc.how_it_works),
+        ("doc.how_to_change", &a.doc.how_to_change),
+    ] {
+        check_text(&mut p, field, value, PROSE_CAP, false);
+        check_doc_markdown(&mut p, field, value);
+    }
     check_common(&mut p, &a.pulled_anchors, &a.notes);
     if !p.is_empty() {
         return Err(rejected(p));
@@ -666,6 +714,7 @@ fn documenter(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Su
     writes.extend(docs::pages(&fresh, Some(unit))?);
     write_and_retire(
         repo,
+        before,
         &writes,
         &brief::rel_path(Some(unit), Role::Documenter),
     )?;
@@ -676,7 +725,13 @@ fn documenter(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Su
     })
 }
 
-fn validator(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Submitted> {
+fn validator(
+    repo: &Repo,
+    unit: &str,
+    header: &Header,
+    text: &str,
+    before: &Before,
+) -> Result<Submitted> {
     let loaded = repo.loaded()?;
     let mut card = card_of(loaded, unit);
     let title = header.bug.as_deref().unwrap_or_default();
@@ -723,7 +778,12 @@ fn validator(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Sub
         format!(".stewards/units/{unit}.toml"),
         toml::to_string(&card)?,
     )];
-    write_and_retire(repo, &writes, &brief::rel_path(Some(unit), Role::Validator))?;
+    write_and_retire(
+        repo,
+        before,
+        &writes,
+        &brief::rel_path(Some(unit), Role::Validator),
+    )?;
     Ok(Submitted {
         summary: format!("{unit} validator: {}: {verdict}", one_line(title)),
         pulled_anchors: a.pulled_anchors,
@@ -731,7 +791,13 @@ fn validator(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Sub
     })
 }
 
-fn architect(repo: &Repo, _unit: &str, header: &Header, text: &str) -> Result<Submitted> {
+fn architect(
+    repo: &Repo,
+    _unit: &str,
+    header: &Header,
+    text: &str,
+    before: &Before,
+) -> Result<Submitted> {
     let Answer::Architect(a) = parse_answer(Role::Architect, header.mode, text)? else {
         unreachable!("an architect answer parses to the architect variant")
     };
@@ -862,7 +928,12 @@ fn architect(repo: &Repo, _unit: &str, header: &Header, text: &str) -> Result<Su
         }
         writes.push((rel.to_string(), doc.to_string()));
     }
-    write_and_retire(repo, &writes, &brief::rel_path(None, Role::Architect))?;
+    write_and_retire(
+        repo,
+        before,
+        &writes,
+        &brief::rel_path(None, Role::Architect),
+    )?;
 
     let names = a.flows.iter().map(|f| f.name.as_str());
     let mut summary = format!(
@@ -917,9 +988,48 @@ fn upsert<'a>(
     Ok(list.get_mut(at).expect("the index is in the list"))
 }
 
+/// The bytes of each of `rels` under `root` now, `None` for an absent file.
+pub fn record(root: &Path, rels: &[String]) -> Result<Before> {
+    rels.iter()
+        .map(|rel| Ok((rel.clone(), read_if_present(root, rel)?)))
+        .collect()
+}
+
+fn read_if_present(root: &Path, rel: &str) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(safe_path(root, rel, false)?) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        r => Ok(Some(r.with_context(|| format!("read {rel}"))?)),
+    }
+}
+
+/// `card_changed` unless each of `rels` still has the bytes `before` recorded for it: another
+/// submit wrote it since, and writing now would erase that submit's change.
+fn check_unchanged(root: &Path, before: &Before, rels: &[&str]) -> Result<()> {
+    for rel in rels {
+        let then = before
+            .iter()
+            .find(|(r, _)| r == rel)
+            .map(|(_, bytes)| bytes);
+        if then != Some(&read_if_present(root, rel)?) {
+            bail!(CliError::new(
+                "card_changed",
+                format!("{rel} changed since this submit read it; nothing was written"),
+                "run the same submit again",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Writes each `(rel, text)` in order, then removes the job's brief. A link at any of the paths is
-/// refused before the first write.
-fn write_and_retire(repo: &Repo, writes: &[(String, String)], brief_rel: &str) -> Result<()> {
+/// refused, and a file changed since `before` was recorded is `card_changed`, before the first
+/// write.
+pub fn write_and_retire(
+    repo: &Repo,
+    before: &Before,
+    writes: &[(String, String)],
+    brief_rel: &str,
+) -> Result<()> {
     for rel in writes
         .iter()
         .map(|(rel, _)| rel.as_str())
@@ -927,6 +1037,10 @@ fn write_and_retire(repo: &Repo, writes: &[(String, String)], brief_rel: &str) -
     {
         safe_path(&repo.root, rel, false)?;
     }
+    // simplified: the check and the writes are not atomic, so a write landing between them is
+    // still lost; a lock file would close that window if it shows up in practice.
+    let rels: Vec<&str> = writes.iter().map(|(rel, _)| rel.as_str()).collect();
+    check_unchanged(&repo.root, before, &rels)?;
     let mut written: Vec<&str> = vec![];
     for (rel, text) in writes {
         repo.write(rel, text.as_bytes())
@@ -965,7 +1079,7 @@ fn rejected(problems: Problems) -> anyhow::Error {
         "answer_too_long" => "shorten each field listed to its cap and rerun submit",
         "answer_dead_anchor" => "correct each anchor listed or drop it, then rerun submit",
         "command_not_allowed" => {
-            "start each command listed with one of `commands.test` in .stewards/repo.toml, or add it there"
+            "start each command listed with one of `commands.test` in .stewards/repo.toml, or add it there, and write it as plain argv with no shell characters"
         }
         _ => "fix the fields listed in `errors` and rerun submit",
     };
@@ -1025,9 +1139,23 @@ fn check_common(out: &mut Problems, pulled: &[String], notes: &str) {
     check_text(out, "notes", notes, PROSE_CAP, false);
 }
 
-/// `command_not_allowed` unless the leading words of `cmd` are all the words of one
-/// `commands.test` entry, so `pytest` allows `pytest tests/x` but not `pytest-x`.
+/// `command_not_allowed` unless `cmd` has no `SHELL_CHARS` and its leading words are all the
+/// words of one `commands.test` entry, so `pytest` allows `pytest tests/x` but not `pytest-x`.
 fn check_command(out: &mut Problems, field: &str, cmd: &str, commands: &Commands) {
+    if let Some(c) = cmd.chars().find(|c| SHELL_CHARS.contains(c)) {
+        out.push((
+            "command_not_allowed",
+            FieldError {
+                field: field.to_string(),
+                problem: format!(
+                    "contains {c:?}; a command is plain argv with no shell syntax: no \
+                     separators, pipes, redirects, substitutions, quotes, or globs"
+                ),
+                example: "\"pytest tests/api/test_items.py::test_x -k count\"".into(),
+            },
+        ));
+        return;
+    }
     let words: Vec<&str> = cmd.split_whitespace().collect();
     let entries: Vec<&str> = commands
         .test
@@ -1099,6 +1227,62 @@ fn check_text(out: &mut Problems, field: &str, value: &str, cap: usize, one_line
             "contains a data marker (`<<<DATA` or `DATA>>>`)".into(),
             "the text without the marker",
         );
+    }
+}
+
+/// Rejects a heading, a setext underline or thematic break, and an unclosed code fence in the
+/// documenter's prose: the page puts it under the unit's own headings, so any of these could fake
+/// a section or swallow the sections after it.
+fn check_doc_markdown(out: &mut Problems, field: &str, value: &str) {
+    let mut add = |problem: String| {
+        out.push((
+            "answer_parse_failed",
+            FieldError {
+                field: field.to_string(),
+                problem,
+                example: "paragraphs, lists, and closed ``` blocks; no headings or rules".into(),
+            },
+        ))
+    };
+    // the open fence's character and length, and every fence line, since an odd count is
+    // refused even where CommonMark would see the fences balanced
+    let mut fence: Option<(char, usize)> = None;
+    let mut fences = 0;
+    for (n, line) in value.lines().enumerate().map(|(i, l)| (i + 1, l)) {
+        let t = line.trim_start_matches([' ', '\t']);
+        if t.starts_with('#') {
+            add(format!("line {n} starts with `#`, a heading"));
+        }
+        // setext underlines are any run of `=` or `-`; thematic breaks three or more marks
+        let marks: Vec<char> = t.chars().filter(|c| !matches!(c, ' ' | '\t')).collect();
+        let only = |m: char| !marks.is_empty() && marks.iter().all(|&c| c == m);
+        if only('=') || only('-') || marks.len() >= 3 && (only('*') || only('_')) {
+            add(format!("line {n} is a heading underline or a rule"));
+        }
+        // CommonMark: a fence line is indented at most three spaces; an opening backtick fence
+        // has no backtick after it; a closing fence is the open mark, at least as long, alone
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let t = &line[indent..];
+        let Some(c) = t.chars().next().filter(|c| matches!(c, '`' | '~')) else {
+            continue;
+        };
+        let run = t.len() - t.trim_start_matches(c).len();
+        let rest = &t[run..];
+        fences += usize::from(run >= 3);
+        match fence {
+            _ if run < 3 || indent > 3 => {}
+            None if c == '`' && rest.contains('`') => {}
+            None => fence = Some((c, run)),
+            Some((open, len))
+                if c == open && run >= len && rest.trim_matches([' ', '\t']).is_empty() =>
+            {
+                fence = None
+            }
+            Some(_) => {}
+        }
+    }
+    if fence.is_some() || fences % 2 == 1 {
+        add("a code fence (``` or ~~~) is not closed".into());
     }
 }
 

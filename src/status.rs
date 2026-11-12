@@ -110,7 +110,7 @@ impl Human for StatusReport {
 pub fn run(g: &Global, telemetry: bool) -> Result<ExitCode> {
     let ws = discover(&std::env::current_dir()?.canonicalize()?, g.repo.as_deref())?;
     let mut report = status(&ws)?;
-    // shortcut: telemetry has no source yet, so it is null until stage 2 adds one
+    // simplified: telemetry has no source yet, so it is null until stage 2 adds one
     report.telemetry = telemetry.then_some(serde_json::Value::Null);
     emit(&report, g.human);
     Ok(ExitCode::SUCCESS)

@@ -4,13 +4,15 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use super::{Arm, Plan, RITUAL_NOTE, RITUAL_STEPS, Run, RunRecord, RunRole, SetupNotes, Status};
+use super::{
+    Arm, Plan, RITUAL_NOTE, RITUAL_STEPS, Run, RunRecord, RunRole, SetupNotes, Status, Suite,
+};
 use crate::output::Human;
 
 /// Medians of `full` over `bare`: main context at most this share, total at most this share.
 pub const MAIN_LIMIT: f64 = 0.8;
 pub const TOTAL_LIMIT: f64 = 1.1;
-/// `full` task 6 files opened over `bare` task 4 files opened.
+/// `full` files opened over `bare` files opened on the task's `files_opened_vs_bare`.
 pub const FILES_LIMIT: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -34,13 +36,9 @@ impl Verdict {
     }
 }
 
-/// The read-only question tasks, where `route`, `brief`, `submit`, and `check_green` are n/a.
-pub const READ_ONLY_TASKS: [u32; 2] = [4, 6];
-
 /// Whether ritual `step` is graded for run `r`: not `route`, `brief`, `submit`, or `check_green`
-/// on `READ_ONLY_TASKS`, and `check_green` only when the session changed tracked files.
-fn ritual_applies(step: &str, r: &RunRecord) -> bool {
-    let read_only = r.task.is_some_and(|t| READ_ONLY_TASKS.contains(&t));
+/// on a `read_only` task, and `check_green` only when the session changed tracked files.
+fn ritual_applies(step: &str, r: &RunRecord, read_only: bool) -> bool {
     match step {
         "route" | "brief" | "submit" => !read_only,
         "check_green" => !read_only && r.changed_tracked_files,
@@ -88,12 +86,16 @@ pub struct ArmStats {
     pub ritual: Option<BTreeMap<&'static str, Option<bool>>>,
 }
 
-pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
+/// Medians of `runs`, all of one task, which is `read_only` or not.
+pub fn arm_stats(arm: Arm, runs: &[&RunRecord], read_only: bool) -> ArmStats {
     let ritual = arm.is_full().then(|| {
         RITUAL_STEPS
             .iter()
             .map(|&name| {
-                let applies: Vec<_> = runs.iter().filter(|r| ritual_applies(name, r)).collect();
+                let applies: Vec<_> = runs
+                    .iter()
+                    .filter(|r| ritual_applies(name, r, read_only))
+                    .collect();
                 let yes = applies
                     .iter()
                     .filter(|r| {
@@ -165,14 +167,28 @@ fn runs_of(records: &[RunRecord], task: u32, arm: Arm, role: RunRole) -> Vec<&Ru
         .collect()
 }
 
-/// Grades one task: `full` (or `full-no-developers`) against `bare` medians. Both token criteria
-/// failing fails the task; any other failing criterion is a warning. A compared run (task 6 also
-/// compares `bare` task 4, and counts its own task-5 setup runs) that is not ok, has no transcript,
-/// or never started makes the task `incomplete`.
-pub fn grade_task(task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> TaskGrade {
+/// Grades one task of `suite`: `full` (or `full-no-developers`) against `bare` medians. Both token
+/// criteria failing fails the task; any other failing criterion is a warning. A compared run (a
+/// task also compares its `files_opened_vs_bare` task in `bare`, and counts its own `setup` runs)
+/// that is not ok, has no transcript, or never started makes the task `incomplete`.
+pub fn grade_task(
+    suite: &Suite,
+    task: u32,
+    records: &[RunRecord],
+    arms: &[Arm],
+    runs: u32,
+) -> TaskGrade {
+    let facts = suite.task(task).copied().unwrap_or_default();
+    let read_only = |t: u32| suite.task(t).is_some_and(|t| t.read_only);
     let stats: Vec<ArmStats> = arms
         .iter()
-        .map(|&a| arm_stats(a, &runs_of(records, task, a, RunRole::Task)))
+        .map(|&a| {
+            arm_stats(
+                a,
+                &runs_of(records, task, a, RunRole::Task),
+                facts.read_only,
+            )
+        })
         .collect();
     let full = arms.iter().copied().find(|a| a.is_full());
     let mut reasons = vec![];
@@ -181,12 +197,12 @@ pub fn grade_task(task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> 
         Some(f) if arms.contains(&Arm::Bare) => {
             for a in [Arm::Bare, f] {
                 compared.push((a, task, RunRole::Task));
-                if task == 6 {
-                    compared.push((a, 5, RunRole::Setup));
+                if let Some(s) = facts.setup {
+                    compared.push((a, s, RunRole::Setup));
                 }
             }
-            if task == 6 {
-                compared.push((Arm::Bare, 4, RunRole::Task));
+            if let Some(v) = facts.files_opened_vs_bare {
+                compared.push((Arm::Bare, v, RunRole::Task));
             }
         }
         _ => reasons.push("needs both the bare and a full arm".to_string()),
@@ -273,9 +289,13 @@ pub fn grade_task(task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> 
         ratio(f.total_tokens, b.total_tokens),
         TOTAL_LIMIT,
     );
-    if task == 6 {
-        let bare4 = arm_stats(Arm::Bare, &runs_of(records, 4, Arm::Bare, RunRole::Task));
-        if f.files_opened == Some(0.0) && bare4.files_opened == Some(0.0) {
+    if let Some(v) = facts.files_opened_vs_bare {
+        let bare_v = arm_stats(
+            Arm::Bare,
+            &runs_of(records, v, Arm::Bare, RunRole::Task),
+            read_only(v),
+        );
+        if f.files_opened == Some(0.0) && bare_v.files_opened == Some(0.0) {
             criteria.push(Criterion {
                 name: "files_opened",
                 value: 0.0,
@@ -287,7 +307,7 @@ pub fn grade_task(task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> 
         } else {
             push(
                 "files_opened",
-                ratio(f.files_opened, bare4.files_opened),
+                ratio(f.files_opened, bare_v.files_opened),
                 FILES_LIMIT,
             );
         }
@@ -348,6 +368,9 @@ pub fn suite_verdict(grades: &[TaskGrade]) -> Verdict {
 #[derive(Debug, Clone, Serialize)]
 pub struct Summary {
     pub results: PathBuf,
+    pub suite: String,
+    /// A `repo` suite's pinned commit.
+    pub commit: Option<String>,
     pub harness: &'static str,
     /// The harness setup the sessions ran with (for Pi: the eval's agent directory).
     pub harness_setup: Option<String>,
@@ -392,7 +415,7 @@ pub fn summarize(
     let grades: Vec<TaskGrade> = plan
         .tasks
         .iter()
-        .map(|&t| grade_task(t, records, &plan.arms, plan.runs))
+        .map(|&t| grade_task(&plan.suite, t, records, &plan.arms, plan.runs))
         .collect();
     let adoption = records.iter().find(|r| r.task.is_none()).cloned();
     let bare_totals: Vec<f64> = records
@@ -408,6 +431,8 @@ pub fn summarize(
         .map(|(a, m)| a.total_tokens.sum() as f64 / m);
     Summary {
         results: plan.results.clone(),
+        suite: plan.suite.name.clone(),
+        commit: plan.suite.commit().map(String::from),
         harness: "pi",
         harness_setup: plan.harness_setup.clone(),
         model: plan
@@ -492,6 +517,13 @@ pub fn render(s: &Summary) -> String {
                 ""
             }
         ),
+        format!(
+            "suite: {}{}",
+            s.suite,
+            s.commit
+                .as_ref()
+                .map_or(String::new(), |c| format!(" at {c}"))
+        ),
         format!("results: {}", s.results.display()),
     ];
     if !s.unknown_cost_sessions.is_empty() {
@@ -512,6 +544,11 @@ pub fn render(s: &Summary) -> String {
             num(r.map(|x| x.main_tokens.sum() as f64)),
             num(r.map(|x| x.total_tokens.sum() as f64)),
             usd(r.and_then(|x| x.cost_usd))
+        ));
+    }
+    if let Some(b) = s.setup.build_s {
+        out.push(format!(
+            "build cache: one build, {b:.0} s, hard-linked into every run (setup, outside every ratio)"
         ));
     }
     out.extend(s.setup.units.clone());

@@ -132,11 +132,14 @@ enum Command {
     Eval {
         #[arg(long)]
         harness: Option<String>,
+        /// The suite manifest under evals/suites/
+        #[arg(long, default_value = "fixture")]
+        suite: String,
         /// bare, block-only, or full; all three when omitted
         #[arg(long)]
         arm: Option<String>,
-        /// Repeatable; all six when omitted
-        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=6))]
+        /// Repeatable; every task of the suite when omitted
+        #[arg(long)]
         task: Vec<u32>,
         #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
         runs: u32,
@@ -150,7 +153,7 @@ enum Command {
         /// The thinking level of every session
         #[arg(long, default_value = "medium", value_parser = ["off", "minimal", "low", "medium", "high", "xhigh", "max"])]
         thinking: String,
-        /// An adopted fixture to copy for the full arm
+        /// An adopted fixture to copy for the full arm (fixture suites)
         #[arg(long, value_name = "dir")]
         setup_dir: Option<PathBuf>,
         /// Keep each run's fixture copy instead of deleting it after the run
@@ -265,6 +268,7 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
         } => render::run(g, &harness, repo_level),
         Command::Eval {
             harness,
+            suite,
             arm,
             task,
             runs,
@@ -278,6 +282,7 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
             g,
             eval::Flags {
                 harness: harness.as_deref(),
+                suite: &suite,
                 arm: arm.as_deref(),
                 tasks: &task,
                 runs,

@@ -10,9 +10,9 @@ use stewards::eval::grade::{grade_task, median, render, summarize};
 use stewards::eval::pi::{Pi, agent_dir, parse};
 use stewards::eval::{
     ADOPT_PROMPT, Action, Arm, Driver, Plan, RITUAL_STEPS, RitualSteps, Run, RunRecord, RunRole,
-    Session, SetupNotes, Status, Tokens, Verdict, adopted_knowledge, execute, kill_leftovers,
-    neutral_work_dir, next_check, path_without_stewards, ritual_steps, shell_reads,
-    stewards_subcommands, without_developers, would_exceed,
+    Session, SetupNotes, Source, Status, Suite, Tokens, Verdict, adopted_knowledge, execute,
+    kill_leftovers, neutral_work_dir, next_check, path_without_stewards, ritual_steps, shell_reads,
+    stewards_subcommands, task_prompt, without_developers, would_exceed,
 };
 use stewards::output::CliError;
 use tempfile::TempDir;
@@ -371,7 +371,15 @@ const ARMS: [Arm; 2] = [Arm::Bare, Arm::Full];
 
 #[test]
 fn token_criteria_boundaries() {
-    let grade = |main, total| grade_task(1, &records(1, main, total, all()), &ARMS, 3);
+    let grade = |main, total| {
+        grade_task(
+            &fixture_suite(),
+            1,
+            &records(1, main, total, all()),
+            &ARMS,
+            3,
+        )
+    };
     let at_limits = grade(800, 1100);
     assert_eq!(at_limits.verdict, Verdict::Pass, "{:?}", at_limits.reasons);
     assert_eq!(at_limits.criteria.len(), 3);
@@ -385,12 +393,18 @@ fn token_criteria_boundaries() {
 #[test]
 fn cost_and_peak_context_ratios_are_report_only() {
     // full costs and peaks 3x bare, yet the token criteria alone decide the verdict
-    let g = grade_task(1, &records(1, 3000, 1000, all()), &ARMS, 3);
+    let g = grade_task(
+        &fixture_suite(),
+        1,
+        &records(1, 3000, 1000, all()),
+        &ARMS,
+        3,
+    );
     let ratio = |n: &str| g.report_only.iter().find(|r| r.name == n).unwrap().ratio;
     assert!((ratio("cost_usd").unwrap() - 3.0).abs() < 1e-9);
     assert!((ratio("peak_main_context").unwrap() - 3.0).abs() < 1e-9);
     assert_eq!(g.verdict, Verdict::Warn, "{:?}", g.reasons);
-    let pass = grade_task(1, &records(1, 500, 900, all()), &ARMS, 3);
+    let pass = grade_task(&fixture_suite(), 1, &records(1, 500, 900, all()), &ARMS, 3);
     assert_eq!(pass.verdict, Verdict::Pass);
     assert!((pass.report_only[0].ratio.unwrap() - 0.5).abs() < 1e-9);
 }
@@ -399,7 +413,7 @@ fn cost_and_peak_context_ratios_are_report_only() {
 fn a_missing_ritual_step_is_a_warning() {
     let mut ritual = all();
     ritual.insert("submit", false);
-    let g = grade_task(1, &records(1, 500, 900, ritual), &ARMS, 3);
+    let g = grade_task(&fixture_suite(), 1, &records(1, 500, 900, ritual), &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Warn);
     assert_eq!(g.reasons, ["ritual steps missing: submit"]);
 }
@@ -412,6 +426,7 @@ fn ritual_steps_that_cannot_apply_are_n_a_and_the_rest_counted() {
     };
     // task 4 is a read-only question: only status and next apply
     let g = grade_task(
+        &fixture_suite(),
         4,
         &records(4, 500, 900, steps(&["status", "next"])),
         &ARMS,
@@ -435,13 +450,13 @@ fn ritual_steps_that_cannot_apply_are_n_a_and_the_rest_counted() {
     for r in &mut recs {
         r.changed_tracked_files = false;
     }
-    let g = grade_task(1, &recs, &ARMS, 3);
+    let g = grade_task(&fixture_suite(), 1, &recs, &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Pass, "{:?}", g.reasons);
     assert_eq!(ritual(&g), (5.0, 5.0));
     recs.iter_mut()
         .filter(|r| r.arm == Arm::Full && r.run == 1)
         .for_each(|r| r.changed_tracked_files = true);
-    let g = grade_task(1, &recs, &ARMS, 3);
+    let g = grade_task(&fixture_suite(), 1, &recs, &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Warn);
     assert_eq!(ritual(&g), (5.0, 6.0));
     assert_eq!(g.reasons, ["ritual steps missing: check_green"]);
@@ -546,12 +561,12 @@ fn task6(files: usize) -> Vec<RunRecord> {
 
 #[test]
 fn task_6_files_opened_is_at_most_half_of_bare_task_4() {
-    let half = grade_task(6, &task6(5), &ARMS, 3);
+    let half = grade_task(&fixture_suite(), 6, &task6(5), &ARMS, 3);
     assert_eq!(half.verdict, Verdict::Pass, "{:?}", half.reasons);
-    let over = grade_task(6, &task6(6), &ARMS, 3);
+    let over = grade_task(&fixture_suite(), 6, &task6(6), &ARMS, 3);
     assert_eq!(over.verdict, Verdict::Warn);
     assert!(over.reasons[0].starts_with("files_opened 0.60"));
-    let none = grade_task(6, &task6_against(0, 0), &ARMS, 3);
+    let none = grade_task(&fixture_suite(), 6, &task6_against(0, 0), &ARMS, 3);
     assert_eq!(none.verdict, Verdict::Warn, "0 on both sides is not a pass");
     assert_eq!(
         none.reasons,
@@ -568,7 +583,7 @@ fn task_6_files_opened_is_at_most_half_of_bare_task_4() {
 fn a_timed_out_or_missing_run_makes_the_task_incomplete_with_medians_kept() {
     let mut recs = records(1, 500, 900, all());
     recs[1].status = Status::TimedOut; // full run 1
-    let g = grade_task(1, &recs, &ARMS, 3);
+    let g = grade_task(&fixture_suite(), 1, &recs, &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Incomplete);
     assert_eq!(g.reasons, ["full task 1 run 1: timed_out"]);
     assert!(g.criteria.is_empty());
@@ -578,12 +593,12 @@ fn a_timed_out_or_missing_run_makes_the_task_incomplete_with_medians_kept() {
     let mut no_transcript = records(1, 500, 900, all());
     no_transcript[0].result = None;
     no_transcript[0].error = Some("no transcript".into());
-    let g = grade_task(1, &no_transcript, &ARMS, 3);
+    let g = grade_task(&fixture_suite(), 1, &no_transcript, &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Incomplete);
     assert_eq!(g.arms[0].main_tokens, None);
 
     let short = records(1, 500, 900, all());
-    let g = grade_task(1, &short[..4], &ARMS, 3);
+    let g = grade_task(&fixture_suite(), 1, &short[..4], &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Incomplete);
     assert!(
         g.reasons
@@ -591,7 +606,13 @@ fn a_timed_out_or_missing_run_makes_the_task_incomplete_with_medians_kept() {
             .any(|r| r == "bare task 1: 2 of 3 runs started")
     );
 
-    let g = grade_task(6, &task6(5)[..task6(5).len() - 1], &ARMS, 3);
+    let g = grade_task(
+        &fixture_suite(),
+        6,
+        &task6(5)[..task6(5).len() - 1],
+        &ARMS,
+        3,
+    );
     assert_eq!(
         g.verdict,
         Verdict::Incomplete,
@@ -865,7 +886,7 @@ impl Driver for Replay {
         sessions: &Path,
         env: &[(&str, std::ffi::OsString)],
     ) -> anyhow::Result<Session> {
-        assert!(dir.join("api").is_dir() && !prompt.is_empty());
+        assert!(dir.join(".git").is_dir() && !prompt.is_empty());
         assert_eq!(thinking, "medium");
         // nothing a session can see names the arm, stewards, or the eval
         let seen: Vec<String> = [dir, sessions]
@@ -916,6 +937,14 @@ impl Driver for Replay {
     }
 }
 
+fn evals() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("evals")
+}
+
+fn fixture_suite() -> Suite {
+    Suite::load(&evals(), "fixture").unwrap()
+}
+
 fn plan(tmp: &Path, runs: u32, max_cost: Option<f64>) -> Plan {
     Plan {
         tasks: vec![1],
@@ -925,7 +954,8 @@ fn plan(tmp: &Path, runs: u32, max_cost: Option<f64>) -> Plan {
         thinking: "medium".into(),
         max_cost,
         setup_dir: None,
-        evals: Path::new(env!("CARGO_MANIFEST_DIR")).join("evals"),
+        evals: evals(),
+        suite: fixture_suite(),
         results: tmp.join("results"),
         work: neutral_work_dir(tmp),
         keep_work: false,
@@ -1164,4 +1194,234 @@ fn a_setup_dir_must_be_a_clean_git_repository() {
         "{}",
         err.message
     );
+}
+
+/// `(number, read_only, setup, files_opened_vs_bare)` of each task.
+fn task_facts(s: &Suite) -> Vec<(u32, bool, Option<u32>, Option<u32>)> {
+    s.tasks
+        .iter()
+        .map(|t| (t.number, t.read_only, t.setup, t.files_opened_vs_bare))
+        .collect()
+}
+
+#[test]
+fn the_fixture_manifest_reproduces_the_old_hard_coded_facts() {
+    let s = fixture_suite();
+    assert_eq!(s.name, "fixture");
+    assert_eq!(s.session_minutes, 30);
+    assert_eq!(
+        task_facts(&s),
+        [
+            (1, false, None, None),
+            (2, false, None, None),
+            (3, false, None, None),
+            (4, true, None, None),
+            (5, false, None, None),
+            (6, true, Some(5), Some(4)),
+        ]
+    );
+    let Source::Fixture {
+        dir,
+        units,
+        unowned,
+        tests,
+    } = &s.source
+    else {
+        panic!("{:?}", s.source)
+    };
+    assert_eq!(dir, Path::new("fixture"));
+    assert_eq!(units, Path::new("full-units.toml"));
+    assert_eq!(unowned, &[".gitignore", "AGENTS.md"]);
+    assert_eq!(
+        tests,
+        &["api/test_*.py", "client/*.test.ts", "cli/tests/**"]
+    );
+    assert_eq!(s.commit(), None);
+    let tasks = evals().join(&s.tasks_dir);
+    assert_eq!(tasks, evals().join("tasks"));
+    assert_eq!(
+        task_prompt(&tasks, 1).unwrap(),
+        include_str!("../evals/tasks/01-count-endpoint.txt")
+    );
+}
+
+#[test]
+fn the_self_manifest_pins_its_commit_and_its_four_tasks() {
+    let s = Suite::load(&evals(), "self").unwrap();
+    assert_eq!(s.session_minutes, 60);
+    assert_eq!(s.commit(), Some("bcfccf0"));
+    assert!(
+        matches!(&s.source, Source::Repo { build, .. } if build == &["cargo", "build", "--all-targets"])
+    );
+    assert_eq!(
+        task_facts(&s),
+        [
+            (1, false, None, None),
+            (2, true, None, None),
+            (3, false, None, None),
+            (4, true, Some(3), Some(2)),
+        ]
+    );
+    let tasks = evals().join(&s.tasks_dir);
+    assert_eq!(
+        task_prompt(&tasks, 4).unwrap(),
+        include_str!("../evals/suites/self/tasks/04-owner-second-session.txt")
+    );
+}
+
+#[test]
+fn an_unknown_suite_or_a_task_outside_the_suite_is_a_usage_error() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (args, says) in [
+        (
+            vec!["eval", "--suite", "nope"],
+            "unknown suite `nope`; valid: fixture, self",
+        ),
+        (
+            vec!["eval", "--task", "7"],
+            "task 7 is not in suite `fixture`; valid: 1, 2, 3, 4, 5, 6",
+        ),
+        (
+            vec!["eval", "--suite", "self", "--task", "5"],
+            "task 5 is not in suite `self`; valid: 1, 2, 3, 4",
+        ),
+    ] {
+        let (code, v) = common::run(root, &args);
+        assert_eq!(
+            (code, v["error"]["code"].as_str()),
+            (2, Some("usage")),
+            "{v}"
+        );
+        assert_eq!(v["error"]["message"], says, "{v}");
+    }
+}
+
+/// A tiny adopted repository standing in for stewards itself: the `single` fixture plus an
+/// AGENTS.md with its own notes around an old block, a docs page, and `/target` ignored, committed once before and
+/// once after both units are stamped, and an untracked `evals/` whose `self` suite pins the
+/// stamped commit and whose build only writes `target/debug/marker`. Returns the repository and
+/// the unstamped commit.
+fn self_style_repo() -> (TempDir, String) {
+    let repo = common::fixture("single");
+    let dir = repo.path();
+    std::fs::write(
+        dir.join("AGENTS.md"),
+        "# notes\n\n<!-- stewards:start -->\nold block\n<!-- stewards:end -->\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("docs/units")).unwrap();
+    std::fs::write(dir.join("docs/units/api.md"), "# api\n").unwrap();
+    std::fs::write(dir.join(".gitignore"), "/target\n").unwrap();
+    // prose on store's card keeps its `no docs yet` documenter job away, as in tests/next.rs
+    common::append(
+        &dir.join(".stewards/units/store.toml"),
+        "\n[doc]\noverview = \"Keeps the items.\"\n",
+    );
+    common::git(dir, &["add", "-A"]);
+    common::git(dir, &["commit", "-qm", "notes"]);
+    let unstamped = common::git(dir, &["rev-parse", "HEAD"]).trim().to_string();
+    common::stamp_units(dir, &["api", "store"]);
+    common::git(dir, &["add", "-A"]);
+    common::git(dir, &["commit", "-qm", "stamped"]);
+    let stamped = common::git(dir, &["rev-parse", "HEAD"]).trim().to_string();
+    std::fs::create_dir_all(dir.join("evals/suites")).unwrap();
+    std::fs::create_dir_all(dir.join("evals/tasks")).unwrap();
+    std::fs::write(
+        dir.join("evals/tasks/01-question.txt"),
+        "Explain the api.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("evals/suites/self.toml"),
+        format!(
+            "tasks_dir = \"tasks\"\nsession_minutes = 60\n\n[source]\nkind = \"repo\"\ncommit = \"{stamped}\"\nbuild = [\"sh\", \"-c\", \"mkdir -p target/debug && echo built > target/debug/marker\"]\n\n[[task]]\nnumber = 1\n"
+        ),
+    )
+    .unwrap();
+    (repo, unstamped)
+}
+
+fn self_plan(tmp: &Path, repo: &Path) -> Plan {
+    let mut p = plan(tmp, 1, None);
+    p.evals = repo.join("evals");
+    p.suite = Suite::load(&p.evals, "self").unwrap();
+    p
+}
+
+#[test]
+fn a_repo_suite_prepares_each_arm_from_one_clone_and_links_one_build() {
+    use std::os::unix::fs::MetadataExt;
+    let (repo, _) = self_style_repo();
+    let tmp = TempDir::new().unwrap();
+    let mut p = self_plan(tmp.path(), repo.path());
+    p.arms = vec![Arm::Bare, Arm::BlockOnly, Arm::Full];
+    p.keep_work = true;
+    let summary = execute(&Replay::new(sample("subagent"), Status::Ok), &p).unwrap();
+    let commit = p.suite.commit().unwrap();
+    assert_eq!(summary.suite, "self");
+    assert_eq!(summary.commit.as_deref(), Some(commit));
+    assert!(summary.setup.build_s.is_some());
+    assert!(summary.adoption.is_none(), "no adoption session");
+    let md = render(&summary);
+    assert!(md.contains(&format!("suite: self at {commit}\n")), "{md}");
+    assert!(md.contains("build cache: one build"), "{md}");
+    let runs = run_files(&tmp.path().join("results"));
+    assert_eq!(runs.len(), 3);
+    let cache = std::fs::metadata(p.work.join("target/debug/marker")).unwrap();
+    let block = stewards::guide::block();
+    for run in &runs {
+        let dir = PathBuf::from(run["workdir"].as_str().unwrap());
+        let arm = run["arm"].as_str().unwrap();
+        // the one build's output, the same file in every arm
+        let marker = std::fs::metadata(dir.join("target/debug/marker")).unwrap();
+        assert_eq!(marker.ino(), cache.ino(), "{arm}");
+        assert_eq!(common::git(&dir, &["status", "--porcelain"]), "", "{arm}");
+        let agents = std::fs::read_to_string(dir.join("AGENTS.md")).ok();
+        let kept = dir.join(".stewards").exists() || dir.join("docs/units").exists();
+        match arm {
+            "bare" => assert!(agents.is_none() && !kept),
+            "block-only" => {
+                assert!(!kept);
+                assert_eq!(agents.unwrap(), format!("{block}\n"));
+            }
+            "full" => {
+                assert!(dir.join(".stewards/units.toml").is_file());
+                assert!(dir.join("docs/units/api.md").is_file());
+                let agents = agents.unwrap();
+                assert!(agents.starts_with("# notes\n") && agents.contains(block));
+                assert!(!agents.contains("old block"));
+                assert_eq!(run["next_check"]["exit_code"], 0);
+            }
+            other => panic!("{other}"),
+        }
+        // the clone is at the pinned commit, with no remote to push to
+        let log = common::git(&dir, &["log", "--format=%H"]);
+        assert!(log.contains(commit), "{arm}");
+        assert_eq!(common::git(&dir, &["remote"]), "", "{arm}");
+    }
+}
+
+#[test]
+fn a_repo_suite_whose_full_tree_lists_jobs_stops_before_any_run() {
+    let (repo, unstamped) = self_style_repo();
+    let tmp = TempDir::new().unwrap();
+    let mut p = self_plan(tmp.path(), repo.path());
+    let Source::Repo { commit, .. } = &mut p.suite.source else {
+        panic!()
+    };
+    *commit = unstamped;
+    p.arms = vec![Arm::Bare, Arm::Full];
+    let err = setup_error(
+        execute(&Replay::new(sample("subagent"), Status::Ok), &p)
+            .err()
+            .unwrap(),
+    );
+    assert!(
+        err.message
+            .contains("`stewards next` is not clean in the `full` tree"),
+        "{}",
+        err.message
+    );
+    assert!(err.fix.contains("evals/suites/self.toml"), "{}", err.fix);
+    assert!(!tmp.path().join("results/runs").exists(), "no run started");
 }

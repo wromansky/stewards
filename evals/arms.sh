@@ -4,13 +4,14 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
-  echo "usage: arms.sh <bare|block-only|full> <dest>" >&2
+  echo "usage: arms.sh <bare|block-only|full> <dest> [source, default fixture/]" >&2
   exit 2
 }
 
-[[ $# -eq 2 ]] || usage
+[[ $# -eq 2 || $# -eq 3 ]] || usage
 arm=$1
 dest=$2
+src="${3:-$here/fixture}"
 
 case "$arm" in
   bare|block-only|full) ;;
@@ -24,7 +25,7 @@ if [[ -e "$dest" ]]; then
   fi
 fi
 mkdir -p "$dest"
-cp -R "$here/fixture/." "$dest/"
+cp -R "$src/." "$dest/"
 rm -rf "$dest/cli/target"
 find "$dest" -type d -name __pycache__ -prune -exec rm -rf {} +
 rm -f "$dest/api/items.json"

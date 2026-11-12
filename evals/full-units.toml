@@ -3,8 +3,8 @@
 # `client/` unowned. `stewards eval` copies this file over
 # `.stewards/units.toml` after `stewards init` and before the adoption session.
 # Each unit's tests sit inside its directory. The root `.gitignore` and
-# `AGENTS.md` stay unowned (`FULL_UNITS_UNOWNED` in src/eval/mod.rs); the test
-# files adoption may add are `FULL_UNITS_TESTS` beside it.
+# `AGENTS.md` stay unowned (`unowned` in evals/suites/fixture.toml); the test
+# files adoption may add are its `tests`.
 
 [[unit]]
 name = "api"

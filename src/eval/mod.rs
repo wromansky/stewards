@@ -1,5 +1,5 @@
-// `stewards eval`: drives a harness over the `evals/` fixture in each arm, parses every transcript
-// into a `Run`, and grades the medians.
+// `stewards eval`: drives a harness over a suite (`evals/suites/<name>.toml`) in each arm, parses
+// every transcript into a `Run`, and grades the medians.
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt::Display;
@@ -17,23 +17,11 @@ use crate::output::{CliError, Global, emit, not_implemented};
 
 pub mod grade;
 pub mod pi;
+pub mod suite;
 
 pub use grade::{Summary, TaskGrade, Verdict};
+pub use suite::{Source, Suite, SuiteTask};
 
-/// The task numbers under `evals/tasks/`.
-pub const TASKS: [u32; 6] = [1, 2, 3, 4, 5, 6];
-
-/// Each session's wall-clock limit; a session still running then is recorded as timed out.
-pub const SESSION_LIMIT: Duration = Duration::from_secs(30 * 60);
-
-/// The `full` arm's setup, read in one place. The hand-set units, under `evals/`: on the fixture
-/// `stewards init` proposes only `cli`, its one manifest root.
-pub const FULL_UNITS: &str = "full-units.toml";
-/// The only tracked files `FULL_UNITS` may leave unowned.
-pub const FULL_UNITS_UNOWNED: [&str; 2] = [".gitignore", "AGENTS.md"];
-/// Where adoption may add new files (a tester may add tests); any other change to the fixture's
-/// code stops the eval. Modifying or deleting a file here still stops it.
-pub const FULL_UNITS_TESTS: [&str; 3] = ["api/test_*.py", "client/*.test.ts", "cli/tests/**"];
 /// The tool's own files, which adoption may add, change, or delete.
 const ADOPTION_OWN: [&str; 4] = [".stewards/", "docs/units/", "AGENTS.md", ".gitignore"];
 
@@ -44,7 +32,7 @@ pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards
 pub const FAILED_STOPS: [&str; 3] = ["error", "aborted", "length"];
 
 /// What the summary says about the transcript-derived ritual steps.
-pub const RITUAL_NOTE: &str = "check_green is the runner's own `stewards next --no-brief` after each full session (exit 0), and counts only for a session that changed tracked files (else n/a). On the read-only tasks 4 and 6 route, brief, submit, and check_green are n/a; each run record still shows every step it ran. The other five steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, backticks, and lines inside heredocs are misread or missed; `status` and `route` count when only a child ran them; `brief` is a subagent launch whose arguments name `.stewards/briefs/`, or any `submit`.";
+pub const RITUAL_NOTE: &str = "check_green is the runner's own `stewards next --no-brief` after each full session (exit 0), and counts only for a session that changed tracked files (else n/a). On the read-only tasks (`read_only` in the suite manifest) route, brief, submit, and check_green are n/a; each run record still shows every step it ran. The other five steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, backticks, and lines inside heredocs are misread or missed; `status` and `route` count when only a child ran them; `brief` is a subagent launch whose arguments name `.stewards/briefs/`, or any `submit`.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -90,7 +78,7 @@ impl Status {
     }
 }
 
-/// `task` runs are graded; `setup` runs (the adoption session, task 5 before task 6) are not.
+/// `task` runs are graded; `setup` runs (the adoption session, a task's `setup` task) are not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunRole {
@@ -486,8 +474,10 @@ pub struct Plan {
     pub max_cost: Option<f64>,
     /// A previously adopted fixture to copy for the `full` arms instead of adopting again.
     pub setup_dir: Option<PathBuf>,
-    /// The repo's `evals/` directory (fixture, tasks, arms.sh).
+    /// The repo's `evals/` directory (suites, fixture, tasks, arms.sh).
     pub evals: PathBuf,
+    /// What each arm copies and which tasks exist.
+    pub suite: Suite,
     /// Where `runs/`, `sessions/`, and the summaries go.
     pub results: PathBuf,
     /// Scratch space for the per-run fixture copies, with a neutral name (`<tmp>/w-<random>`).
@@ -521,6 +511,8 @@ pub struct SetupNotes {
     pub gaps: Vec<String>,
     /// The flows adoption recorded in `.stewards/repo.toml`, as `name: unit, unit`.
     pub flows: Vec<String>,
+    /// A `repo` suite's one build, in seconds: setup, outside every ratio.
+    pub build_s: Option<f64>,
 }
 
 struct Runner<'a> {
@@ -674,9 +666,10 @@ struct SessionSpec {
     path: OsString,
 }
 
-/// Runs the plan sequentially: the adoption setup (when a `full` arm is planned), then per task,
-/// per run number, each arm in a fresh fixture copy at `<work>/<n>/repo`; task 6 runs after task 5
-/// in the same copy. Writes `runs/*.json` as each session ends, then `summary.json` and `summary.md`.
+/// Runs the plan sequentially: for a `repo` suite the clone and its one build, then the `full`
+/// setup (when a `full` arm is planned), then per task, per run number, each arm in a fresh copy
+/// at `<work>/<n>/repo`; a task with a `setup` task runs after it in the same copy. Writes
+/// `runs/*.json` as each session ends, then `summary.json` and `summary.md`.
 pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
     std::fs::create_dir_all(&plan.work)?;
     let path_off = path_without_stewards(&plan.path, &plan.work.join("p"))?;
@@ -697,10 +690,33 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
         stopped: false,
     };
     let mut notes = SetupNotes::default();
+    // a `repo` suite's clone, which every arm copies, and its build cache
+    let (base, cache) = (plan.work.join("src"), plan.work.join("target"));
+    let fixture = match &plan.suite.source {
+        Source::Fixture {
+            dir,
+            units,
+            unowned,
+            tests,
+        } => Some((dir, units, unowned, tests)),
+        Source::Repo { commit, build } => {
+            notes.build_s = Some(clone_and_build(plan, commit, build, &base, &cache)?);
+            None
+        }
+    };
     let mut adopted = None;
     if let Some(arm) = plan.arms.iter().copied().find(|a| a.is_full()) {
-        let dir = match &plan.setup_dir {
-            Some(d) => {
+        let dir = match (fixture, &plan.setup_dir) {
+            (None, _) => {
+                let dir = plan.work.join("0/repo");
+                full_repo_tree(&base, &dir)?;
+                notes.units = Some(format!(
+                    "Units, cards, and docs are the repository's own at {}, with this binary's AGENTS.md block; no adoption session.",
+                    plan.suite.commit().unwrap_or_default()
+                ));
+                dir
+            }
+            (Some(_), Some(d)) => {
                 notes.units = Some(format!(
                     "Units are those of the --setup-dir copy at {}; what `stewards init` proposed on its own was not recorded in this eval.",
                     d.display()
@@ -708,10 +724,10 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
                 check_setup_dir(d)?;
                 d.clone()
             }
-            None => {
+            (Some((source, units, unowned, _)), None) => {
                 let dir = plan.work.join("0/repo");
-                arms_sh(plan, "full", &dir, &path_on)?;
-                notes.units = Some(set_full_units(&plan.evals, &dir)?);
+                arms_sh(plan, "full", &dir, &path_on, source)?;
+                notes.units = Some(set_full_units(&plan.evals, &dir, units, unowned)?);
                 r.session(SessionSpec {
                     label: "adopt".into(),
                     task: None,
@@ -732,38 +748,54 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
             )?;
             Err(err)
         };
-        if plan.setup_dir.is_none() {
-            git(&dir, &["add", "-A"])?;
-        }
-        match adoption_changes(&dir) {
-            Ok(added) => notes.added_paths = added,
-            Err(e) => return fail(&r, notes, e),
-        }
-        if let Err(e) = check_full_units(&dir) {
-            return fail(&r, notes, e);
+        if let Some((_, _, unowned, tests)) = fixture {
+            if plan.setup_dir.is_none() {
+                git(&dir, &["add", "-A"])?;
+            }
+            match adoption_changes(&dir, tests) {
+                Ok(added) => notes.added_paths = added,
+                Err(e) => return fail(&r, notes, e),
+            }
+            if let Err(e) = check_full_units(&dir, unowned) {
+                return fail(&r, notes, e);
+            }
         }
         if next_check(&plan.stewards, &dir)?.exit_code != Some(0) {
+            let (what, fix) = match fixture {
+                Some(_) => (
+                    "adopted fixture",
+                    format!(
+                        "read the adoption transcript under {}, or pass `--setup-dir` an adopted copy where `stewards next` exits 0",
+                        plan.results.join("sessions").display()
+                    ),
+                ),
+                None => (
+                    "`full` tree",
+                    format!(
+                        "pin `commit` in evals/suites/{}.toml to a commit where `stewards next` lists no jobs",
+                        plan.suite.name
+                    ),
+                ),
+            };
             let err = CliError::new(
                 "eval_setup_incomplete",
                 format!(
-                    "`stewards next` is not clean in the adopted fixture at {}; no `full` run started",
+                    "`stewards next` is not clean in the {what} at {}; no `full` run started",
                     dir.display()
                 ),
-                format!(
-                    "read the adoption transcript under {}, or pass `--setup-dir` an adopted copy where `stewards next` exits 0",
-                    plan.results.join("sessions").display()
-                ),
+                fix,
             );
             return fail(&r, notes, err.into());
         }
         (notes.gaps, notes.flows) = adopted_knowledge(&dir)?;
-        if plan.setup_dir.is_none() {
+        if fixture.is_some() && plan.setup_dir.is_none() {
             commit_adopted(&dir)?;
         }
         adopted = Some(dir);
     }
     let mut n = 0;
     'all: for &task in &plan.tasks {
+        let setup = plan.suite.task(task).and_then(|t| t.setup);
         for run in 1..=plan.runs {
             for &arm in &plan.arms {
                 n += 1;
@@ -771,9 +803,14 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
                 let root = plan.work.join(n.to_string());
                 let dir = root.join("repo");
                 let path = if arm.is_full() { &path_on } else { &path_off };
-                match &adopted {
-                    Some(from) if arm.is_full() => copy_adopted(from, &dir, arm)?,
-                    _ => arms_sh(plan, arm.as_str(), &dir, path)?,
+                match (&adopted, fixture) {
+                    // the clean runs before the build cache is linked, so it never removes it
+                    (Some(from), _) if arm.is_full() => copy_adopted(from, &dir, arm)?,
+                    (_, Some((source, ..))) => arms_sh(plan, arm.as_str(), &dir, path, source)?,
+                    (_, None) => repo_arm_tree(&base, &dir, arm)?,
+                }
+                if fixture.is_none() {
+                    link_build_cache(&cache, &dir)?;
                 }
                 let spec = |task: u32, role: RunRole, label: String| -> Result<SessionSpec> {
                     Ok(SessionSpec {
@@ -783,13 +820,14 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
                         role,
                         run,
                         dir: dir.clone(),
-                        prompt: task_prompt(&plan.evals, task)?,
+                        prompt: task_prompt(&plan.evals.join(&plan.suite.tasks_dir), task)?,
                         path: path.clone(),
                     })
                 };
-                let ran = (task != 6
-                    || r.session(spec(5, RunRole::Setup, format!("{label}-setup"))?)?)
-                    && r.session(spec(task, RunRole::Task, label.clone())?)?;
+                let ran = match setup {
+                    Some(s) => r.session(spec(s, RunRole::Setup, format!("{label}-setup"))?)?,
+                    None => true,
+                } && r.session(spec(task, RunRole::Task, label.clone())?)?;
                 if !plan.keep_work {
                     std::fs::remove_dir_all(&root)?;
                 }
@@ -817,11 +855,10 @@ fn write_summary(plan: &Plan, summary: &Summary) -> Result<()> {
     Ok(())
 }
 
-/// The task file verbatim.
-pub fn task_prompt(evals: &Path, task: u32) -> Result<String> {
-    let dir = evals.join("tasks");
+/// The task file `<dir>/NN-*` verbatim.
+pub fn task_prompt(dir: &Path, task: u32) -> Result<String> {
     let prefix = format!("{task:02}-");
-    let mut names: Vec<PathBuf> = std::fs::read_dir(&dir)
+    let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
         .with_context(|| dir.display().to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
@@ -844,13 +881,14 @@ fn ok(out: Output, what: impl Display) -> Result<Output> {
     Ok(out)
 }
 
-/// `evals/arms.sh <arm> <dir>`: the fixture copied, `git init`ed and committed, plus the arm's
-/// AGENTS.md block or `stewards init`.
-fn arms_sh(plan: &Plan, arm: &str, dir: &Path, path: &OsStr) -> Result<()> {
+/// `evals/arms.sh <arm> <dir> <evals/source>`: the fixture copied, `git init`ed and committed,
+/// plus the arm's AGENTS.md block or `stewards init`.
+fn arms_sh(plan: &Plan, arm: &str, dir: &Path, path: &OsStr, source: &Path) -> Result<()> {
     let out = Command::new("bash")
         .arg(plan.evals.join("arms.sh"))
         .arg(arm)
         .arg(dir)
+        .arg(plan.evals.join(source))
         .env("PATH", path)
         .output()
         .context("running evals/arms.sh")?;
@@ -868,21 +906,22 @@ fn unowned_files(dir: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Replaces the units `stewards init` proposed in `dir` with `evals/FULL_UNITS`, and returns the
+/// Replaces the units `stewards init` proposed in `dir` with `evals/<units>`, and returns the
 /// summary's plain-words note on what init proposed on its own.
-fn set_full_units(evals: &Path, dir: &Path) -> Result<String> {
+fn set_full_units(evals: &Path, dir: &Path, units: &Path, unowned: &[String]) -> Result<String> {
     let proposed: Vec<String> = crate::model::load_repo(dir)?
         .units
         .into_iter()
         .map(|u| u.name)
         .collect();
     let proposed_unowned = unowned_files(dir)?.len();
-    std::fs::copy(evals.join(FULL_UNITS), dir.join(".stewards/units.toml"))
-        .with_context(|| format!("copying evals/{FULL_UNITS}"))?;
+    std::fs::copy(evals.join(units), dir.join(".stewards/units.toml"))
+        .with_context(|| format!("copying evals/{}", units.display()))?;
+    let units = units.display();
     Ok(format!(
-        "Units were set by hand for this eval from evals/{FULL_UNITS}, so these numbers do not measure `stewards init`'s unit proposal: on its own it proposed {} and left {proposed_unowned} tracked file(s) unowned. Unowned by design: {}.",
+        "Units were set by hand for this eval from evals/{units}, so these numbers do not measure `stewards init`'s unit proposal: on its own it proposed {} and left {proposed_unowned} tracked file(s) unowned. Unowned by design: {}.",
         proposed.join(", "),
-        FULL_UNITS_UNOWNED.join(", ")
+        unowned.join(", ")
     ))
 }
 
@@ -890,11 +929,11 @@ fn setup_error(message: String, fix: &str) -> anyhow::Error {
     CliError::new("eval_setup_incomplete", message, fix).into()
 }
 
-/// An `eval_setup_incomplete` error when `dir` leaves a tracked file unowned beyond `FULL_UNITS_UNOWNED`.
-fn check_full_units(dir: &Path) -> Result<()> {
+/// An `eval_setup_incomplete` error when `dir` leaves a tracked file unowned beyond `unowned`.
+fn check_full_units(dir: &Path, unowned: &[String]) -> Result<()> {
     let stray: Vec<String> = unowned_files(dir)?
         .into_iter()
-        .filter(|p| !FULL_UNITS_UNOWNED.contains(&p.as_str()))
+        .filter(|p| !unowned.contains(p))
         .collect();
     if stray.is_empty() {
         return Ok(());
@@ -905,7 +944,7 @@ fn check_full_units(dir: &Path) -> Result<()> {
             dir.display(),
             stray.join(", ")
         ),
-        &format!("give them a unit in evals/{FULL_UNITS}"),
+        "give them a unit in the suite's `units` file",
     ))
 }
 
@@ -933,10 +972,10 @@ fn check_setup_dir(dir: &Path) -> Result<()> {
 }
 
 /// Checks the index of the adopted fixture against its `fixture: initial` (root) commit: only the
-/// tool's own files (`ADOPTION_OWN`) may change, and new files may appear under
-/// `FULL_UNITS_TESTS`; anything else is `eval_setup_incomplete`. Returns the added paths outside
+/// tool's own files (`ADOPTION_OWN`) may change, and new files may appear under the suite's
+/// `tests` globs; anything else is `eval_setup_incomplete`. Returns the added paths outside
 /// `.stewards/` and `docs/units/`.
-fn adoption_changes(dir: &Path) -> Result<Vec<String>> {
+fn adoption_changes(dir: &Path, test_globs: &[String]) -> Result<Vec<String>> {
     let initial = git(dir, &["rev-list", "--max-parents=0", "HEAD"])?;
     let diff = git(
         dir,
@@ -950,7 +989,7 @@ fn adoption_changes(dir: &Path) -> Result<Vec<String>> {
         ],
     )?;
     let mut tests = globset::GlobSetBuilder::new();
-    for t in FULL_UNITS_TESTS {
+    for t in test_globs {
         tests.add(
             globset::GlobBuilder::new(t)
                 .literal_separator(true)
@@ -984,7 +1023,7 @@ fn adoption_changes(dir: &Path) -> Result<Vec<String>> {
             &format!(
                 "read the adoption transcript; adoption may change only {} and add new files under {}",
                 ADOPTION_OWN.join(", "),
-                FULL_UNITS_TESTS.join(", ")
+                test_globs.join(", ")
             ),
         ));
     }
@@ -1143,6 +1182,98 @@ fn copy_adopted(from: &Path, to: &Path, arm: Arm) -> Result<()> {
     Ok(())
 }
 
+/// A `repo` suite's tree: the repository holding `evals/` cloned to `base` at `commit` as
+/// `main`, without its remote, then `build` run there once with the user's environment and its
+/// `target/` moved to `cache`. Returns the build's seconds.
+fn clone_and_build(
+    plan: &Plan,
+    commit: &str,
+    build: &[String],
+    base: &Path,
+    cache: &Path,
+) -> Result<f64> {
+    let root = plan.evals.parent().context("evals/ has no parent")?;
+    let path = |p: &Path| p.to_str().map(String::from).context("non-UTF-8 path");
+    git(&plan.work, &["clone", "-q", &path(root)?, &path(base)?])?;
+    git(base, &["checkout", "-q", "-B", "main", commit])?;
+    // a session must not push to or fetch from the user's checkout
+    git(base, &["remote", "remove", "origin"])?;
+    let (program, args) = build
+        .split_first()
+        .context("the suite's `build` is empty")?;
+    let started = Instant::now();
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(base)
+        .output()
+        .with_context(|| format!("running {program}"))?;
+    ok(out, format!("{} in {}", build.join(" "), base.display()))?;
+    let seconds = started.elapsed().as_secs_f64();
+    std::fs::rename(base.join("target"), cache)
+        .with_context(|| format!("`{}` left no target/", build.join(" ")))?;
+    Ok(seconds)
+}
+
+/// A `repo` suite's `full` tree: `base` as it is, with this binary's AGENTS.md block upserted
+/// (as `stewards init` does) and committed.
+fn full_repo_tree(base: &Path, dir: &Path) -> Result<()> {
+    copy_dir(base, dir)?;
+    let repo = crate::workspace::Repo {
+        name: String::new(),
+        root: dir.to_path_buf(),
+        loaded: None,
+    };
+    if crate::guide::upsert_block(&repo)? {
+        git(dir, &["commit", "-qam", "update AGENTS.md block"])?;
+    }
+    Ok(())
+}
+
+/// The paths a `repo` suite's `bare` tree lacks.
+const STEWARDS_PATHS: [&str; 3] = [".stewards", "docs/units", "AGENTS.md"];
+
+/// A `repo` suite's `bare` or `block-only` run copy: `base` without `STEWARDS_PATHS`, committed;
+/// `block-only` then gets an AGENTS.md holding only the block, committed.
+fn repo_arm_tree(base: &Path, dir: &Path, arm: Arm) -> Result<()> {
+    copy_dir(base, dir)?;
+    for p in STEWARDS_PATHS.map(|p| dir.join(p)) {
+        if p.is_dir() {
+            std::fs::remove_dir_all(&p)?;
+        } else if p.exists() {
+            std::fs::remove_file(&p)?;
+        }
+    }
+    git(dir, &["add", "-A"])?;
+    git(
+        dir,
+        &["commit", "-qm", "remove .stewards, docs/units, AGENTS.md"],
+    )?;
+    if arm == Arm::BlockOnly {
+        std::fs::write(
+            dir.join("AGENTS.md"),
+            format!("{}\n", crate::guide::block()),
+        )?;
+        git(dir, &["add", "AGENTS.md"])?;
+        git(dir, &["commit", "-qm", "add AGENTS.md block"])?;
+    }
+    Ok(())
+}
+
+/// `cp -al cache dir/target`: the one build's output, hard-linked so no run pays a cold build.
+fn link_build_cache(cache: &Path, dir: &Path) -> Result<()> {
+    let target = dir.join("target");
+    let out = Command::new("cp")
+        .arg("-al")
+        .arg(cache)
+        .arg(&target)
+        .output()?;
+    ok(
+        out,
+        format!("cp -al {} {}", cache.display(), target.display()),
+    )?;
+    Ok(())
+}
+
 /// `path` with `stewards` off it: each directory holding a `stewards` is replaced by a directory
 /// under `mirrors` linking to everything else in it, so other tools there (cargo, protoc) stay.
 pub fn path_without_stewards(path: &OsStr, mirrors: &Path) -> Result<OsString> {
@@ -1177,10 +1308,11 @@ fn usage(message: String) -> anyhow::Error {
     CliError::new("usage", message, "run `stewards eval --help`").into()
 }
 
-/// The CLI flags of `stewards eval`; clap checks the task range, `--runs` >= 1, and the
-/// thinking level.
+/// The CLI flags of `stewards eval`; clap checks `--runs` >= 1 and the thinking level, `run` the
+/// suite and its task numbers.
 pub struct Flags<'a> {
     pub harness: Option<&'a str>,
+    pub suite: &'a str,
     pub arm: Option<&'a str>,
     pub tasks: &'a [u32],
     pub runs: u32,
@@ -1213,13 +1345,6 @@ pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
             )));
         }
     };
-    let mut tasks = if f.tasks.is_empty() {
-        TASKS.to_vec()
-    } else {
-        f.tasks.to_vec()
-    };
-    tasks.sort_unstable();
-    tasks.dedup();
     let (cwd, ws) = crate::workspace::here(g)?;
     let root = ws.current_repo(&cwd)?.root.clone();
     let evals = root.join("evals");
@@ -1231,8 +1356,24 @@ pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
         )
         .into());
     }
+    let suite = Suite::load(&evals, f.suite)?;
+    let mut tasks = if f.tasks.is_empty() {
+        suite.numbers()
+    } else {
+        f.tasks.to_vec()
+    };
+    tasks.sort_unstable();
+    tasks.dedup();
+    suite.check_tasks(&tasks)?;
+    if f.setup_dir.is_some() && suite.commit().is_some() {
+        return Err(usage(format!(
+            "suite `{}` is already adopted; --setup-dir is for a fixture suite",
+            suite.name
+        )));
+    }
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut pi = pi::Pi::find(&path, SESSION_LIMIT)?;
+    let limit = Duration::from_secs(suite.session_minutes * 60);
+    let mut pi = pi::Pi::find(&path, limit)?;
     let work = neutral_work_dir(&std::env::temp_dir());
     let harness_setup = pi.isolate(&work.join("a"), f.thinking)?;
     let stamp = crate::telemetry::rfc3339(SystemTime::now()).replace(':', "-");
@@ -1248,6 +1389,7 @@ pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
         work,
         keep_work: f.keep_work,
         evals,
+        suite,
         stewards: std::env::current_exe()?,
         path,
         harness_setup: Some(harness_setup),

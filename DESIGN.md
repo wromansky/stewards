@@ -468,7 +468,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | `debt` | `simplified:` comments attached to units |
 | `docs [unit]` | renders `docs/units/<unit>.md` and the index |
 | `render --harness <h> [--repo-level]` | writes the six native role agents |
-| `eval [--harness h] [--arm a] [--task n]... [--runs n] [--max-cost usd] [--no-developers] [--model id] [--thinking level] [--setup-dir d] [--keep-work]` | runs the eval suite; exit 0 when the suite passes, 1 otherwise |
+| `eval [--harness h] [--suite s] [--arm a] [--task n]... [--runs n] [--max-cost usd] [--no-developers] [--model id] [--thinking level] [--setup-dir d] [--keep-work]` | runs the eval suite; exit 0 when the suite passes, 1 otherwise |
 | `completions <shell>` | shell completions |
 
 Global flags: `--human`, `--repo <name>`, `-C <dir>`, `--direct`. JSON by
@@ -896,6 +896,39 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
 
 ## Evals
 
+- **Suites:** `stewards eval --suite <name>` (default `fixture`) reads
+  `evals/suites/<name>.toml`: where each arm's copy comes from, the task
+  prompts' directory, the per-session wall-clock limit
+  (`session_minutes`), and per task whether it is `read_only`, which task
+  runs first as its `setup`, and which `bare` task its files opened are
+  compared with (`files_opened_vs_bare`). `--task` takes the suite's task
+  numbers; any other, or an unknown suite, is a `usage` error. The
+  `fixture` suite is the small fixture below. The `self` suite exists
+  because one pass on the fixture showed no delegation in `full` and more
+  tokens than `bare`: at about 400 lines, reading is too cheap for
+  delegation to pay. `self` is the stewards repository itself (about 8,500
+  lines of Rust, nine adopted units with cards and docs) at a pinned
+  `commit` (`bcfccf0`, where `next` lists no jobs), cloned from the
+  checkout holding `evals/` (no network) without its remote. Its `full`
+  arm is that tree with this binary's AGENTS.md block upserted (as `init`
+  does) and committed, and no adoption session; the runner checks
+  `stewards next --no-brief` exits 0 there before any run (else
+  `eval_setup_incomplete`). `bare` is the tree without `.stewards/`,
+  `docs/units/`, and `AGENTS.md`, committed; `block-only` adds an
+  `AGENTS.md` holding only the block. Its manifest's `build` (`cargo build
+  --all-targets`) runs once per invocation in the clone with the user's
+  environment; its `target/` is hard-linked (`cp -al`) into every run copy
+  of every arm, after the copy's `git clean -fdX`, so the clean never
+  removes it and no arm pays a cold build. The build's seconds are setup,
+  reported outside every ratio. Its four tasks are under
+  `evals/suites/self/tasks/`: (1) a `--unit` filter for `debt`; (2)
+  explain how an approving review is stamped (read-only); (3) an optional
+  unit `owner` end to end; (4) a second-session question about `owner`
+  after task 3 (read-only, compared with `bare` task 2). A session has 60
+  minutes. The work directory is `<tmp>`, so run it with `TMPDIR` on a disk
+  with room for the target directory: hard links need the build cache and
+  the run copies on one filesystem, and a small RAM-backed `/tmp` fills.
+  The summary names the suite and the pinned commit.
 - **Fixture, zero external deps:** `evals/fixture/` with `api/` (Python
   in-memory items store, `unittest`), `client/` (TypeScript run by Node
   directly with type stripping, Node 22.18 or newer, no `tsc`;
@@ -948,7 +981,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   run directory and records the exit code and job count; green is exit 0.
   It counts only when the session changed tracked files (its `HEAD` or the
   diff of tracked files against it differs from before the session); else
-  it is n/a. On the read-only tasks 4 and 6, `route`, `brief`, `submit`,
+  it is n/a. On the read-only tasks (fixture 4 and 6), `route`, `brief`, `submit`,
   and `check_green` are n/a; every run record still shows each step.
   The other five ritual steps are best-effort from the transcripts: shell
   commands, in the main session or any child, whose argv starts with
@@ -988,7 +1021,8 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `CARGO_INSTALL_ROOT` (never on `PATH`), each `full` session its own
   `STEWARDS_HOME` (the other arms none, so the environment names no
   stewards), and every other harness env prefix is stripped. Runs are sequential, each in a
-  fresh copy made by `evals/arms.sh` at `<tmp>/w-<random>/<n>/repo`, a
+  fresh copy (made by `evals/arms.sh` from the fixture suite's source
+  directory) at `<tmp>/w-<random>/<n>/repo`, a
   path naming no arm, `stewards`, or `eval` (the run record keeps the
   mapping); `bare` and `block-only` run with `stewards` off `PATH` (each
   `PATH` directory holding it is replaced by a mirror without it), `full`
@@ -1003,23 +1037,24 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   against the `fixture: initial` commit: a changed, deleted, or added file
   outside `.stewards/`, `docs/units/`, `AGENTS.md`, and `.gitignore` stops
   the eval with `eval_setup_incomplete` naming the files, except a newly
-  added file under the test locations `FULL_UNITS_TESTS`
-  (`api/test_*.py`, `client/*.test.ts`, `cli/tests/**`, kept beside
-  `FULL_UNITS_UNOWNED` in `src/eval/mod.rs`); the summary lists every added
+  added file under the test locations `tests` (`api/test_*.py`,
+  `client/*.test.ts`, `cli/tests/**`, beside `unowned` in
+  `evals/suites/fixture.toml`); the summary lists every added
   path, every gap of every kind on the adopted cards, and every flow
   adoption recorded (a task whose seeded bug or answer is listed started
   known), plus a report-only line: adoption's total tokens as a multiple
   of the median `bare` task total. The runner checks `stewards next`
   exits 0 there (else `eval_setup_incomplete`, before any `full` run),
   removes every gitignored file, and commits it; each `full` copy runs
-  `git clean -fdX` after the copy. `--setup-dir` reuses an adopted copy; it
+  `git clean -fdX` after the copy. `--setup-dir` (fixture suites only, else `usage`) reuses an adopted copy; it
   must be a git repository with an empty `git status --porcelain` and a
   clean `next`, and gets the same diff check. `--no-developers` is `full`
   with the block's "Changing:" line replaced by `- Changing: make the edits
   yourself.` and the developer fix sentence by `fix them yourself.`,
-  labelled `full-no-developers`. Task 6 runs in a new session in the
-  directory task 5 left: each task-6 run first runs task 5 there as a
-  `setup` run. A session has 30 minutes, then Pi's process group is killed
+  labelled `full-no-developers`. A task with a `setup` runs in a new
+  session in the directory its setup task left: each run of fixture task 6
+  first runs task 5 there as a `setup` run. A fixture session has 30
+  minutes, then Pi's process group is killed
   and the session recorded `timed_out`. After every session (normal exit,
   failure, or timeout) the runner kills every process whose
   `/proc/<pid>/cwd` is under that session's `<n>/` directory (Pi starts
@@ -1042,8 +1077,9 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `nested-subagent-events/`, `run-fanout-budgets/`, `session-leases/`,
   `supervisor-channels/`); the eval does not clean it.
 - **Pass criteria:** 3 runs per arm per task, medians compared. Tokens:
-  `full` main-context ≤ 80% of `bare` and total ≤ 110% of `bare`; task 6
-  files opened (main session) ≤ half of `bare` task 4, and 0 on both sides
+  `full` main-context ≤ 80% of `bare` and total ≤ 110% of `bare`; a task
+  with `files_opened_vs_bare` (fixture task 6) opens (main session) ≤ half
+  the files of that `bare` task (fixture task 4), and 0 on both sides
   is `unmeasured`, a warning, not a pass; both token criteria failing fails
   the task, one is a warning. A task with any compared run failed, timed
   out, without a transcript, or not started is `incomplete`: its medians

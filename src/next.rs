@@ -256,9 +256,10 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
 }
 
 /// `(reasons, files)` for the interfaces a change since `mark` touched, in card order: a hunk
-/// (`mark` -> `snapshot`) adds or changes one of the interface's lines, or deletes lines inside
-/// or next to them. `changed` is the files changed since `mark`. An interface whose lines can't
-/// be found (no mark tree, file gone or without hunks, name absent) counts when its file changed.
+/// (`mark` -> `snapshot`) whose range or the line just before or after it, on the old side or
+/// the new, is one of the interface's lines in that side's file. `changed` is the files changed
+/// since `mark`. An interface whose lines can't be found (no mark tree, file gone or without
+/// hunks, name absent, a blob unreadable) counts when its file changed.
 fn interfaces_touched(
     root: &Path,
     snapshot: &str,
@@ -267,41 +268,49 @@ fn interfaces_touched(
     mark: Option<&str>,
     changed: &[String],
 ) -> Result<(Vec<String>, Vec<String>)> {
-    let hunks = match mark.filter(|t| git::has_object(root, t)) {
+    // an anchor that does not parse names no file to watch
+    let watched: Vec<(&Interface, Anchor)> = interfaces
+        .iter()
+        .filter_map(|i| Some((i, Anchor::parse(&i.anchor).ok()?)))
+        .filter(|(_, a)| changed.contains(&a.path))
+        .collect();
+    let (mut reasons, mut files) = (Vec::new(), Vec::new());
+    if watched.is_empty() {
+        return Ok((reasons, files));
+    }
+    let mark = mark.filter(|t| git::has_object(root, t));
+    let hunks = match mark {
         Some(t) => git::diff_hunks(root, t, snapshot)?,
         None => vec![],
     };
-    let (mut reasons, mut files) = (Vec::new(), Vec::new());
-    for i in interfaces {
-        // an anchor that does not parse names no file to watch
-        let Ok(a) = Anchor::parse(&i.anchor) else {
-            continue;
+    for (i, a) in watched {
+        let file_hunks: Vec<_> = hunks.iter().filter(|(p, ..)| *p == a.path).collect();
+        // (old, new) lines; `None` when they can't be found
+        let sides = || {
+            if file_hunks.is_empty() {
+                return None;
+            }
+            let (_, sha) = entries.iter().find(|(p, _)| *p == a.path)?;
+            let new = anchors::interface_lines(&git::blob_text(root, sha).ok()?, &a.name);
+            let old = git::blob_text(root, &format!("{}:{}", mark?, a.path)).ok()?;
+            let old = anchors::interface_lines(&old, &a.name);
+            (!new.is_empty()).then_some((old, new))
         };
-        if !changed.contains(&a.path) {
-            continue;
-        }
-        let file_hunks: Vec<(u32, u32)> = hunks
-            .iter()
-            .filter(|(p, ..)| *p == a.path)
-            .map(|&(_, start, count)| (start, count))
-            .collect();
-        let lines = match entries.iter().find(|(p, _)| *p == a.path) {
-            Some((_, sha)) if !file_hunks.is_empty() => git::blob_text(root, sha)
-                .map(|text| anchors::interface_lines(&text, &a.name))
-                .unwrap_or_default(),
-            _ => vec![],
+        // a side's range `(start, count)` plus the line just before and after it
+        let hit = |lines: &[u32], (start, count): (u32, u32)| {
+            let first = if count == 0 { start + 1 } else { start };
+            (first.saturating_sub(1)..=first + count).any(|l| lines.binary_search(&l).is_ok())
         };
-        let hit = |l: u32| lines.binary_search(&l).is_ok();
-        let reason = if lines.is_empty() {
-            format!("interface file changed: {}", a.path)
-        } else if file_hunks.iter().any(|&(start, count)| match count {
-            // a pure deletion sits between lines `start` and `start + 1`
-            0 => hit(start) || hit(start + 1),
-            _ => (start..start + count).any(hit),
-        }) {
-            format!("interface changed: {}", i.anchor)
-        } else {
-            continue;
+        let reason = match sides() {
+            None => format!("interface file changed: {}", a.path),
+            Some((old, new))
+                if file_hunks
+                    .iter()
+                    .any(|(_, o, n)| hit(&old, *o) || hit(&new, *n)) =>
+            {
+                format!("interface changed: {}", i.anchor)
+            }
+            Some(_) => continue,
         };
         if !reasons.contains(&reason) {
             reasons.push(reason);

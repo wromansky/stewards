@@ -70,6 +70,37 @@ fn interface_lines_of_a_python_def_stop_at_the_next_def() {
 }
 
 #[test]
+fn interface_lines_keep_a_braced_body_across_a_blank_then_column_zero_line() {
+    let text = "pub fn f() {\n    let s = r\"\nx\n\ncol0\n\";\n}\n\nfn g() {}\n";
+    // the `{` opened on line 1 is still open at line 5, so the block runs to its `}`
+    assert_eq!(interface_lines(text, "f"), [1, 2, 3, 4, 5, 6, 7]);
+}
+
+#[test]
+fn interface_lines_of_a_use_inside_a_body_stop_at_the_next_item() {
+    let text = "fn caller() {\n    f();\n}\n\nfn other() {}\n";
+    // the brackets since the use close below zero; `fn other` is outside
+    assert_eq!(interface_lines(text, "f"), [1, 2, 3]);
+}
+
+#[test]
+fn interface_lines_of_a_qualified_name_take_its_last_segment_too() {
+    let text = "pub enum EnvRule {\n    /// Doc.\n    Unverified,\n}\n\nfn r() {\n    EnvRule::Unverified\n}\n";
+    assert_eq!(
+        interface_lines(text, "EnvRule::Unverified"),
+        [1, 2, 3, 4, 6, 7, 8]
+    );
+    assert_eq!(interface_lines("x.y\n\nfn y() {}\n", "x.y"), [1, 3]);
+}
+
+#[test]
+fn interface_lines_cross_one_blank_line_up_once_and_only_to_a_comment_or_attribute() {
+    let text = "/// a\n\n/// b\n\n#[x]\nfn f() {}\n";
+    assert_eq!(interface_lines(text, "f"), [3, 4, 5, 6]);
+    assert_eq!(interface_lines("fn g() {}\n\nfn f() {}\n", "f"), [3]);
+}
+
+#[test]
 fn interface_lines_are_empty_without_a_whole_word_occurrence() {
     assert!(interface_lines("fn ff() {}\n", "f").is_empty());
 }

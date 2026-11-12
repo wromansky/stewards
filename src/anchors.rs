@@ -57,30 +57,69 @@ fn occurrences<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = usize> 
 }
 
 /// The 1-based lines of `name`'s blocks in `text`, sorted; empty when `name` does not occur.
-/// A block is an occurrence's line, the lines below while blank, indented deeper, or at the same
-/// indent and opening with `)`, `]` or `}` (trailing blanks dropped), and the contiguous
-/// non-blank lines directly above at the same indent (doc comments, attributes).
-// simplified: text blocks around every whole-word occurrence; exact spans come with tree-sitter.
+/// A qualified name (`a::b`, `a.b`) also matches its last segment. A block starts at an
+/// occurrence's line and runs down until a line whose previous line is blank, whose indent
+/// (a tab is 8 columns) is at most the occurrence line's, and before which the brackets opened
+/// since the occurrence line are all closed; trailing blanks are dropped. Above, it takes the
+/// contiguous non-blank lines, then, when the line above their one blank line opens with `/`,
+/// `*`, `#` or `@` (a detached doc comment or attribute), that blank and the run above it.
+// simplified: text blocks around every whole-word occurrence; a block can still end early, as
+// at a blank line then a column-0 line inside a Python triple-quoted string. Exact spans come
+// with tree-sitter.
 pub fn interface_lines(text: &str, name: &str) -> Vec<u32> {
     let lines: Vec<&str> = text.lines().collect();
     let blank = |i: usize| lines[i].trim().is_empty();
-    let indent = |i: usize| lines[i].len() - lines[i].trim_start().len();
+    let indent = |i: usize| {
+        let pad = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+        pad.chars()
+            .map(|c| if c == '\t' { 8 } else { 1 })
+            .sum::<usize>()
+    };
+    let depth = |i: usize| {
+        lines[i]
+            .chars()
+            .map(|c| match c {
+                '(' | '[' | '{' => 1,
+                ')' | ']' | '}' => -1,
+                _ => 0,
+            })
+            .sum::<i64>()
+    };
+    let last = name.rsplit("::").next().unwrap_or(name);
+    let last = last.rsplit('.').next().unwrap_or(last);
+    let mut names = vec![name];
+    if last != name {
+        names.push(last);
+    }
     let mut out = Vec::new();
-    for at in occurrences(text, name) {
+    for at in names.into_iter().flat_map(|n| occurrences(text, n)) {
         let k = text[..at].matches('\n').count();
         let ind = indent(k);
-        let closes =
-            |j: usize| indent(j) == ind && lines[j].trim_start().starts_with([')', ']', '}']);
-        let mut end = (k + 1..lines.len())
-            .take_while(|&j| blank(j) || indent(j) > ind || closes(j))
-            .last()
-            .unwrap_or(k);
+        let mut open = depth(k);
+        let mut end = k;
+        for j in k + 1..lines.len() {
+            if !blank(j) && blank(j - 1) && indent(j) <= ind && open <= 0 {
+                break;
+            }
+            open += depth(j);
+            end = j;
+        }
         while end > k && blank(end) {
             end -= 1;
         }
-        let mut start = k;
-        while start > 0 && !blank(start - 1) && indent(start - 1) == ind {
-            start -= 1;
+        let run_above = |mut i: usize| {
+            while i > 0 && !blank(i - 1) {
+                i -= 1;
+            }
+            i
+        };
+        let mut start = run_above(k);
+        if start >= 2
+            && lines[start - 2]
+                .trim_start()
+                .starts_with(['/', '*', '#', '@'])
+        {
+            start = run_above(start - 2);
         }
         out.extend(start as u32 + 1..=end as u32 + 1);
     }

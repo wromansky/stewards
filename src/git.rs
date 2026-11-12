@@ -155,6 +155,7 @@ fn diff_u0(root: &Path, from: &str, to: &str) -> Result<String> {
     args.extend([
         "--no-color",
         "--no-ext-diff",
+        "--no-textconv",
         "-U0",
         "--end-of-options",
         from,
@@ -163,15 +164,15 @@ fn diff_u0(root: &Path, from: &str, to: &str) -> Result<String> {
     run(root, &args, None)
 }
 
-/// The new side `(start, count)` of a `@@ -a,b +c,d @@` header; a missing count is 1.
-fn hunk_new_side(header: &str) -> (u32, u32) {
-    let new = header
-        .split(' ')
-        .nth(2)
-        .unwrap_or_default()
-        .trim_start_matches('+');
-    let (start, count) = new.split_once(',').unwrap_or((new, "1"));
-    (start.parse().unwrap_or(0), count.parse().unwrap_or(0))
+/// The old and new sides `((a, b), (c, d))` of a `@@ -a,b +c,d @@` header; a missing count is 1.
+fn hunk_sides(header: &str) -> ((u32, u32), (u32, u32)) {
+    let side = |n: usize| {
+        let s = header.split(' ').nth(n).unwrap_or_default();
+        let s = s.trim_start_matches(['-', '+']);
+        let (start, count) = s.split_once(',').unwrap_or((s, "1"));
+        (start.parse().unwrap_or(0), count.parse().unwrap_or(0))
+    };
+    (side(1), side(2))
 }
 
 /// The path of a `+++ b/<path>` line; `None` for a C-quoted name (`+++ "b/..."`) or `/dev/null`.
@@ -196,7 +197,7 @@ pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String
             path = new_path(l);
         } else if l.starts_with("@@ ") {
             in_hunk = true;
-            line = hunk_new_side(l).0;
+            line = hunk_sides(l).1.0;
         } else if in_hunk && let (Some(p), Some(text)) = (&path, l.strip_prefix('+')) {
             added.push((p.clone(), line, text.to_string()));
             line += 1;
@@ -205,9 +206,13 @@ pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String
     Ok(added)
 }
 
-/// Each hunk's new side as `(path, start, count)`: count 0 is a pure deletion after line
-/// `start`. A deleted file, a file whose name is C-quoted, and a binary file have none.
-pub fn diff_hunks(root: &Path, from: &str, to: &str) -> Result<Vec<(String, u32, u32)>> {
+/// `(path, (old start, old count), (new start, new count))`: a count of 0 means no lines on
+/// that side, placed after line `start`.
+pub type Hunk = (String, (u32, u32), (u32, u32));
+
+/// Each hunk of the change; a deleted file, a file whose name is C-quoted, and a binary file
+/// have none.
+pub fn diff_hunks(root: &Path, from: &str, to: &str) -> Result<Vec<Hunk>> {
     let text = diff_u0(root, from, to)?;
     let mut hunks = Vec::new();
     let mut path: Option<String> = None;
@@ -221,8 +226,8 @@ pub fn diff_hunks(root: &Path, from: &str, to: &str) -> Result<Vec<(String, u32,
         } else if l.starts_with("@@ ") {
             in_hunk = true;
             if let Some(p) = &path {
-                let (start, count) = hunk_new_side(l);
-                hunks.push((p.clone(), start, count));
+                let (old, new) = hunk_sides(l);
+                hunks.push((p.clone(), old, new));
             }
         }
     }

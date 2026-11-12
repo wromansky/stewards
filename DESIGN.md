@@ -163,7 +163,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   writes the jobs: maintainer review for every stale unit; tester when a
   change since its mark touched an interface's lines or a file under
   `test_roots`; documenter when a change since its mark touched an
-  interface's lines; architect when
+  interface's lines (a change only in a private helper an interface calls
+  does not count; the maintainer's `tester_needed` covers it); architect when
   two or more units changed since their stamps and no plan covers them;
   validator for a bug with no severity. Done means `next` lists no jobs.
   `check` covers review only (stamps, anchors, scenario ids): it is what
@@ -538,17 +539,28 @@ from the stamp. Jobs:
   owned by the unit and under `test_roots` changed → tester
 - a change since the documenter's mark touches an interface's lines →
   documenter
-- an interface's lines, in the snapshot's file: a block around every
-  whole-word match of the anchor's name, being the match's line, the lines
-  below while blank, indented deeper, or at the same indent and starting
-  with `)`, `]` or `}` (trailing blanks dropped), and the non-blank lines
-  directly above at the same indent (doc comments, attributes). A hunk of
-  `git diff -U0 <mark> <snapshot>` touches them when a line it adds or
-  changes is one of them, or, for a pure deletion, when it sits inside or
-  next to them. The reason is `interface changed: <anchor>`. When the lines
-  can't be found (name absent, file gone, no hunks for it, mark tree pruned)
-  the file changing is enough: `interface file changed: <path>`. Exact
-  spans come with tree-sitter.
+- an interface's lines in a file: a block around every whole-word match of
+  the anchor's name, and of its last segment when the name holds `::` or
+  `.`. Down, the block runs from the match's line until a line whose
+  previous line is blank, whose indent is at most the match line's (a tab
+  is 8 columns), and before which every `(`, `[`, `{` opened since the
+  match line is closed; trailing blanks are dropped. Up, it takes the
+  non-blank lines directly above, then, if the line above their blank line
+  starts with `/`, `*`, `#` or `@` (a detached doc comment or attribute),
+  that blank and the run above it, once. Items not parted by a blank line
+  merge into one block.
+- a hunk of `git diff -U0 <mark> <snapshot>` touches an interface when its
+  new-side range or the line just before or after it is one of the
+  interface's lines in the snapshot's file, or its old-side range or a
+  neighbour is one of them in the file at the mark. The reason is
+  `interface changed: <anchor>`. When the lines can't be found (name
+  absent, file gone, no hunks for it, mark tree pruned, a blob unreadable,
+  as for a file added since the mark) the file changing is enough:
+  `interface file changed: <path>`. A change only in a private helper set
+  apart from every match by blank lines touches no interface, even when an
+  interface calls it; the maintainer's `tester_needed` covers that. The
+  block can still end early (a blank line then a column-0 line inside a
+  Python triple-quoted string); exact spans come with tree-sitter.
 - tester and documenter jobs do not need the unit to be stale; with no
   mark they measure from the stamp, and a never-stamped unit gets none
   until its first review stamps it (a validator job does not wait)
@@ -1284,7 +1296,7 @@ Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
 > stewards brief api --role developer                                     # the finding is the task; lane: api/store.py
 [Agent] developer: "api developer 1: 1 file; check pass"
 > stewards next
-{ jobs: [ { unit: api, role: maintainer, ... } ], check: { failures: [api stale] } }   # api/store.py is on neither mark's paths: no tester, no documenter
+{ jobs: [ { unit: api, role: maintainer, ... } ], check: { failures: [api stale] } }   # api/store.py touches no interface's lines and no test file: no tester, no documenter
 [Agent] maintainer: "approve; stamped 8b1e044"
 > stewards next
 { jobs: [], check: { failures: [], warnings: [] } }   exit 0
@@ -1292,8 +1304,8 @@ Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
 
 The main agent never reads a brief, a card, or source; every brief path is one line;
 the finding goes back to a developer, not to the main agent; the second
-round is the maintainer alone because the fix touched neither mark's
-paths; done is a `next` with no jobs.
+round is the maintainer alone because the fix touched no interface's
+lines and no test file; done is a `next` with no jobs.
 
 ## Handoff (for a new session)
 

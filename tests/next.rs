@@ -192,7 +192,12 @@ fn store_jobs_after(prepare: (&str, &str), change: (&str, &str)) -> Vec<(String,
     edit(&db, prepare.0, prepare.1);
     stamp_units(repo.path(), &["api", "store"]);
     edit(&db, change.0, change.1);
-    let (_, v) = run(repo.path(), &["next", "--no-brief"]);
+    role_jobs(repo.path())
+}
+
+/// `(role, reasons)` of each job `next` lists in `dir`.
+fn role_jobs(dir: &Path) -> Vec<(String, Vec<String>)> {
+    let (_, v) = run(dir, &["next", "--no-brief"]);
     v["jobs"]
         .as_array()
         .unwrap()
@@ -274,6 +279,201 @@ fn name_first_used_in_an_import_still_triggers_on_its_definition() {
     );
     assert_eq!(roles(&jobs), ["maintainer", "tester", "documenter"]);
     assert_eq!(jobs[1].1, [SAVE_ITEM]);
+}
+
+/// Adds the interface `src/store/<file>::<name>` to store's card with the file holding `before`,
+/// stamps both units, writes `after`, and returns the `(role, reasons)` jobs.
+fn interface_jobs(file: &str, name: &str, before: &str, after: &str) -> Vec<(String, Vec<String>)> {
+    let repo = fixture("single");
+    let card = repo.path().join(".stewards/units/store.toml");
+    append(
+        &card,
+        &format!(
+            "\n[[interface]]\nid = \"it\"\nanchor = \"src/store/{file}::{name}\"\ncontract = \"x\"\n"
+        ),
+    );
+    let path = repo.path().join("src/store").join(file);
+    fs::write(&path, before).unwrap();
+    stamp_units(repo.path(), &["api", "store"]);
+    fs::write(&path, after).unwrap();
+    role_jobs(repo.path())
+}
+
+/// Asserts the tester and documenter are due for `src/store/<file>::<name>`.
+fn assert_due(jobs: &[(String, Vec<String>)], file: &str, name: &str) {
+    assert_eq!(
+        roles(jobs),
+        ["maintainer", "tester", "documenter"],
+        "{jobs:?}"
+    );
+    let reason = format!("interface changed: src/store/{file}::{name}");
+    assert_eq!(jobs[1].1, [reason.as_str()]);
+    assert_eq!(jobs[2].1, [reason.as_str()]);
+}
+
+#[test]
+fn rust_where_clause_edit_is_due() {
+    let before = "pub fn save<T>(\n    a: T,\n) -> T\nwhere\n    T: Clone,\n{\n    a.clone()\n}\n";
+    let after = before.replace("T: Clone,", "T: Clone + Copy,");
+    assert_due(
+        &interface_jobs("f.rs", "save", before, &after),
+        "f.rs",
+        "save",
+    );
+}
+
+#[test]
+fn body_under_a_return_type_line_and_an_allman_brace_is_due() {
+    let before = "pub fn save(\n    a: u8,\n)\n-> u8\n{\n    a\n}\n";
+    let after = before.replace("    a\n}", "    a + 1\n}");
+    assert_due(
+        &interface_jobs("f.rs", "save", before, &after),
+        "f.rs",
+        "save",
+    );
+}
+
+#[test]
+fn body_after_a_column_zero_line_inside_a_string_is_due() {
+    let before = "def save(x):\n    return r\"\"\"\nline at col 0\n    indented\n\"\"\"\n";
+    let after = before.replace("    indented", "    indented more");
+    assert_due(
+        &interface_jobs("f.py", "save", before, &after),
+        "f.py",
+        "save",
+    );
+}
+
+#[test]
+fn tab_indented_body_under_a_space_indented_method_is_due() {
+    let before = "impl S {\n    pub fn save(&self) {\n\tself.x.push(1);\n    }\n}\n";
+    let after = before.replace("push(1)", "push(2)");
+    assert_due(
+        &interface_jobs("f.rs", "save", before, &after),
+        "f.rs",
+        "save",
+    );
+}
+
+#[test]
+fn doc_comment_detached_by_a_blank_line_is_due() {
+    let before = "/// This is the doc.\n\n/// More doc.\npub fn save() {}\n";
+    let after = before.replace("the doc.", "the doc, changed.");
+    assert_due(
+        &interface_jobs("f.rs", "save", before, &after),
+        "f.rs",
+        "save",
+    );
+}
+
+#[test]
+fn attribute_detached_by_a_blank_line_is_due() {
+    let before = "#[inline]\n\n#[must_use]\npub fn save() -> u8 {\n    1\n}\n";
+    let after = before.replace("#[inline]", "#[inline(always)]");
+    assert_due(
+        &interface_jobs("f.rs", "save", before, &after),
+        "f.rs",
+        "save",
+    );
+}
+
+#[test]
+fn renamed_definition_whose_old_name_survives_in_its_comment_is_due() {
+    let before = "def save_entry(item):\n    # save is the old name\n    return item\n";
+    let after = before.replace("return item", "return item + 1");
+    assert_due(
+        &interface_jobs("f.py", "save", before, &after),
+        "f.py",
+        "save",
+    );
+}
+
+#[test]
+fn qualified_name_variant_doc_comment_edit_is_due() {
+    // the variant is defined as `Unverified,`; the full name appears only at a use
+    let before = "pub enum EnvRule {\n    /// Not checked yet.\n    Unverified,\n    Verified,\n}\n\nfn rule() -> EnvRule {\n    EnvRule::Unverified\n}\n";
+    let after = before.replace("Not checked yet.", "Not checked.");
+    let jobs = interface_jobs("f.rs", "EnvRule::Unverified", before, &after);
+    assert_due(&jobs, "f.rs", "EnvRule::Unverified");
+}
+
+#[test]
+fn jsdoc_above_an_exported_function_is_due() {
+    let before =
+        "/**\n * Saves.\n */\nexport function save(a: string): number {\n    return a.length;\n}\n";
+    let after = before.replace(" * Saves.", " * Saves one item.");
+    assert_due(
+        &interface_jobs("f.ts", "save", before, &after),
+        "f.ts",
+        "save",
+    );
+}
+
+#[test]
+fn multi_line_decorator_edit_is_due() {
+    let before = "@app.route(\n    \"/x\",\n    methods=[\"GET\"],\n)\ndef save():\n    return 1\n";
+    let after = before.replace("/x", "/y");
+    assert_due(
+        &interface_jobs("f.py", "save", before, &after),
+        "f.py",
+        "save",
+    );
+}
+
+#[test]
+fn definition_deleted_while_its_name_survives_in_a_caller_is_due() {
+    let before = "def save(item):\n    return item\n\n\ndef caller():\n    return save(1)\n";
+    let after = "\n\ndef caller():\n    return save(1)\n";
+    assert_due(
+        &interface_jobs("f.py", "save", before, after),
+        "f.py",
+        "save",
+    );
+}
+
+#[test]
+fn doc_comment_line_replaced_by_a_blank_line_is_due() {
+    let before = "/// One.\n/// Two.\npub fn save() {}\n";
+    let after = "/// One.\n\npub fn save() {}\n";
+    assert_due(
+        &interface_jobs("f.rs", "save", before, after),
+        "f.rs",
+        "save",
+    );
+}
+
+#[test]
+fn private_helper_edit_apart_from_the_interface_is_not_due_in_rust_and_typescript() {
+    // Python: private_function_edit_in_an_interface_file_gives_only_a_maintainer_job
+    let rust = "/// Saves.\npub fn save(a: u8) -> u8 {\n    helper(a)\n}\n\nfn helper(a: u8) -> u8 {\n    a + 1\n}\n";
+    let ts = "/** Saves. */\nexport function save(a: string): number {\n    return helper(a);\n}\n\nfunction helper(a: string): number {\n    return a.length;\n}\n";
+    for (file, before, from, to) in [
+        ("f.rs", rust, "a + 1", "a + 2"),
+        ("f.ts", ts, "a.length;", "a.length + 1;"),
+    ] {
+        let jobs = interface_jobs(file, "save", before, &before.replace(from, to));
+        assert_eq!(roles(&jobs), ["maintainer"], "{file}: {jobs:?}");
+    }
+}
+
+#[test]
+fn interface_in_a_file_added_since_the_mark_falls_back_to_the_file_trigger() {
+    let repo = fixture("single");
+    stamp_units(repo.path(), &["api", "store"]);
+    let card = repo.path().join(".stewards/units/store.toml");
+    append(
+        &card,
+        "\n[[interface]]\nid = \"it\"\nanchor = \"src/store/new.py::save\"\ncontract = \"x\"\n",
+    );
+    fs::write(
+        repo.path().join("src/store/new.py"),
+        "def save():\n    return 1\n",
+    )
+    .unwrap();
+    let jobs = role_jobs(repo.path());
+    // no blob at the mark to find the old lines in
+    assert_eq!(roles(&jobs), ["maintainer", "tester", "documenter"]);
+    assert_eq!(jobs[1].1, ["interface file changed: src/store/new.py"]);
 }
 
 #[test]
@@ -529,7 +729,14 @@ fn pruned_stamped_tree_falls_back_to_all_owned_files() {
         format!("tree = \"{}\"", "ab".repeat(20))
     });
     let (_, v) = run(repo.path(), &["next"]);
-    assert_eq!(jobs(&v)[0], ("store".to_string(), "maintainer".to_string()));
+    assert_eq!(
+        jobs(&v),
+        pairs(&[
+            ("store", "maintainer"),
+            ("store", "tester"),
+            ("store", "documenter")
+        ])
+    );
     assert_eq!(
         strings(&v["jobs"][0]["changed"]),
         [
@@ -537,6 +744,17 @@ fn pruned_stamped_tree_falls_back_to_all_owned_files() {
             "src/store/db.py",
             "tests/store/test_db.py"
         ]
+    );
+    assert_eq!(
+        strings(&v["jobs"][1]["reasons"]),
+        [
+            "interface file changed: src/store/db.py",
+            "test file changed: tests/store/test_db.py"
+        ]
+    );
+    assert_eq!(
+        strings(&v["jobs"][2]["reasons"]),
+        ["interface file changed: src/store/db.py"]
     );
 }
 

@@ -1,0 +1,7 @@
+You see every unit's purpose and interface, the flows, and the decisions.
+For a plan: order the steps by unit, name the interface entries each
+touches, and give each step the one check that proves it. Prefer fewer
+steps; a step that changes two units is two steps. Record new flows and
+decisions the change creates. Propose a unit split or merge only when the
+change makes a boundary wrong. For an explanation: answer from the
+summaries; name the unit to ask for detail.

@@ -1,0 +1,51 @@
+Rung
+----
+- not_needed
+- already_in_repo
+- stdlib
+- platform
+- installed_dependency
+- one_line
+- untraced
+- no_check
+
+Answer in JSON using this schema:
+{
+  verdict: 'approve' or 'changes',
+  findings: [
+    {
+      file: string,
+      line: int,
+      rung: Rung,
+      cut: string,
+      replace_with: string,
+    }
+  ],
+  card_patch: {
+    interface: [
+      {
+        id: string,
+        anchor: string,
+        contract: string,
+      }
+    ] or null,
+    anchors: [
+      {
+        path: string,
+        name: string,
+      }
+    ] or null,
+    gaps: [
+      {
+        kind: 'gap' or 'future' or 'bug',
+        title: string,
+        anchor: string or null,
+        note: string,
+        repro: string or null,
+      }
+    ] or null,
+  } or null,
+  tester_needed: bool,
+  pulled_anchors: string[],
+  notes: string,
+}

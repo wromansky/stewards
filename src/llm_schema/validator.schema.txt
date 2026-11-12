@@ -1,0 +1,9 @@
+Answer in JSON using this schema:
+{
+  real: bool,
+  severity: 'critical' or 'medium' or 'low',
+  reason: string,
+  evidence: string[],
+  pulled_anchors: string[],
+  notes: string,
+}

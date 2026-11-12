@@ -1,0 +1,38 @@
+Answer in JSON using this schema:
+{
+  explanation: string,
+  tasks: [
+    {
+      title: string,
+      change: string,
+      files: string[],
+      check: string or null,
+    }
+  ],
+  card_patch: {
+    interface: [
+      {
+        id: string,
+        anchor: string,
+        contract: string,
+      }
+    ] or null,
+    anchors: [
+      {
+        path: string,
+        name: string,
+      }
+    ] or null,
+    gaps: [
+      {
+        kind: 'gap' or 'future' or 'bug',
+        title: string,
+        anchor: string or null,
+        note: string,
+        repro: string or null,
+      }
+    ] or null,
+  } or null,
+  pulled_anchors: string[],
+  notes: string,
+}

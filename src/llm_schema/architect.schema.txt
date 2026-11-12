@@ -1,0 +1,38 @@
+Answer in JSON using this schema:
+{
+  plan: {
+    title: string,
+    steps: [
+      {
+        unit: string,
+        change: string,
+        interfaces: string[],
+        check: string,
+      }
+    ],
+  } or null,
+  flows: [
+    {
+      name: string,
+      units: string[],
+      entry: string,
+      check: string or null,
+    }
+  ],
+  decisions: [
+    {
+      title: string,
+      why: string,
+    }
+  ],
+  unit_proposals: [
+    {
+      name: string,
+      purpose: string,
+      paths: string[],
+    }
+  ],
+  explanation: string,
+  pulled_anchors: string[],
+  notes: string,
+}

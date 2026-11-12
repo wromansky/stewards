@@ -1,3 +1,4 @@
+#[allow(dead_code)] // each test crate uses a subset of the helpers
 mod common;
 
 use std::path::Path;

@@ -1,31 +1,10 @@
 #[allow(dead_code)] // helpers shared across test files
 mod common;
 
-use std::path::Path;
-
-use common::{fixture, git};
+use common::{fixture, workspace_fixture};
 use stewards::output::CliError;
 use stewards::workspace::{Workspace, discover};
 use tempfile::TempDir;
-
-/// Copies the workspace fixture to a temp dir and `git init`s each inner repo.
-fn workspace_fixture() -> TempDir {
-    let tmp = TempDir::new().unwrap();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace");
-    std::fs::copy(src.join("stewards.toml"), tmp.path().join("stewards.toml")).unwrap();
-    for repo in ["backend", "frontend"] {
-        let dest = tmp.path().join(repo);
-        let status = std::process::Command::new("cp")
-            .args(["-R"])
-            .arg(src.join(repo))
-            .arg(&dest)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        git(&dest, &["init", "-q"]);
-    }
-    tmp
-}
 
 fn error_of(r: anyhow::Result<Workspace>) -> CliError {
     r.err()

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::check::{CheckReport, changed_since, check_at, stale_files};
+use crate::check::{CheckReport, changed_since, check_at, one_line, stale_files};
 use crate::debt::{DebtItem, is_debt_line};
 use crate::git;
 use crate::model::{Anchor, GapKind, Role};
@@ -46,8 +46,8 @@ pub struct NextReport {
 
 pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
     let mut jobs = Vec::new();
-    // Stamped units changed since their stamps: (name, task, snapshot, changed files).
-    let mut moved: Vec<(String, String, String, Vec<String>)> = Vec::new();
+    // Stamped units changed since their stamps: (name, repo name, task, snapshot, changed files).
+    let mut moved: Vec<(String, String, String, String, Vec<String>)> = Vec::new();
     let mut snapshots = Vec::new();
     for (repo, loaded) in ws.loaded_repos()? {
         let root = &repo.root;
@@ -87,10 +87,16 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
                 reasons,
                 changed,
                 brief_path: None,
-                command: format!(
-                    "stewards brief {name} --role {}",
-                    format!("{role:?}").to_lowercase()
-                ),
+                command: if ws.is_workspace {
+                    format!(
+                        "stewards --repo {} brief {} --role {}",
+                        repo.name,
+                        def.name,
+                        role.as_str()
+                    )
+                } else {
+                    format!("stewards brief {name} --role {}", role.as_str())
+                },
                 debt_added: vec![],
             };
             let card = loaded.cards.get(&def.name);
@@ -118,11 +124,23 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
                     "never reviewed"
                 };
                 if reviewed.is_some() {
+                    // paths of several repos share the architect's list, so name the repo
+                    let changed = changed
+                        .iter()
+                        .map(|p| {
+                            if ws.is_workspace {
+                                format!("{}/{p}", repo.name)
+                            } else {
+                                p.clone()
+                            }
+                        })
+                        .collect();
                     moved.push((
                         name.clone(),
+                        repo.name.clone(),
                         task.clone(),
                         snapshot.clone(),
-                        changed.clone(),
+                        changed,
                     ));
                 }
                 jobs.push(Job {
@@ -181,7 +199,7 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
     let architect = moved.len() >= 2;
     if architect {
         let names: Vec<&str> = moved.iter().map(|(n, ..)| n.as_str()).collect();
-        let (_, task, snapshot, _) = &moved[0];
+        let (_, repo_name, task, snapshot, _) = &moved[0];
         jobs.insert(
             0,
             Job {
@@ -195,7 +213,11 @@ pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport> {
                 )],
                 changed: moved.iter().flat_map(|(.., c)| c.clone()).collect(),
                 brief_path: None,
-                command: "stewards brief --role architect".into(),
+                command: if ws.is_workspace {
+                    format!("stewards --repo {repo_name} brief --role architect")
+                } else {
+                    "stewards brief --role architect".into()
+                },
                 debt_added: vec![],
             },
         );
@@ -215,14 +237,13 @@ impl Human for NextReport {
             out.push("No jobs.".into());
         }
         for j in &self.jobs {
-            let role = format!("{:?}", j.role).to_lowercase();
-            let who = format!("{} {role}", j.unit);
-            out.push(format!("- `{}`: {}", who.trim(), j.reasons.join("; ")));
-            out.extend(
-                j.debt_added
-                    .iter()
-                    .map(|d| format!("  - debt added {}:{}: {}", d.path, d.line, d.text)),
-            );
+            let who = format!("{} {}", j.unit, j.role.as_str());
+            let reasons = one_line(&j.reasons.join("; "));
+            out.push(format!("- `{}`: {reasons}", who.trim()));
+            out.extend(j.debt_added.iter().map(|d| {
+                let path = one_line(&d.path);
+                format!("  - debt added {path}:{}: {}", d.line, one_line(&d.text))
+            }));
         }
         out.push(String::new());
         out.push(self.check.render());

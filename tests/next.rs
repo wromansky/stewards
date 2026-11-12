@@ -4,32 +4,13 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{fixture, git, stewards};
+use common::{edit, fixture, pairs, run, stewards, workspace_fixture};
 use serde_json::Value;
-use tempfile::TempDir;
-
-fn run(dir: &Path, args: &[&str]) -> (i32, Value) {
-    let out = stewards(dir, args);
-    let v = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
-        panic!(
-            "not JSON: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )
-    });
-    (out.status.code().unwrap(), v)
-}
 
 fn stamp(dir: &Path, units: &[&str]) {
     for unit in units {
         assert_eq!(run(dir, &["stamp", unit]).0, 0);
     }
-}
-
-fn edit(path: &Path, from: &str, to: &str) {
-    let text = fs::read_to_string(path).unwrap();
-    assert!(text.contains(from), "{from} not in {}", path.display());
-    fs::write(path, text.replace(from, to)).unwrap();
 }
 
 /// `(unit, role)` of each job.
@@ -44,12 +25,6 @@ fn jobs(v: &Value) -> Vec<(String, String)> {
                 j["role"].as_str().unwrap().to_string(),
             )
         })
-        .collect()
-}
-
-fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
-    list.iter()
-        .map(|(u, r)| (u.to_string(), r.to_string()))
         .collect()
 }
 
@@ -80,6 +55,10 @@ fn set_tree_line(dir: &Path, unit: &str, lines: impl Fn(&str) -> String) {
 
 fn set_tester_mark(dir: &Path, unit: &str, tree: &str) {
     set_tree_line(dir, unit, |l| format!("{l}\ntester = \"{tree}\""));
+}
+
+fn set_documenter_mark(dir: &Path, unit: &str, tree: &str) {
+    set_tree_line(dir, unit, |l| format!("{l}\ndocumenter = \"{tree}\""));
 }
 
 fn snapshot(dir: &Path) -> String {
@@ -200,6 +179,68 @@ fn tester_mark_after_the_change_suppresses_the_tester_job() {
         jobs(&v),
         pairs(&[("store", "maintainer"), ("store", "documenter")])
     );
+}
+
+#[test]
+fn documenter_mark_after_the_change_suppresses_the_documenter_job() {
+    let repo = fixture("single");
+    stamp(repo.path(), &["api", "store"]);
+    edit(
+        &repo.path().join("src/store/db.py"),
+        "_items = []",
+        "_items = [0]",
+    );
+    let tree = snapshot(repo.path());
+    set_documenter_mark(repo.path(), "store", &tree);
+    let (_, v) = run(repo.path(), &["next"]);
+    assert_eq!(
+        jobs(&v),
+        pairs(&[("store", "maintainer"), ("store", "tester")])
+    );
+}
+
+#[test]
+fn dead_anchor_on_a_fresh_unit_has_no_jobs_but_next_exits_1() {
+    let repo = fixture("single");
+    stamp(repo.path(), &["api", "store"]);
+    edit(
+        &repo.path().join(".stewards/units/store.toml"),
+        "count_items",
+        "gone",
+    );
+    let (code, v) = run(repo.path(), &["next"]);
+    assert_eq!(code, 1, "{v}");
+    assert!(jobs(&v).is_empty(), "{v}");
+    assert_eq!(v["check"]["failures"][0]["kind"], "dead_anchor");
+}
+
+#[test]
+fn scenario_naming_an_unknown_interface_has_no_jobs_but_next_exits_1() {
+    let repo = fixture("single");
+    stamp(repo.path(), &["api", "store"]);
+    edit(
+        &repo.path().join(".stewards/units/store.test.toml"),
+        "interface = \"save-item\"",
+        "interface = \"no-such-interface\"",
+    );
+    let (code, v) = run(repo.path(), &["next"]);
+    assert_eq!(code, 1, "{v}");
+    assert!(jobs(&v).is_empty(), "{v}");
+    assert_eq!(v["check"]["failures"][0]["kind"], "unknown_interface");
+}
+
+#[test]
+fn human_output_keeps_card_text_on_one_line() {
+    let repo = fixture("single");
+    add_gaps(
+        repo.path(),
+        "store",
+        "[[gap]]\nkind = \"bug\"\ntitle = \"x\\n- `fake`: job\"\n",
+    );
+    stamp(repo.path(), &["api", "store"]);
+    let out = stewards(repo.path(), &["next", "--human"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("bug not judged: x - `fake`: job"), "{text}");
 }
 
 #[test]
@@ -345,20 +386,7 @@ fn pruned_stamped_tree_falls_back_to_all_owned_files() {
 
 #[test]
 fn workspace_unit_names_carry_the_repo_prefix() {
-    let tmp = TempDir::new().unwrap();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace");
-    fs::copy(src.join("stewards.toml"), tmp.path().join("stewards.toml")).unwrap();
-    for repo in ["backend", "frontend"] {
-        let dest = tmp.path().join(repo);
-        let status = std::process::Command::new("cp")
-            .arg("-R")
-            .arg(src.join(repo))
-            .arg(&dest)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        git(&dest, &["init", "-q"]);
-    }
+    let tmp = workspace_fixture();
     fs::write(
         tmp.path().join("backend/.stewards/units.toml"),
         "[[unit]]\nname = \"core\"\npaths = [\"src/**\"]\n",
@@ -368,4 +396,40 @@ fn workspace_unit_names_carry_the_repo_prefix() {
     assert_eq!(code, 1);
     assert_eq!(jobs(&v), pairs(&[("api-server/core", "maintainer")]));
     assert_eq!(strings(&v["jobs"][0]["changed"]), ["src/main.py"]);
+    assert_eq!(
+        v["jobs"][0]["command"],
+        "stewards --repo api-server brief core --role maintainer"
+    );
+}
+
+#[test]
+fn workspace_architect_job_names_the_repo() {
+    let tmp = workspace_fixture();
+    let backend = tmp.path().join("backend");
+    fs::create_dir_all(backend.join("docs")).unwrap();
+    fs::write(backend.join("docs/x.md"), "x\n").unwrap();
+    fs::write(
+        backend.join(".stewards/units.toml"),
+        "[[unit]]\nname = \"core\"\npaths = [\"src/**\"]\n\n[[unit]]\nname = \"docs\"\npaths = [\"docs/**\"]\n",
+    )
+    .unwrap();
+    for unit in ["core", "docs"] {
+        assert_eq!(
+            run(tmp.path(), &["--repo", "api-server", "stamp", unit]).0,
+            0
+        );
+    }
+    fs::write(backend.join("src/main.py"), "changed\n").unwrap();
+    fs::write(backend.join("docs/x.md"), "changed\n").unwrap();
+    let (_, v) = run(tmp.path(), &["next"]);
+    let job = &v["jobs"][0];
+    assert_eq!(job["role"], "architect", "{v}");
+    assert_eq!(
+        job["command"],
+        "stewards --repo api-server brief --role architect"
+    );
+    assert_eq!(
+        strings(&job["changed"]),
+        ["api-server/src/main.py", "api-server/docs/x.md"]
+    );
 }

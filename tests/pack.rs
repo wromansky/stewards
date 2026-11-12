@@ -4,34 +4,16 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{fixture, stewards};
+use common::{edit, fixture, run, stewards};
 use serde_json::Value;
 use stewards::model::{Doc, Role};
 use stewards::pack::pack;
 use stewards::workspace::discover;
 
-fn run(dir: &Path, args: &[&str]) -> (i32, Value) {
-    let out = stewards(dir, args);
-    let v = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
-        panic!(
-            "not JSON: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )
-    });
-    (out.status.code().unwrap(), v)
-}
-
 fn pack_json(dir: &Path, args: &[&str]) -> Value {
     let (code, v) = run(dir, args);
     assert_eq!(code, 0, "{v}");
     v
-}
-
-fn edit(path: &Path, from: &str, to: &str) {
-    let text = fs::read_to_string(path).unwrap();
-    assert!(text.contains(from), "{from} not in {}", path.display());
-    fs::write(path, text.replace(from, to)).unwrap();
 }
 
 fn append(path: &Path, text: &str) {
@@ -550,4 +532,13 @@ fn diff_with_a_pruned_stamped_tree_equals_the_plain_pack() {
     let diff = pack_json(dir, &[&args[..], &["--diff"]].concat());
     assert!(diff["hunks"].is_null(), "{diff}");
     assert_eq!(plain, diff);
+}
+
+#[test]
+fn human_task_line_cannot_open_a_code_fence_or_add_lines() {
+    let repo = fixture("single");
+    let args = ["pack", "api", "--role", "maintainer", "--human", "--task"];
+    let out = stewards(repo.path(), &[&args[..], &["a\n```\nb"]].concat());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("\nTask: a ``` b\n"), "{text}");
 }

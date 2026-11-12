@@ -109,8 +109,10 @@ pub fn ls_tree(root: &Path, tree: &str) -> Result<Vec<(String, String)>> {
         .collect()
 }
 
+/// True when `sha` resolves to a tree (or a commit's tree); a blob or an unknown name is false.
 pub fn has_object(root: &Path, sha: &str) -> bool {
-    !sha.starts_with('-') && run(root, &["cat-file", "-e", sha], None).is_ok()
+    !sha.starts_with('-')
+        && run(root, &["cat-file", "-e", &format!("{sha}^{{tree}}")], None).is_ok()
 }
 
 const DIFF: [&str; 4] = ["diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/"];

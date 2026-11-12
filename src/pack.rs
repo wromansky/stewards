@@ -7,7 +7,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 
 use crate::anchors::{self, Resolution};
-use crate::check::stale_files;
+use crate::check::{one_line, stale_files};
 use crate::git;
 use crate::model::{Anchor, CommandEntry, Decision, Doc, Flow, Gap, Interface, Role, Scenario};
 use crate::output::{CliError, Global, Human, emit, not_implemented};
@@ -114,7 +114,7 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
         )),
         (Role::Architect, None) | (_, Some(_)) => {}
         (_, None) => bail!(usage(
-            format!("the {role:?} pack needs a unit").to_lowercase(),
+            format!("the {} pack needs a unit", role.as_str()),
             "stewards pack <unit> --role <role>",
         )),
     }
@@ -358,11 +358,6 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
     t
 }
 
-/// Card text in a heading, table cell, or code span must not start a new markdown line.
-fn one_line(s: &str) -> String {
-    s.replace(['\r', '\n'], " ")
-}
-
 fn fenced(lang: &str, body: &str) -> String {
     // A fence longer than any backtick run in the body cannot be closed from inside it.
     let longest = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
@@ -377,11 +372,11 @@ fn paths_table(paths: &[String]) -> String {
 impl Pack {
     /// The --human markdown; its length is what the budget measures.
     pub fn render(&self) -> String {
-        let role = format!("{:?}", self.role).to_lowercase();
         let mut out = format!(
-            "# Pack: {} ({role})\n\nTask: {}\n",
+            "# Pack: {} ({})\n\nTask: {}\n",
             self.unit.as_deref().unwrap_or("repo"),
-            self.task
+            self.role.as_str(),
+            one_line(&self.task)
         );
         let mut section = |title: &str, body: String| {
             out += &format!("\n## {title}\n\n{body}");

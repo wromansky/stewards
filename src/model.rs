@@ -279,6 +279,19 @@ pub enum Role {
     Architect,
 }
 
+impl Role {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Role::Developer => "developer",
+            Role::Maintainer => "maintainer",
+            Role::Tester => "tester",
+            Role::Documenter => "documenter",
+            Role::Validator => "validator",
+            Role::Architect => "architect",
+        }
+    }
+}
+
 impl FromStr for Role {
     type Err = CliError;
     fn from_str(s: &str) -> std::result::Result<Role, CliError> {

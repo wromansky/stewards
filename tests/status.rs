@@ -2,23 +2,9 @@
 mod common;
 
 use std::fs;
-use std::path::Path;
 
-use common::{fixture, git, stewards};
+use common::{fixture, git, run, stewards, workspace_fixture};
 use serde_json::Value;
-use tempfile::TempDir;
-
-fn run(dir: &Path, args: &[&str]) -> (i32, Value) {
-    let out = stewards(dir, args);
-    let v = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
-        panic!(
-            "not JSON: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )
-    });
-    (out.status.code().unwrap(), v)
-}
 
 /// The status entry of `unit`.
 fn unit(v: &Value, unit: &str) -> Value {
@@ -121,20 +107,7 @@ fn telemetry_flag_adds_a_null() {
 
 #[test]
 fn workspace_lists_uninitialized_repos_and_prefixes_units() {
-    let tmp = TempDir::new().unwrap();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace");
-    fs::copy(src.join("stewards.toml"), tmp.path().join("stewards.toml")).unwrap();
-    for name in ["backend", "frontend"] {
-        let dest = tmp.path().join(name);
-        let status = std::process::Command::new("cp")
-            .arg("-R")
-            .arg(src.join(name))
-            .arg(&dest)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        git(&dest, &["init", "-q"]);
-    }
+    let tmp = workspace_fixture();
     fs::write(
         tmp.path().join("backend/.stewards/units.toml"),
         "[[unit]]\nname = \"core\"\npurpose = \"the server\"\npaths = [\"src/**\"]\n",

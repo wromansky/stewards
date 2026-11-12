@@ -4,24 +4,12 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{fixture, git, stewards};
+use common::{edit, fixture, git, pairs, run};
 use serde_json::Value;
 use stewards::check::{check, fingerprint};
 use stewards::model::{UnitDef, load_repo};
 use stewards::route::Router;
 use stewards::workspace::discover;
-
-fn run(dir: &Path, args: &[&str]) -> (i32, Value) {
-    let out = stewards(dir, args);
-    let v = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
-        panic!(
-            "not JSON: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )
-    });
-    (out.status.code().unwrap(), v)
-}
 
 fn stamp_all(dir: &Path) {
     for unit in ["api", "store"] {
@@ -42,18 +30,6 @@ fn kinds(v: &Value, list: &str) -> Vec<(String, String)> {
             )
         })
         .collect()
-}
-
-fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
-    list.iter()
-        .map(|(k, u)| (k.to_string(), u.to_string()))
-        .collect()
-}
-
-fn edit(path: &Path, from: &str, to: &str) {
-    let text = fs::read_to_string(path).unwrap();
-    assert!(text.contains(from), "{from} not in {}", path.display());
-    fs::write(path, text.replace(from, to)).unwrap();
 }
 
 #[test]

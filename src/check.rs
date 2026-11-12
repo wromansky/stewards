@@ -13,6 +13,16 @@ use crate::output::{CliError, Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, discover};
 
+/// Card or `--task` text printed on one line: control characters, newlines included, become spaces.
+pub fn one_line(s: &str) -> String {
+    s.replace(char::is_control, " ")
+}
+
+/// True when the unit has no `[reviewed]`, or its fingerprint differs from `current`.
+pub fn is_stale(reviewed: Option<&Reviewed>, current: &str) -> bool {
+    reviewed.is_none_or(|r| r.fingerprint != current)
+}
+
 /// `sha256:<hex>` over the sorted `path blob` lines of the files `unit` owns in `tree`.
 pub fn fingerprint(tree: &[(String, String)], unit: &str, router: &Router) -> String {
     let mut lines: Vec<String> = tree
@@ -107,7 +117,7 @@ pub fn stale_files(
     unit: &str,
     reviewed: Option<&Reviewed>,
 ) -> Result<Option<Vec<String>>> {
-    if reviewed.is_some_and(|r| r.fingerprint == fingerprint(entries, unit, router)) {
+    if !is_stale(reviewed, &fingerprint(entries, unit, router)) {
         return Ok(None);
     }
     let changed = changed_since(
@@ -167,22 +177,22 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
                     message,
                 };
             let card = loaded.cards.get(&def.name);
-            match card.and_then(|c| c.reviewed.as_ref()) {
-                None => report.failures.push(finding(
-                    "unreviewed",
-                    None,
-                    None,
-                    format!("{name} has never been reviewed"),
-                )),
-                Some(r) if r.fingerprint != fingerprint(&entries, &def.name, &router) => {
-                    report.failures.push(finding(
+            let reviewed = card.and_then(|c| c.reviewed.as_ref());
+            if is_stale(reviewed, &fingerprint(&entries, &def.name, &router)) {
+                report.failures.push(match reviewed {
+                    None => finding(
+                        "unreviewed",
+                        None,
+                        None,
+                        format!("{name} has never been reviewed"),
+                    ),
+                    Some(_) => finding(
                         "stale",
                         None,
                         None,
                         format!("{name} changed since its stamp"),
-                    ))
-                }
-                Some(_) => {}
+                    ),
+                });
             }
 
             let interfaces = card.map_or(&[][..], |c| &c.interface);
@@ -277,7 +287,10 @@ impl Human for CheckReport {
         for (title, list) in [("Failures", &self.failures), ("Warnings", &self.warnings)] {
             if !list.is_empty() {
                 out.push(format!("## {title}\n"));
-                out.extend(list.iter().map(|f| format!("- `{}` {}", f.kind, f.message)));
+                out.extend(
+                    list.iter()
+                        .map(|f| format!("- `{}` {}", f.kind, one_line(&f.message))),
+                );
                 out.push(String::new());
             }
         }

@@ -3,25 +3,12 @@ mod common;
 
 use std::path::Path;
 
-use common::{fixture, git, stewards};
+use common::{fixture, git, run, stewards, workspace_fixture};
 use tempfile::TempDir;
 
-/// The workspace fixture with `git init` in each repo and one unit in `backend` (repo name `api-server`).
-fn workspace_fixture() -> TempDir {
-    let tmp = TempDir::new().unwrap();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace");
-    std::fs::copy(src.join("stewards.toml"), tmp.path().join("stewards.toml")).unwrap();
-    for repo in ["backend", "frontend"] {
-        let dest = tmp.path().join(repo);
-        let status = std::process::Command::new("cp")
-            .args(["-R"])
-            .arg(src.join(repo))
-            .arg(&dest)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        git(&dest, &["init", "-q"]);
-    }
+/// The workspace fixture with one unit in `backend` (repo name `api-server`).
+fn core_workspace() -> TempDir {
+    let tmp = workspace_fixture();
     std::fs::write(
         tmp.path().join("backend/.stewards/units.toml"),
         "[[unit]]\nname = \"core\"\npurpose = \"the server\"\npaths = [\"src/**\"]\n",
@@ -39,7 +26,7 @@ fn route(dir: &Path, paths: &[&str]) -> serde_json::Value {
 
 #[test]
 fn workspace_root_routes_a_backend_file_to_repo_slash_unit() {
-    let dir = workspace_fixture();
+    let dir = core_workspace();
     let v = route(dir.path(), &["backend/src/main.py", "frontend/src/app.js"]);
     assert_eq!(v["routes"][0]["unit"], "api-server/core");
     assert_eq!(v["routes"][0]["path"], "backend/src/main.py");
@@ -48,7 +35,7 @@ fn workspace_root_routes_a_backend_file_to_repo_slash_unit() {
 
 #[test]
 fn sibling_repo_path_is_null_not_an_error() {
-    let dir = workspace_fixture();
+    let dir = core_workspace();
     let v = route(
         &dir.path().join("backend"),
         &["../frontend/src/app.js", "src/main.py"],
@@ -60,7 +47,7 @@ fn sibling_repo_path_is_null_not_an_error() {
 
 #[test]
 fn path_outside_every_repo_is_path_outside_repo() {
-    let dir = workspace_fixture();
+    let dir = core_workspace();
     let v = route(dir.path(), &["stewards.toml"]);
     assert_eq!(v["error"]["code"], "path_outside_repo", "{v}");
 }
@@ -101,14 +88,6 @@ fn nested_workspace() -> TempDir {
     tmp
 }
 
-fn run(dir: &Path, args: &[&str]) -> (i32, serde_json::Value) {
-    let out = stewards(dir, args);
-    (
-        out.status.code().unwrap(),
-        serde_json::from_slice(&out.stdout).unwrap(),
-    )
-}
-
 #[test]
 fn route_picks_the_inner_of_two_nested_repos() {
     let dir = nested_workspace();
@@ -132,7 +111,7 @@ fn stamp_inside_a_nested_repo_writes_the_inner_card() {
 
 #[test]
 fn check_with_repo_naming_an_uninitialized_repo_is_no_stewards_dir() {
-    let dir = workspace_fixture();
+    let dir = core_workspace();
     let (code, v) = run(dir.path(), &["check", "--repo", "frontend"]);
     assert_eq!(code, 2);
     assert_eq!(v["error"]["code"], "no_stewards_dir", "{v}");
@@ -140,7 +119,7 @@ fn check_with_repo_naming_an_uninitialized_repo_is_no_stewards_dir() {
 
 #[test]
 fn check_in_a_workspace_skips_an_uninitialized_sibling_and_prefixes_units() {
-    let dir = workspace_fixture();
+    let dir = core_workspace();
     let (code, v) = run(dir.path(), &["check"]);
     assert_eq!(code, 1, "{v}");
     let failures: Vec<_> = v["failures"]

@@ -127,6 +127,15 @@ fn has_object_is_true_for_a_snapshot_tree() {
 }
 
 #[test]
+fn has_object_is_false_for_a_blob() {
+    let r = repo();
+    write(r.path(), "a.txt", "a\n");
+    let tree = git::snapshot(r.path()).unwrap();
+    let (_, blob) = &git::ls_tree(r.path(), &tree).unwrap()[0];
+    assert!(!git::has_object(r.path(), blob));
+}
+
+#[test]
 fn ls_files_lists_tracked_files_only() {
     let r = repo();
     write(r.path(), "a.txt", "a\n");

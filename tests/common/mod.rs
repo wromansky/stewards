@@ -24,7 +24,7 @@ pub fn fixture(name: &str) -> TempDir {
     tmp
 }
 
-fn copy_dir(from: &Path, to: &Path) {
+pub fn copy_dir(from: &Path, to: &Path) {
     for entry in std::fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
         let dest = to.join(entry.file_name());
@@ -35,6 +35,46 @@ fn copy_dir(from: &Path, to: &Path) {
             std::fs::copy(entry.path(), dest).unwrap();
         }
     }
+}
+
+/// Copies the workspace fixture to a temp dir and `git init`s each inner repo.
+pub fn workspace_fixture() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace"),
+        tmp.path(),
+    );
+    for repo in ["backend", "frontend"] {
+        git(&tmp.path().join(repo), &["init", "-q"]);
+    }
+    tmp
+}
+
+/// Runs the binary in `dir` and returns its exit code and JSON stdout.
+pub fn run(dir: &Path, args: &[&str]) -> (i32, serde_json::Value) {
+    let out = stewards(dir, args);
+    let v = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
+        panic!(
+            "not JSON: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    (out.status.code().unwrap(), v)
+}
+
+/// Replaces every `from` in the file at `path` with `to`; panics when `from` is absent.
+pub fn edit(path: &Path, from: &str, to: &str) {
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.contains(from), "{from} not in {}", path.display());
+    std::fs::write(path, text.replace(from, to)).unwrap();
+}
+
+/// Owned copies of string pairs, for comparing against `(String, String)` lists.
+pub fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+    list.iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect()
 }
 
 /// Runs git in `dir` and panics on failure.

@@ -1,11 +1,11 @@
 // Git CLI wrappers: ls-files, snapshot, ls-tree, diffs, head.
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 
-fn run(root: &Path, args: &[&str], index: Option<&Path>) -> Result<String> {
+fn run_raw(root: &Path, args: &[&str], index: Option<&Path>) -> Result<Output> {
     let mut cmd = Command::new("git");
     // quotepath off so patch headers carry raw UTF-8 paths
     cmd.args(["-c", "core.quotepath=false"])
@@ -14,7 +14,11 @@ fn run(root: &Path, args: &[&str], index: Option<&Path>) -> Result<String> {
     if let Some(index) = index {
         cmd.env("GIT_INDEX_FILE", index);
     }
-    let out = cmd.output().context("cannot run git")?;
+    cmd.output().context("cannot run git")
+}
+
+fn run(root: &Path, args: &[&str], index: Option<&Path>) -> Result<String> {
+    let out = run_raw(root, args, index)?;
     if !out.status.success() {
         bail!(
             "git {}: {}",
@@ -32,22 +36,17 @@ fn nul_split(s: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn is_repo(root: &Path) -> bool {
-    run(root, &["rev-parse", "--git-dir"], None).is_ok()
-}
-
 /// Tracked files, as recorded in the index.
 pub fn ls_files(root: &Path) -> Result<Vec<String>> {
     Ok(nul_split(&run(root, &["ls-files", "-z"], None)?))
 }
 
-/// Removes the temporary index (and a leftover lock) when dropped.
+/// Removes the temporary index when dropped.
 struct TempIndex(PathBuf);
 
 impl Drop for TempIndex {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
-        let _ = std::fs::remove_file(self.0.with_extension("lock"));
     }
 }
 
@@ -75,7 +74,11 @@ pub fn snapshot(root: &Path) -> Result<String> {
 
 /// `(path, blob sha)` for every file in `tree`.
 pub fn ls_tree(root: &Path, tree: &str) -> Result<Vec<(String, String)>> {
-    let out = run(root, &["ls-tree", "-r", "-z", tree], None)?;
+    let out = run(
+        root,
+        &["ls-tree", "-r", "-z", "--end-of-options", tree],
+        None,
+    )?;
     nul_split(&out)
         .into_iter()
         .map(|entry| {
@@ -83,7 +86,10 @@ pub fn ls_tree(root: &Path, tree: &str) -> Result<Vec<(String, String)>> {
             let (meta, path) = entry
                 .split_once('\t')
                 .with_context(|| format!("unexpected ls-tree entry {entry:?}"))?;
-            let sha = meta.split(' ').nth(2).unwrap_or_default();
+            let sha = meta
+                .split(' ')
+                .nth(2)
+                .with_context(|| format!("unexpected ls-tree entry {entry:?}"))?;
             Ok((path.to_string(), sha.to_string()))
         })
         .collect()
@@ -97,20 +103,36 @@ const DIFF: [&str; 4] = ["diff", "--no-renames", "--src-prefix=a/", "--dst-prefi
 
 pub fn diff_names(root: &Path, from: &str, to: &str) -> Result<Vec<String>> {
     let mut args = DIFF.to_vec();
-    args.extend(["--name-only", "-z", from, to]);
+    args.extend(["--name-only", "-z", "--end-of-options", from, to]);
     Ok(nul_split(&run(root, &args, None)?))
 }
 
 pub fn diff_file(root: &Path, from: &str, to: &str, path: &str) -> Result<String> {
     let mut args = DIFF.to_vec();
-    args.extend(["--no-color", "--no-ext-diff", "-U3", from, to, "--", path]);
+    args.extend([
+        "--no-color",
+        "--no-ext-diff",
+        "-U3",
+        "--end-of-options",
+        from,
+        to,
+        "--",
+        path,
+    ]);
     run(root, &args, None)
 }
 
 /// Added lines as `(path, line number in the new file, text)`.
 pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String, u32, String)>> {
     let mut args = DIFF.to_vec();
-    args.extend(["--no-color", "--no-ext-diff", "-U0", from, to]);
+    args.extend([
+        "--no-color",
+        "--no-ext-diff",
+        "-U0",
+        "--end-of-options",
+        from,
+        to,
+    ]);
     let text = run(root, &args, None)?;
     let mut added = Vec::new();
     let mut path: Option<String> = None;
@@ -121,7 +143,13 @@ pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String
             in_hunk = false;
             path = None;
         } else if !in_hunk && l.starts_with("+++ ") {
-            path = l.strip_prefix("+++ b/").map(String::from);
+            if l.starts_with("+++ \"") {
+                bail!("cannot parse C-quoted path in diff line: {l}");
+            }
+            // git appends a tab to the line when the path contains a space
+            path = l
+                .strip_prefix("+++ b/")
+                .map(|p| p.trim_end_matches('\t').to_string());
         } else if l.starts_with("@@ ") {
             in_hunk = true;
             // "@@ -a,b +c,d @@"
@@ -148,12 +176,21 @@ pub fn head(root: &Path) -> Result<String> {
     Ok(run(root, &["rev-parse", "HEAD"], None)?.trim().to_string())
 }
 
-/// Current branch name, then the last commit subject on the next line (if any commit exists).
+/// Current branch name (`HEAD` when detached), then the last commit subject on the next line
+/// (none before the first commit).
 pub fn task_text(root: &Path) -> Result<String> {
-    let branch = run(root, &["symbolic-ref", "--short", "-q", "HEAD"], None)
-        .unwrap_or_else(|_| "HEAD".into());
-    let subject = run(root, &["log", "-1", "--format=%s"], None).unwrap_or_default();
-    Ok(format!("{}\n{}", branch.trim(), subject.trim())
-        .trim()
-        .to_string())
+    let branch = run(root, &["branch", "--show-current"], None)?;
+    let branch = branch.trim();
+    let head = run_raw(root, &["rev-parse", "--verify", "--quiet", "HEAD"], None)?;
+    let subject = match head.status.code() {
+        Some(0) => run(root, &["log", "-1", "--format=%s"], None)?,
+        // --quiet: exit 1 with no message means HEAD has no commit yet
+        Some(1) => String::new(),
+        _ => bail!(
+            "git rev-parse HEAD: {}",
+            String::from_utf8_lossy(&head.stderr).trim()
+        ),
+    };
+    let branch = if branch.is_empty() { "HEAD" } else { branch };
+    Ok(format!("{branch}\n{}", subject.trim()).trim().to_string())
 }

@@ -20,12 +20,13 @@ fn json_error(args: &[&str]) -> (Value, Option<i32>) {
 }
 
 #[test]
-fn not_implemented_command_prints_the_error_envelope() {
-    let (v, code) = json_error(&["debt"]);
+fn an_error_prints_the_error_envelope() {
+    // unknown_role is a permanent error; stubs disappear as commands are built.
+    let (v, code) = json_error(&["brief", "--role", "bogus"]);
     assert_eq!(code, Some(2));
     assert_eq!(v["stewards"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(v["stewards"]["schema"], 1);
-    assert_eq!(v["error"]["code"], "not_implemented");
+    assert_eq!(v["error"]["code"], "unknown_role");
     assert!(v["error"]["message"].is_string());
     assert!(v["error"]["fix"].is_string());
 }
@@ -66,7 +67,7 @@ fn missing_c_dir_is_a_usage_error() {
 #[test]
 fn human_errors_print_error_and_fix_lines() {
     let repo = fixture("single");
-    let out = stewards(repo.path(), &["debt", "--human"]);
+    let out = stewards(repo.path(), &["brief", "--role", "bogus", "--human"]);
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(stdout.lines().any(|l| l.starts_with("error:")), "{stdout}");

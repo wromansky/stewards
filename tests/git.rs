@@ -127,12 +127,6 @@ fn has_object_is_true_for_a_snapshot_tree() {
 }
 
 #[test]
-fn is_repo_tells_repos_from_plain_dirs() {
-    assert!(git::is_repo(repo().path()));
-    assert!(!git::is_repo(TempDir::new().unwrap().path()));
-}
-
-#[test]
 fn ls_files_lists_tracked_files_only() {
     let r = repo();
     write(r.path(), "a.txt", "a\n");
@@ -218,4 +212,69 @@ fn task_text_is_branch_then_last_commit_subject() {
     run_git(p, &["add", "a.txt"]);
     run_git(p, &["commit", "-q", "-m", "add a thing", "-m", "body"]);
     assert_eq!(git::task_text(p).unwrap(), "feature/x\nadd a thing");
+}
+
+#[test]
+fn leading_dash_revs_are_errors_and_write_nothing() {
+    let r = repo();
+    let p = r.path();
+    write(p, "a.txt", "a\n");
+    let tree = git::snapshot(p).unwrap();
+    let out = TempDir::new().unwrap().path().join("pwned");
+    let evil = format!("--output={}", out.display());
+    assert!(git::ls_tree(p, &evil).is_err());
+    assert!(git::diff_names(p, &evil, &tree).is_err());
+    assert!(git::diff_names(p, &tree, &evil).is_err());
+    assert!(git::diff_file(p, &evil, &tree, "a.txt").is_err());
+    assert!(git::diff_file(p, &tree, &evil, "a.txt").is_err());
+    assert!(git::diff_added_lines(p, &evil, &tree).is_err());
+    assert!(git::diff_added_lines(p, &tree, &evil).is_err());
+    assert!(!out.exists());
+}
+
+#[test]
+fn diff_added_lines_handles_a_path_with_a_space() {
+    let r = repo();
+    let p = r.path();
+    let from = git::snapshot(p).unwrap();
+    write(p, "sp ace.txt", "hi\n");
+    let to = git::snapshot(p).unwrap();
+    assert_eq!(
+        git::diff_added_lines(p, &from, &to).unwrap(),
+        [("sp ace.txt".to_string(), 1, "hi".to_string())]
+    );
+}
+
+#[test]
+fn diff_added_lines_errors_on_a_c_quoted_path() {
+    let r = repo();
+    let p = r.path();
+    let from = git::snapshot(p).unwrap();
+    write(p, "q\"uote.txt", "hi\n");
+    let to = git::snapshot(p).unwrap();
+    let e = git::diff_added_lines(p, &from, &to).unwrap_err();
+    assert!(e.to_string().contains("q\\\"uote.txt"), "{e}");
+}
+
+#[test]
+fn task_text_before_the_first_commit_is_the_branch_alone() {
+    let r = repo();
+    run_git(r.path(), &["checkout", "-q", "-b", "fresh"]);
+    assert_eq!(git::task_text(r.path()).unwrap(), "fresh");
+}
+
+#[test]
+fn task_text_on_a_detached_head_names_head() {
+    let r = repo();
+    let p = r.path();
+    write(p, "a.txt", "a\n");
+    run_git(p, &["add", "a.txt"]);
+    run_git(p, &["commit", "-q", "-m", "init"]);
+    run_git(p, &["checkout", "-q", "--detach"]);
+    assert_eq!(git::task_text(p).unwrap(), "HEAD\ninit");
+}
+
+#[test]
+fn task_text_outside_a_repo_is_an_error() {
+    assert!(git::task_text(TempDir::new().unwrap().path()).is_err());
 }

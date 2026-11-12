@@ -7,3 +7,27 @@ given = "single fixture: store has an interface, no docs and a bug gap; api's in
 expect = "jobs are api maintainer, store maintainer, store validator; no tester or documenter job; exit 1"
 level = "integration"
 command = "cargo test --test next never_stamped_units_get_only_maintainer_and_validator_jobs"
+
+[[scenario]]
+id = "interface-body-edit-gives-maintainer-tester-documenter"
+interface = "next"
+given = "single fixture, both units stamped; the body of store's save_item changes in src/store/db.py (count_items in the same file untouched)"
+expect = "jobs are store maintainer, tester, documenter; tester and documenter reasons are 'interface changed: src/store/db.py::save_item' and changed is src/store/db.py"
+level = "integration"
+command = "cargo test --test next interface_body_edit_gives_maintainer_tester_documenter"
+
+[[scenario]]
+id = "private-function-edit-in-an-interface-file-gives-only-a-maintainer-job"
+interface = "next"
+given = "stamped store; an edit to a non-interface function in the same file as an interface"
+expect = "only a store maintainer job; no tester or documenter job"
+level = "integration"
+command = "cargo test --test next private_function_edit_in_an_interface_file_gives_only_a_maintainer_job"
+
+[[scenario]]
+id = "interface-without-findable-lines-falls-back-to-the-file-trigger"
+interface = "next"
+given = "stamped unit whose interface name was removed from its file, or sits in a file added since the mark"
+expect = "tester and documenter jobs fire with reason 'interface file changed'"
+level = "integration"
+command = "cargo test --test next interface_name_removed_from_its_file_falls_back_to_the_file_trigger"

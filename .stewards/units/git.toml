@@ -1,11 +1,11 @@
 unit = "git"
 
 [reviewed]
-commit = "e68ec0e8d29e804bf3091e0216bb44f63665e6b9"
-fingerprint = "sha256:80275bc4f3a9147e16ee07476695847ac8e69e77c8f5422fc40b198f551a2dc0"
-tree = "64110da736d6bb8f449874c0df270f013fae0d73"
-tester = "f03c12b0a2b05b95b78656eea949e0e40bcbbe50"
-documenter = "e95398391b084fe2adabd2710f0581d82640e7b9"
+commit = "8dba1769c1ed3a9c0ecb3808e5e21f7055caae78"
+fingerprint = "sha256:b09bb11e3d0c76e6c7a03dee64e21ea5a446e53868bad7c0b4a948ddf3f7da99"
+tree = "c73edc4e7f723da02e6e3c06358b314d21f49adf"
+tester = "73da2d147b3e1f1b8e3b411811301e3e09fdd1b6"
+documenter = "a481be725994c6222ad45ec44bc71a003a31e624"
 
 [[interface]]
 id = "ls_files"
@@ -45,7 +45,7 @@ contract = "Unified diff (-U3, no color, no ext diff, a/ b/ prefixes) of one pat
 [[interface]]
 id = "diff_added_lines"
 anchor = "src/git.rs::diff_added_lines"
-contract = "Added lines as (path, new-file line number, text); paths with spaces handled; C-quoted paths skipped."
+contract = "Added lines as (path, new-file line number, text) from a -U0 diff with no textconv; paths with spaces handled; C-quoted paths skipped."
 
 [[interface]]
 id = "head_commit"
@@ -66,6 +66,16 @@ contract = "Files touched by each of the last n commits, newest first, merges li
 id = "origin_url"
 anchor = "src/git.rs::origin_url"
 contract = "URL of the origin remote, trimmed; None when there is no origin, it is empty, or git fails."
+
+[[interface]]
+id = "diff_hunks"
+anchor = "src/git.rs::diff_hunks"
+contract = "Each -U0 hunk between two revs as (path, (old start, old count), (new start, new count)); a missing count is 1, a count of 0 means an empty side placed after start; deleted, binary and C-quoted files give none; no textconv."
+
+[[interface]]
+id = "blob_text"
+anchor = "src/git.rs::blob_text"
+contract = "Text of a blob by sha or rev:path, invalid UTF-8 replaced; a leading-dash name is an error, not an option."
 
 [[anchor]]
 path = "src/git.rs"
@@ -91,6 +101,18 @@ name = "recent_commit_files"
 path = "src/git.rs"
 name = "origin_url"
 
+[[anchor]]
+path = "src/git.rs"
+name = "diff_hunks"
+
+[[anchor]]
+path = "src/git.rs"
+name = "blob_text"
+
+[[anchor]]
+path = "src/git.rs"
+name = "hunk_sides"
+
 [[gap]]
 kind = "gap"
 title = "recent_commit_files hides every rev-parse failure as 'no commits'"
@@ -112,6 +134,6 @@ repro = "cargo test --test git origin_url_is_none_when_the_url_is_empty -- --inc
 severity = "low"
 
 [doc]
-overview = "The git unit is the one place in the program that talks to git. It shells out to the git CLI and hands back plain Rust values: the list of tracked files, a tree sha that stands for the current working tree, the (path, blob sha) pairs inside a tree, yes/no answers about whether a name is a tree, the paths and text of a diff between two trees, the HEAD commit, the URL of the origin remote, the task text built from the branch and last commit subject, and the files touched by recent commits. Callers use it to ask what the repository looks like now and what changed between two points, without knowing any git command lines. It does not touch the real index, HEAD or refs."
-how_it_works = "Everything goes through two private helpers in src/git.rs. run_raw starts `git` in the repo root with core.quotepath turned off, so paths come back as raw UTF-8, and it can point git at another index file through GIT_INDEX_FILE. run wraps it and turns a non-zero exit into an error carrying the command and git's stderr. Listing functions such as ls_files use NUL-separated output and split it on NUL. snapshot is the involved one: it finds the real index with rev-parse --git-path (so linked worktrees work), creates a uniquely named temp file with create_new so it never reuses an existing path, copies the real index into it and gives the copy the real index's mtime so git does not misjudge a same-second edit as unchanged, or starts from read-tree --empty when there is no index yet. It then runs add -A and write-tree against that private index and returns the tree sha; a drop guard deletes the temp file. ls_tree, has_object and is_tree inspect a tree: a leading-dash name is an error in ls_tree and false in the two checks, has_object accepts a tree or a commit's tree, and is_tree accepts only a tree itself. diff_names, diff_file and diff_added_lines compare two revs; diff_file matches its path literally, and diff_added_lines reports added lines with their new-file line number and skips C-quoted paths. head_commit returns None before the first commit, origin_url returns the origin remote's URL or None when there is no origin (init uses it to name the repo), task_text gives the branch (HEAD when detached) and the last commit subject on the next line, and recent_commit_files lists files per commit, newest first, with merges listing none. The tests live in tests/git.rs."
-how_to_change = "Start in src/git.rs and add or change a function there, going through run or run_raw rather than spawning Command directly, so the quotepath setting and error format stay the same. Keep these true: snapshot must never modify the real index, HEAD or refs, must keep the real index's mtime on its copy, must refuse a pre-existing temp path, and must work with no commits and in linked worktrees; revs and names that start with a dash must stay errors or false rather than being read as git options; diff_file must treat its path literally; head_commit must return None only for the no-commits case and an error for any other failure; origin_url must stay None, not an error, when there is no origin. The contract table is the list of behaviours to preserve, so when you change one, update the matching test in tests/git.rs, which covers this unit, and this document."
+overview = "The git unit is the one place in the program that talks to git. It shells out to the git CLI and returns plain Rust values: the tracked files, a tree sha standing for the current working tree, the (path, blob sha) pairs in a tree, yes/no answers about whether a name is a tree, the paths, text, added lines and hunk ranges of a diff between two trees, the text of a blob, the HEAD commit, the origin remote URL, the task text built from the branch and last commit subject, and the files touched by recent commits. Callers ask what the repository looks like now and what changed between two points without knowing any git command lines. It never touches the real index, HEAD or refs."
+how_it_works = "Everything goes through two private helpers in src/git.rs. run_raw starts git in the repo root with core.quotepath off, so paths are raw UTF-8, and can point git at another index file via GIT_INDEX_FILE. run turns a non-zero exit into an error carrying the command and stderr. Listings such as ls_files use NUL-separated output. snapshot finds the real index with rev-parse --git-path (so linked worktrees work), creates a uniquely named temp file with create_new, copies the index into it with the real index's mtime (or read-tree --empty when none exists), runs add -A and write-tree there, and returns the tree sha; a drop guard deletes the temp file. ls_tree, has_object and is_tree inspect trees; a leading-dash name is an error in ls_tree and false in the checks. diff_names and diff_file compare two revs; diff_file matches its path literally. diff_added_lines and diff_hunks share a private -U0 diff (diff_u0) and parse it the same way: new_path reads each +++ b/ line, hunk_sides reads the @@ header into (start, count) pairs for each side. diff_added_lines yields (path, new line number, text); diff_hunks yields (path, old range, new range) per hunk, where a count of 0 means no lines on that side. Both skip C-quoted names; diff_hunks also has none for deleted or binary files. blob_text reads a blob by sha with cat-file. head_commit, origin_url, task_text and recent_commit_files are as in the contract table. Tests are in tests/git.rs."
+how_to_change = "Start in src/git.rs and add or change a function there, going through run or run_raw rather than spawning Command directly, so the quotepath setting and error format stay the same. Keep these true: snapshot must never modify the real index, HEAD or refs, must keep the real index's mtime on its copy, must refuse a pre-existing temp path, and must work with no commits and in linked worktrees; revs and names starting with a dash must stay errors or false, never read as git options (diff and cat-file calls pass --end-of-options); diff_file must treat its path literally; diff_added_lines and diff_hunks must keep agreeing on which files they skip, since both use diff_u0 and new_path; head_commit returns None only before the first commit; origin_url stays None, not an error, without an origin. The contract table lists the behaviours to preserve; when you change one, update the matching test in tests/git.rs and this document. diff_hunks and blob_text are not yet in the card's interface table."

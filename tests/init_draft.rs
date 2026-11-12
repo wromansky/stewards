@@ -186,6 +186,77 @@ fn draft_on_a_fresh_repo_writes_step_1_and_the_architect_and_first_review_briefs
     }
 }
 
+/// The text between the first brief's DATA markers.
+fn data_section(brief: &str) -> &str {
+    let start = brief.find("\n<<<DATA\n").unwrap() + "\n<<<DATA\n".len();
+    let len = brief[start..].find("\nDATA>>>\n").unwrap();
+    &brief[start..start + len]
+}
+
+#[test]
+fn draft_first_review_briefs_carry_the_first_review_task_and_name_the_units_files() {
+    let (_tmp, dir) = repo();
+    let (code, v) = run(&dir, &["init", "--draft"]);
+    assert_eq!(code, 0, "{v}");
+    let task = "first review: read the unit's files, draft its card, and approve";
+    for (i, unit) in [(1, "a"), (2, "b")] {
+        assert_eq!(v["jobs"][i]["task"], task, "{v}");
+        let brief =
+            fs::read_to_string(dir.join(format!(".stewards/briefs/{unit}-maintainer.md"))).unwrap();
+        assert!(brief.contains(&format!("\nTask: {task}\n")), "{brief}");
+        let data = data_section(&brief);
+        assert!(
+            data.contains(&format!("\n## Paths\n\n- src/{unit}/**\n")),
+            "{data}"
+        );
+        let files: String = (0..3).map(|i| format!("- src/{unit}/f{i}.py\n")).collect();
+        assert!(
+            data.ends_with(&format!(
+                "\n## Owned files\n\nThis unit has not been reviewed yet: these are all its files.\n\n{}",
+                files.trim_end()
+            )),
+            "{data}"
+        );
+    }
+}
+
+#[test]
+fn an_architect_answer_built_only_from_its_brief_sets_the_purposes() {
+    let (_tmp, dir) = repo();
+    assert_eq!(run(&dir, &["init", "--draft"]).0, 0);
+    let brief = fs::read_to_string(dir.join(".stewards/briefs/architect.md")).unwrap();
+    let units = data_section(&brief).split("\n## Units\n\n").nth(1).unwrap();
+    let mut lines = units.lines();
+    assert_eq!(
+        lines.next(),
+        Some("| name | purpose | interface ids | paths | files |")
+    );
+    let proposals: Vec<Value> = lines
+        .skip(1)
+        .take_while(|l| l.starts_with('|'))
+        .map(|row| {
+            let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+            assert_eq!(cells[5], "3", "{row}");
+            let paths: Vec<&str> = cells[4].split(", ").collect();
+            proposal(cells[1], &format!("Does {}.", cells[1]), &paths)
+        })
+        .collect();
+    assert_eq!(proposals.len(), 2, "{units}");
+    let v = submit(&dir, None, "architect", &architect(json!(proposals)));
+    assert!(
+        v["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("architect: 2 purposes set; 0 unit proposals"),
+        "{v}"
+    );
+    let units = fs::read_to_string(dir.join(UNITS)).unwrap();
+    for unit in ["a", "b"] {
+        let set = format!("name = \"{unit}\"\npurpose = \"Does {unit}.\"");
+        assert!(units.contains(&set), "{units}");
+    }
+}
+
 #[test]
 fn draft_on_an_initialized_repo_writes_the_briefs_and_does_not_fail() {
     let (_tmp, dir) = repo();

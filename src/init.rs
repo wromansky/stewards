@@ -35,6 +35,7 @@ const IGNORE_LINES: [&str; 2] = [".stewards/briefs/", ".stewards/telemetry/"];
 const STARTING_FILES: [&str; 2] = [".stewards/units.toml", ".stewards/repo.toml"];
 const ARCHITECT_TASK: &str =
     "name and describe each proposed unit; propose merges or splits only where a boundary is wrong";
+const FIRST_REVIEW_TASK: &str = "first review: read the unit's files, draft its card, and approve";
 
 /// `Some(test command)` for a manifest file name (empty when it implies none), `None` otherwise.
 fn manifest(name: &str) -> Option<&'static str> {
@@ -668,7 +669,11 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         next::next(&ws, None, false)?
             .jobs
             .into_iter()
-            .filter(|j| j.role == Role::Maintainer && j.reasons == ["never reviewed"]),
+            .filter(|j| j.role == Role::Maintainer && j.reasons == ["never reviewed"])
+            .map(|j| Job {
+                task: FIRST_REVIEW_TASK.into(),
+                ..j
+            }),
     );
     let mut submitted = vec![];
     if g.direct {

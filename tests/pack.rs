@@ -24,8 +24,9 @@ fn pack_json(dir: &Path, args: &[&str]) -> Value {
 
 /// Asserts that exactly the `present` sections of the pack `v` are non-null.
 fn assert_sections(v: &Value, present: &[&str]) {
-    const ALL: [&str; 19] = [
+    const ALL: [&str; 20] = [
         "purpose",
+        "paths",
         "interface",
         "anchors",
         "scenarios",
@@ -58,7 +59,10 @@ fn assert_sections(v: &Value, present: &[&str]) {
 fn maintainer_pack_has_purpose_interface_anchors_gaps_flows() {
     let repo = fixture("single");
     let v = pack_json(repo.path(), &["pack", "api", "--role", "maintainer"]);
-    assert_sections(&v, &["purpose", "interface", "anchors", "gaps", "flows"]);
+    assert_sections(
+        &v,
+        &["purpose", "paths", "interface", "anchors", "gaps", "flows"],
+    );
     assert_eq!(v["anchors"][0]["name"], "router");
     assert_eq!(v["anchors"][0]["line"], 3);
     assert!(
@@ -77,6 +81,7 @@ fn tester_pack_has_interface_source_scenarios_and_test_command() {
     assert_sections(
         &v,
         &[
+            "paths",
             "interface",
             "anchors",
             "scenarios",
@@ -99,7 +104,7 @@ fn tester_pack_has_interface_source_scenarios_and_test_command() {
 fn documenter_pack_has_purpose_interface_doc_flows() {
     let repo = fixture("single");
     let v = pack_json(repo.path(), &["pack", "api", "--role", "documenter"]);
-    assert_sections(&v, &["purpose", "interface", "doc", "flows"]);
+    assert_sections(&v, &["purpose", "paths", "interface", "doc", "flows"]);
     assert_eq!(v["doc"]["overview"], "The HTTP surface for items.");
 }
 
@@ -111,6 +116,7 @@ fn validator_pack_has_purpose_interface_paths_and_test_commands() {
         &v,
         &[
             "purpose",
+            "paths",
             "interface",
             "primary_paths",
             "test_command",
@@ -192,12 +198,28 @@ fn architect_pack_has_every_unit_flows_decisions_and_no_source() {
     assert_eq!(
         v["units"],
         serde_json::json!([
-            {"name": "api", "purpose": "HTTP surface", "interface_ids": ["create-item"]},
-            {"name": "store", "purpose": "item persistence", "interface_ids": ["save-item", "count-items"]},
+            {"name": "api", "purpose": "HTTP surface", "interface_ids": ["create-item"],
+             "paths": ["src/api/**", "tests/api/**"], "files": 2},
+            {"name": "store", "purpose": "item persistence", "interface_ids": ["save-item", "count-items"],
+             "paths": ["src/store/**", "tests/store/**"], "files": 3},
         ])
     );
     assert_eq!(v["decisions"][0]["title"], "store has no HTTP knowledge");
     assert!(!v.to_string().contains("save_item("));
+    let out = stewards(repo.path(), &["pack", "--role", "architect", "--human"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains("| name | purpose | interface ids | paths | files |\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("| api | HTTP surface | create-item | src/api/**, tests/api/** | 2 |\n"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("save_item(") && !text.contains("## Anchors"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -302,55 +324,172 @@ fn diff_after_a_stamp_shows_hunks_restricts_anchors_and_lists_other_units_files(
         v["other_changed_files"],
         serde_json::json!(["src/store/db.py"])
     );
+    // with a usable stamp only `paths` is new
+    assert_sections(
+        &v,
+        &[
+            "purpose",
+            "paths",
+            "interface",
+            "anchors",
+            "gaps",
+            "flows",
+            "changed_files",
+            "hunks",
+            "other_changed_files",
+        ],
+    );
+    let out = stewards(
+        dir,
+        &["pack", "api", "--role", "maintainer", "--diff", "--human"],
+    );
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains("\n## Changed files\n\n| path |\n|---|\n| src/api/items.py |\n"),
+        "{text}"
+    );
+    assert!(!text.contains("Owned files"), "{text}");
+}
+
+/// The files `next` reports as changed for `unit`'s maintainer job.
+fn next_changed(dir: &Path, unit: &str) -> Value {
+    let (_, v) = run(dir, &["next", "--no-brief"]);
+    let jobs = v["jobs"].as_array().unwrap();
+    let job = jobs
+        .iter()
+        .find(|j| j["unit"] == unit && j["role"] == "maintainer")
+        .unwrap_or_else(|| panic!("no {unit} maintainer job in {v}"));
+    job["changed"].clone()
+}
+
+/// Asserts the `--diff` pack in `dir` is a first review: the plain pack plus every file `api`
+/// owns, as `next` lists them, rendered as `Owned files`, and no hunks.
+fn assert_first_review(dir: &Path) {
+    let args = ["pack", "api", "--role", "maintainer", "--task", "t"];
+    let plain = pack_json(dir, &args);
+    let mut diff = pack_json(dir, &[&args[..], &["--diff"]].concat());
+    assert_eq!(
+        diff["changed_files"],
+        serde_json::json!(["src/api/items.py", "tests/api/test_items.py"])
+    );
+    assert_eq!(diff["changed_files"], next_changed(dir, "api"));
+    assert!(diff["hunks"].is_null(), "{diff}");
+    diff["changed_files"] = Value::Null;
+    diff["bytes"] = plain["bytes"].clone();
+    assert_eq!(plain, diff);
+    let out = stewards(dir, &[&args[..], &["--diff", "--human"]].concat());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains(
+            "\n## Owned files\n\nThis unit has not been reviewed yet: these are all its files.\n\n\
+             - src/api/items.py\n- tests/api/test_items.py\n"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("## Changed files") && !text.contains("## Hunks"));
 }
 
 #[test]
-fn diff_with_no_stamp_equals_the_plain_pack() {
+fn diff_with_no_stamp_lists_every_owned_file_as_next_does_and_no_hunks() {
     let repo = fixture("single");
-    let args = ["pack", "api", "--role", "maintainer", "--task", "t"];
-    let plain = pack_json(repo.path(), &args);
-    let diff = pack_json(repo.path(), &[&args[..], &["--diff"]].concat());
-    assert_eq!(plain, diff);
+    assert_first_review(repo.path());
+}
+
+#[test]
+fn maintainer_pack_shows_the_units_paths_stamped_or_not() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    let args = ["pack", "api", "--role", "maintainer", "--diff"];
+    for stamped in [false, true] {
+        if stamped {
+            assert_eq!(run(dir, &["stamp", "api"]).0, 0);
+        }
+        let v = pack_json(dir, &args);
+        assert_eq!(
+            v["paths"],
+            serde_json::json!(["src/api/**", "tests/api/**"]),
+            "stamped {stamped}"
+        );
+        let out = stewards(dir, &[&args[..], &["--human"]].concat());
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            text.contains(
+                "## Purpose\n\n```\nHTTP surface\n```\n\n## Paths\n\n- src/api/**\n- tests/api/**\n\n"
+            ),
+            "stamped {stamped}: {text}"
+        );
+    }
+}
+
+#[test]
+fn owned_files_render_two_hundred_and_a_count_while_the_json_has_all() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    fs::create_dir(dir.join("src/api/gen")).unwrap();
+    for i in 0..250 {
+        fs::write(dir.join(format!("src/api/gen/f{i:03}.py")), "x = 1\n").unwrap();
+    }
+    let args = ["pack", "api", "--role", "maintainer", "--diff"];
+    let v = pack_json(dir, &args);
+    assert_eq!(v["changed_files"].as_array().unwrap().len(), 252);
+    assert!(v["dropped"].as_array().unwrap().is_empty(), "{v}");
+    let out = stewards(dir, &[&args[..], &["--human"]].concat());
+    let text = String::from_utf8(out.stdout).unwrap();
+    let owned = text.split("\n## Owned files\n").nth(1).unwrap();
+    assert_eq!(owned.lines().filter(|l| l.starts_with("- ")).count(), 200);
+    assert!(
+        owned.contains("- src/api/gen/f199.py\n(+52 more)\n"),
+        "{owned}"
+    );
 }
 
 #[test]
 fn fit_shrinks_in_the_fixed_order() {
-    let repo = fixture("single");
-    let dir = repo.path();
-    append(
-        &dir.join(".stewards/units/api.toml"),
-        "[[anchor]]\npath = \"src/api/items.py\"\nname = \"list_items\"\n",
-    );
-    assert_eq!(run(dir, &["stamp", "api"]).0, 0);
-    let extra: String = (0..60)
-        .map(|i| format!("EXTRA_{i} = \"a padded line to make the window and hunk long\"\n"))
-        .collect();
-    append(&dir.join("src/api/items.py"), &extra);
+    // A first review's owned files go after flows; a re-review's hunks are truncated after them.
+    for (stamped, last) in [
+        (true, "hunks truncated to 40 lines"),
+        (false, "owned files"),
+    ] {
+        let repo = fixture("single");
+        let dir = repo.path();
+        append(
+            &dir.join(".stewards/units/api.toml"),
+            "[[anchor]]\npath = \"src/api/items.py\"\nname = \"list_items\"\n",
+        );
+        if stamped {
+            assert_eq!(run(dir, &["stamp", "api"]).0, 0);
+        }
+        let extra: String = (0..60)
+            .map(|i| format!("EXTRA_{i} = \"a padded line to make the window and hunk long\"\n"))
+            .collect();
+        append(&dir.join("src/api/items.py"), &extra);
 
-    let ws = discover(dir, None).unwrap();
-    let mut p = pack(
-        &ws.repos[0],
-        Some("api"),
-        Role::Maintainer,
-        "t",
-        true,
-        &snap(&ws),
-    )
-    .unwrap();
-    assert!(p.dropped.is_empty() && !p.over_budget);
-    let steps = [
-        "source windows halved",
-        "source src/api/items.py::list_items",
-        "source src/api/items.py::router",
-        "gaps",
-        "flows",
-        "hunks truncated to 40 lines",
-    ];
-    for (i, _) in steps.iter().enumerate() {
-        p.fit(p.bytes - 1);
-        assert_eq!(p.dropped, steps[..=i], "after step {i}");
-        assert!(!p.over_budget);
-        assert_eq!(p.bytes, p.render().len());
+        let ws = discover(dir, None).unwrap();
+        let mut p = pack(
+            &ws.repos[0],
+            Some("api"),
+            Role::Maintainer,
+            "t",
+            true,
+            &snap(&ws),
+        )
+        .unwrap();
+        assert!(p.dropped.is_empty() && !p.over_budget);
+        let steps = [
+            "source windows halved",
+            "source src/api/items.py::list_items",
+            "source src/api/items.py::router",
+            "gaps",
+            "flows",
+            last,
+        ];
+        for (i, _) in steps.iter().enumerate() {
+            p.fit(p.bytes - 1);
+            assert_eq!(p.dropped, steps[..=i], "stamped {stamped}, after step {i}");
+            assert!(!p.over_budget);
+            assert_eq!(p.bytes, p.render().len());
+        }
+        assert_eq!(p.changed_files.is_some(), stamped);
     }
 }
 
@@ -382,6 +521,12 @@ fn never_dropped_sections_survive_a_tiny_budget() {
         p.other_changed_files.as_ref().unwrap(),
         &["src/store/db.py"]
     );
+    let paths = ["src/api/**", "tests/api/**"];
+    assert_eq!(p.paths.as_ref().unwrap(), &paths);
+    assert!(
+        p.render()
+            .contains("\n## Paths\n\n- src/api/**\n- tests/api/**\n")
+    );
 
     let mut t = pack(
         &ws.repos[0],
@@ -395,6 +540,7 @@ fn never_dropped_sections_survive_a_tiny_budget() {
     t.fit(1);
     assert!(t.over_budget);
     assert_eq!(t.scenarios.as_ref().unwrap().len(), 1);
+    assert_eq!(t.paths.as_ref().unwrap(), &paths);
 }
 
 /// Each line of the markdown `md` outside the fence lines, with the index of the fenced block
@@ -636,7 +782,7 @@ fn halving_shortens_every_source_window() {
 }
 
 #[test]
-fn diff_with_a_pruned_stamped_tree_equals_the_plain_pack() {
+fn diff_with_a_pruned_stamped_tree_is_a_first_review() {
     let repo = fixture("single");
     let dir = repo.path();
     assert_eq!(run(dir, &["stamp", "api"]).0, 0);
@@ -649,11 +795,7 @@ fn diff_with_a_pruned_stamped_tree_equals_the_plain_pack() {
         .to_string();
     edit(&card, &tree, &format!("\"{}\"", "deadbeef".repeat(5)));
     edit(&dir.join("src/api/items.py"), "router = []", "router = [1]");
-    let args = ["pack", "api", "--role", "maintainer", "--task", "t"];
-    let plain = pack_json(dir, &args);
-    let diff = pack_json(dir, &[&args[..], &["--diff"]].concat());
-    assert!(diff["hunks"].is_null(), "{diff}");
-    assert_eq!(plain, diff);
+    assert_first_review(dir);
 }
 
 #[test]

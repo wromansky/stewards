@@ -471,28 +471,34 @@ failures; for `next`, also any job or failed flow check), 2 errors.
 ### Pack
 
 ```
-Pack { unit, role, task, budget, bytes, over_budget, purpose, interface[],
-       anchors[{path, name, line, source}], scenarios[], test_command,
-       primary_paths[], test_commands[], gaps[], flows[], decisions[],
-       units[{name, purpose, interface_ids}], doc, changed_files[],
-       hunks[{path, diff}], other_changed_files[], memory[], bug, dev_task,
-       repro_result, dropped[] }
+Pack { unit, role, task, budget, bytes, over_budget, purpose, paths[],
+       interface[], anchors[{path, name, line, source}], scenarios[],
+       test_command, primary_paths[], test_commands[], gaps[], flows[],
+       decisions[], units[{name, purpose, interface_ids, paths, files}], doc,
+       changed_files[], hunks[{path, diff}], other_changed_files[], memory[],
+       bug, dev_task, repro_result, dropped[] }
 ```
 
 Absent sections are `null`. `--diff` sets `changed_files` the way `next`
 does, restricts `anchors` to those whose path is in it, fills `hunks` with
 the unit's own files' diff (`git diff -U3 <stamped tree> <snapshot>` per
 file) and `other_changed_files` with what other stale units changed. With
-no usable stamp `--diff` changes nothing: the full pack is the first review.
+no usable stamp (never stamped, or the stamped tree is gone) the
+maintainer's `--diff` pack is the full pack, a first review, plus
+`changed_files` set to every file the unit owns in the snapshot (sorted, as
+`next` lists them) and no `hunks`: rendered as an `Owned files` list noting
+the unit has not been reviewed yet, capped at 200 paths then `(+N more)`;
+the JSON carries them all. `fit` drops this list after flows and before
+hunks are truncated.
 
 | role | sections |
 |---|---|
-| maintainer | purpose, interface, anchors (+source), gaps, flows, hunks + other_changed_files with `--diff` |
-| tester | interface (+source at interface anchors), scenarios, test_command, primary_paths, hunks with `--diff` |
-| documenter | purpose, interface, doc prose, flows |
-| validator | purpose, interface, primary_paths, the bug, test_command, commands.test, repro_result |
-| architect | every unit's purpose and interface ids, all flows, all decisions; no anchors, no source |
-| developer | purpose, interface, its task (change, lane, check), anchors (+source) in its lane, gaps, flows |
+| maintainer | purpose, paths, interface, anchors (+source), gaps, flows, hunks + other_changed_files with `--diff` (owned files with no usable stamp) |
+| tester | paths, interface (+source at interface anchors), scenarios, test_command, primary_paths, hunks with `--diff` |
+| documenter | purpose, paths, interface, doc prose, flows |
+| validator | purpose, paths, interface, primary_paths, the bug, test_command, commands.test, repro_result |
+| architect | every unit's purpose, interface ids, paths, and owned-file count, all flows, all decisions; no anchors, no source |
+| developer | purpose, paths, interface, its task (change, lane, check), anchors (+source) in its lane, gaps, flows |
 
 Source windows are 20 lines before and after the match (the definition span
 with tree-sitter). Budget is bytes of the `--human` rendering. Shrink order:

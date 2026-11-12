@@ -215,6 +215,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   language or role filters; roles never write it; matching entries are
   packed into every brief under a byte budget.
 - **Workspaces:** `stewards.toml` with `repos = [...]` in a parent folder.
+  It is the user's own file and is trusted: its paths may be absolute or
+  reach through links, so it belongs outside any repo it lists.
   Read commands (`route`, `status`, `debt`, `check`, `next`) span all repos
   with units named `<repo>/<unit>`; write commands act on one repo.
 

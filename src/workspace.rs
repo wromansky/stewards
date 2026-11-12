@@ -270,8 +270,13 @@ impl Repo {
             .create_new(true)
             .open(&temp)
             .with_context(|| format!("create {}", temp.display()))?;
-        let done = file
-            .write_all(contents)
+        // a replaced file keeps its mode; the rename would otherwise reset it to the default
+        let keep_mode = match std::fs::symlink_metadata(&path) {
+            Ok(old) => file.set_permissions(old.permissions()),
+            Err(_) => Ok(()),
+        };
+        let done = keep_mode
+            .and_then(|()| file.write_all(contents))
             .and_then(|()| std::fs::rename(&temp, &path));
         if done.is_err() {
             let _ = std::fs::remove_file(&temp);

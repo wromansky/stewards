@@ -222,3 +222,23 @@ fn load_repo_refuses_a_symlinked_stewards_dir() {
     assert_eq!(code_of(load_repo(repo.path())), "unsafe_path");
     assert_eq!(snapshot_dir(outside.path()), before);
 }
+
+#[test]
+fn write_over_a_file_keeps_its_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::TempDir::new().unwrap();
+    let repo = Repo {
+        name: "r".into(),
+        root: dir.path().to_path_buf(),
+        loaded: None,
+    };
+    repo.write("a/card.toml", b"one").unwrap();
+    let path = dir.path().join("a/card.toml");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    repo.write("a/card.toml", b"two").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"two");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}

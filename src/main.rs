@@ -132,12 +132,24 @@ enum Command {
     Eval {
         #[arg(long)]
         harness: Option<String>,
+        /// bare, block-only, or full; all three when omitted
         #[arg(long)]
         arm: Option<String>,
+        /// Repeatable; all six when omitted
         #[arg(long)]
-        task: Option<u32>,
+        task: Vec<u32>,
+        #[arg(long, default_value_t = 3)]
+        runs: u32,
         #[arg(long, value_name = "usd")]
         max_cost: Option<f64>,
+        /// The full arm with the developer role switched off
+        #[arg(long)]
+        no_developers: bool,
+        #[arg(long, value_name = "id")]
+        model: Option<String>,
+        /// An adopted fixture to copy for the full arm
+        #[arg(long, value_name = "dir")]
+        setup_dir: Option<PathBuf>,
     },
     /// Shell completions
     Completions { shell: String },
@@ -249,8 +261,24 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
             harness,
             arm,
             task,
+            runs,
             max_cost,
-        } => eval::run(g, harness.as_deref(), arm.as_deref(), task, max_cost),
+            no_developers,
+            model,
+            setup_dir,
+        } => eval::run(
+            g,
+            eval::Flags {
+                harness: harness.as_deref(),
+                arm: arm.as_deref(),
+                tasks: &task,
+                runs,
+                max_cost,
+                no_developers,
+                model: model.as_deref(),
+                setup_dir: setup_dir.as_deref(),
+            },
+        ),
         Command::Completions { shell } => completions::run(g, &shell, Cli::command()),
     }
 }

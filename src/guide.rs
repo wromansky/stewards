@@ -177,7 +177,7 @@ const fn e(code: &'static str, when: &'static str, fix: &'static str) -> ErrorRo
     ErrorRow { code, when, fix }
 }
 
-static ERRORS: [ErrorRow; 29] = [
+static ERRORS: [ErrorRow; 31] = [
     e(
         "not_a_git_repo",
         "no `.git` above cwd",
@@ -312,6 +312,16 @@ static ERRORS: [ErrorRow; 29] = [
         "no_tasks",
         "`brief --role developer` with no usable task list for the unit",
         "brief the maintainer again with the change as `--task`",
+    ),
+    e(
+        "harness_missing",
+        "`eval` and the harness binary (`pi`) is not on PATH",
+        "install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`)",
+    ),
+    e(
+        "eval_setup_incomplete",
+        "`eval`'s adopted fixture for the `full` arm leaves tracked files unowned or does not reach a clean `stewards next`",
+        "read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` an adopted copy where `stewards next` exits 0",
     ),
     e(
         "not_implemented",

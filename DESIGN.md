@@ -1302,7 +1302,7 @@ auto-delete of merged branches on.
 eval and its go or no-go before any stage 3 work. The task list in the
 build session is the plan; Build cycle says how waves run.
 
-**What dogfooding stage 2 showed (2026-11-12).** About ninety role jobs
+**What dogfooding stage 2 showed (2026-11-12).** About eighty role jobs
 ran on this repository.
 - The loop works from a one-sentence handoff: architect, first reviews,
   documenters, review rounds on real diffs, a finding turned into a

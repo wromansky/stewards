@@ -881,7 +881,7 @@ Built-in `pi-subagents` agents with the model set per call as
 | simplicity reviewer | `reviewer` + `ponytail-review` skill | `anthropic/claude-sonnet-5-5` | over-building, untraced lines, missing checks |
 | security reviewer | `reviewer` | `anthropic/claude-opus-5-5` | trust-boundary tasks only, before merge |
 | second-family reviewer | `reviewer` | `deepseek/deepseek-v4-pro` | each stage's whole diff, once, at the gate |
-| second-harness check | `claude-code` | Claude Code's own | from stage 2: the ritual run from another harness |
+| second-harness check | `claude-code` | `claude-sonnet-5-5`, pinned in Claude Code's own settings | from stage 2: the ritual run from another harness; not launched until the pin exists |
 | oracle | `oracle` | `anthropic/claude-opus-5-5` | rare: a reported conflict with this document |
 
 The parent session is the project's only `claude-fable-5-2` use. Every
@@ -908,7 +908,9 @@ writer, and the user is told.
    read-only: spec and simplicity.
 7. The parent classifies every finding (blocker, defer, stale, invalid, out
    of scope, speculative). Accepted fixes go to the original writer,
-   resumed; two fix rounds at most, then the user decides.
+   resumed; two fix rounds at most, then the user decides. A resumed
+   writer hands back no patch: the parent takes `git diff` from its kept
+   worktree, which is the change since the first capture.
 8. Commit, close the todos, next wave.
 
 A stage gate adds: the second-family review of the whole stage diff, the
@@ -932,6 +934,36 @@ second-harness check from stage 2 on, and the gate task's own checks.
   stale.
 - Security-flagged tasks: maintainer submit and fencing, the allowlist
   runner, both tracker tasks, hooks and PR comments, the release pipeline.
+
+### Rehearsal (2026-11-11, scratch repo, since deleted)
+
+Proven: every roster agent and model resolves; each child ran on the model
+it was given and none on the parent's; three worktree writers (Sonnet,
+Opus, DeepSeek) returned patches without committing and the patches
+applied in order with the suite green; a writer escalated a planted spec
+conflict and followed the answer; reviewers on Opus, DeepSeek, and Sonnet
+reached the same findings; the oracle ran on Opus with the parent's
+history; a resumed writer kept its context; a worktree based on a stacked
+branch worked, and `git rebase --onto` carried it across a squash merge.
+
+What the loop takes from it:
+
+- Every agent inherits the parent's model unless one is named. The pin rule
+  is what keeps Fable to the parent.
+- Passing a skill to a child only makes it available. The brief must tell
+  the child to read it and follow it.
+- Reviewers have no shell. Give them the file list and the spec text, not
+  "the diff".
+- A worktree whose `target/` is hard-linked from a built one rebuilds in
+  0.6 s against 18.6 s cold. Not yet wired into the worktree setup hook.
+- The BAML schemas task starts only on the spike's recorded go, not on the
+  spike merely finishing.
+- Claude Code here is 1.0.128: its model aliases point at retired models
+  and fail, the full name `claude-sonnet-5-5` works, and `pi-subagents`
+  cannot pass a model to an external CLI.
+- The DeepSeek writer passed the same gate as the others on a small
+  fixture-and-parser task. Three reviewers then found the same two loose
+  edges in it; none found any in the Sonnet or Opus work.
 
 ### Waves
 

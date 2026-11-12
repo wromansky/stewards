@@ -240,7 +240,7 @@ static ERRORS: [ErrorRow; 16] = [
     e(
         "baml_runtime_unavailable",
         "the native lib can't load",
-        "set `BAML_LIBRARY_PATH` or allow the download",
+        "set `BAML_LIBRARY_PATH` to the library, or set `STEWARDS_BAML_DOWNLOAD=1` to let stewards download it",
     ),
     e(
         "no_api_key",

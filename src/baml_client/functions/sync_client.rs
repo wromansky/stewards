@@ -139,6 +139,7 @@ baml_function_sync!(ArchitectSchema() -> (stream_types::ArchitectAnswer, types::
 
 baml_function_sync!(
     Developer(
+        unit: impl AsRef<str> + BamlEncode,
         brief: impl AsRef<str> + BamlEncode,
     ) -> (stream_types::DeveloperAnswer, types::DeveloperAnswer)
 );
@@ -147,6 +148,7 @@ baml_function_sync!(DeveloperSchema() -> (stream_types::DeveloperAnswer, types::
 
 baml_function_sync!(
     Documenter(
+        unit: impl AsRef<str> + BamlEncode,
         brief: impl AsRef<str> + BamlEncode,
     ) -> (stream_types::DocumenterAnswer, types::DocumenterAnswer)
 );
@@ -155,6 +157,7 @@ baml_function_sync!(DocumenterSchema() -> (stream_types::DocumenterAnswer, types
 
 baml_function_sync!(
     MaintainerExplain(
+        unit: impl AsRef<str> + BamlEncode,
         brief: impl AsRef<str> + BamlEncode,
     ) -> (
         stream_types::MaintainerExplainAnswer,
@@ -166,6 +169,7 @@ baml_function_sync!(MaintainerExplainSchema() -> (stream_types::MaintainerExplai
 
 baml_function_sync!(
     MaintainerReview(
+        unit: impl AsRef<str> + BamlEncode,
         brief: impl AsRef<str> + BamlEncode,
     ) -> (
         stream_types::MaintainerReviewAnswer,
@@ -177,6 +181,7 @@ baml_function_sync!(MaintainerReviewSchema() -> (stream_types::MaintainerReviewA
 
 baml_function_sync!(
     Tester(
+        unit: impl AsRef<str> + BamlEncode,
         brief: impl AsRef<str> + BamlEncode,
     ) -> (stream_types::TesterAnswer, types::TesterAnswer)
 );
@@ -185,6 +190,7 @@ baml_function_sync!(TesterSchema() -> (stream_types::TesterAnswer, types::Tester
 
 baml_function_sync!(
     Validator(
+        unit: impl AsRef<str> + BamlEncode,
         brief: impl AsRef<str> + BamlEncode,
     ) -> (stream_types::ValidatorAnswer, types::ValidatorAnswer)
 );

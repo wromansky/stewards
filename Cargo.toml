@@ -9,6 +9,7 @@ repository = "https://github.com/wromansky/stewards"
 [dependencies]
 anyhow = "1.0.104"
 baml = "=0.226.3"
+baml-sys = "=0.226.3"
 clap = { version = "4.6.7", features = ["derive"] }
 globset = "0.4.21"
 serde = { version = "1.0.229", features = ["derive"] }

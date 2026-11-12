@@ -3,7 +3,7 @@ use std::process::Command;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use stewards::llm::{FieldError, Mode, direct, output_format, parse, role_text};
+use stewards::llm::{FieldError, Mode, direct, output_format, parse, prepare_baml_env, role_text};
 use stewards::model::Role;
 use stewards::output::CliError;
 use tempfile::TempDir;
@@ -148,6 +148,22 @@ fn wrong_type_names_the_field() {
 }
 
 #[test]
+fn duplicate_field_is_rejected() {
+    let text = review().to_string();
+    let text = format!("{},\"verdict\":\"approve\"}}", &text[..text.len() - 1]);
+    let e = only_error(Role::Maintainer, Mode::Review, &text, "verdict");
+    assert!(e.problem.contains("duplicate field"), "{e:?}");
+}
+
+#[test]
+fn nullable_string_field_has_a_string_example() {
+    let mut v = developer();
+    v["blocked_on"] = json!(7);
+    let e = only_error(Role::Developer, Mode::Review, &v.to_string(), "blocked_on");
+    assert!(e.example.starts_with('"'), "{e:?}");
+}
+
+#[test]
 fn unknown_field_is_rejected() {
     let mut v = tester();
     v["results"][0]["duration"] = json!(3);
@@ -257,19 +273,38 @@ fn output_format_names_every_field() {
     }
 }
 
+fn collapse(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[test]
-fn role_text_matches_design() {
-    let phrases = [
-        "Review this diff against the request.",
-        "Put the\nanswer in `explanation`; it is all your caller will see.",
-        "You implement one task in unit `<unit>`.",
-        "You never edit source.",
-        "You document unit `<unit>` for a human reader.",
-        "You judge one bug report for unit `<unit>`.",
-        "You see every unit's purpose and interface, the flows, and the decisions.",
+fn role_text_is_the_design_text() {
+    let design = include_str!("../DESIGN.md");
+    let section = &design[design.find("## Role prompts").unwrap()..];
+    let section = &section[..section.find("\n## ").unwrap()];
+    let labels = [
+        "Maintainer, review:",
+        "Maintainer, explain:",
+        "Developer:",
+        "Tester:",
+        "Documenter:",
+        "Validator:",
+        "Architect:",
     ];
-    for ((role, mode), phrase) in SHAPES.into_iter().zip(phrases) {
-        assert!(role_text(role, mode).contains(phrase), "{role:?} {mode:?}");
+    for ((role, mode), label) in SHAPES.into_iter().zip(labels) {
+        let quoted: Vec<&str> = section
+            .lines()
+            .skip_while(|l| *l != label)
+            .skip(1)
+            .skip_while(|l| l.is_empty())
+            .map_while(|l| l.strip_prefix("> "))
+            .collect();
+        assert!(!quoted.is_empty(), "no quoted block after {label}");
+        assert_eq!(
+            collapse(role_text(role, mode)),
+            collapse(&quoted.join("\n")),
+            "{label}"
+        );
     }
 }
 
@@ -336,17 +371,23 @@ fn every_enum_value_in_the_schema_text_parses() {
     }
 }
 
-fn baml_src_hash(root: &Path) -> String {
-    let mut files: Vec<_> = std::fs::read_dir(root.join("baml_src"))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .collect();
+/// Must match `llm_sources_hash` in src/llm.rs: baml_src/*.baml and src/llm_schema/*.txt.
+fn llm_sources_hash(root: &Path) -> String {
+    let mut files = vec![];
+    for dir in ["baml_src", "src/llm_schema"] {
+        for entry in std::fs::read_dir(root.join(dir)).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "baml" || e == "txt") {
+                files.push(path.strip_prefix(root).unwrap().to_path_buf());
+            }
+        }
+    }
     files.sort();
     let mut hash = Sha256::new();
     for f in files {
-        hash.update(f.file_name().unwrap().as_encoded_bytes());
+        hash.update(f.as_os_str().as_encoded_bytes());
         hash.update([0]);
-        hash.update(std::fs::read(f).unwrap());
+        hash.update(std::fs::read(root.join(f)).unwrap());
     }
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -369,11 +410,11 @@ fn generated_client_and_rendered_text_match_baml_src() {
             "src/baml_client is stale for baml_src/{name}: {REFRESH}"
         );
     }
-    let recorded = std::fs::read_to_string(root.join("src/llm_schema/baml_src.sha256")).unwrap();
+    let recorded = std::fs::read_to_string(root.join("src/llm_schema/llm_sources.sha256")).unwrap();
     assert_eq!(
         recorded.trim(),
-        baml_src_hash(root),
-        "src/llm_schema is stale: {REFRESH}"
+        llm_sources_hash(root),
+        "baml_src or src/llm_schema changed without a refresh (never edit src/llm_schema by hand): {REFRESH}"
     );
     // The on_generate hook's post-processing, so a regenerate without it is caught.
     let enums = std::fs::read_to_string(root.join("src/baml_client/types/enums.rs")).unwrap();
@@ -388,7 +429,8 @@ fn generated_client_and_rendered_text_match_baml_src() {
 
 /// Runs the gated test `name` of this binary in a child with a scrubbed env: no provider key,
 /// no BAML library on the search path, downloads off, and any HTTP sent to a closed port.
-fn child(name: &str, envs: &[(&str, &str)]) -> std::process::Output {
+/// `envs` are set and `remove` unset after those defaults.
+fn child(name: &str, envs: &[(&str, &str)], remove: &[&str]) -> std::process::Output {
     for dir in ["/usr/lib", "/usr/local/lib"] {
         let found = std::fs::read_dir(dir).into_iter().flatten().any(|e| {
             e.unwrap()
@@ -420,6 +462,9 @@ fn child(name: &str, envs: &[(&str, &str)]) -> std::process::Output {
         .env("ALL_PROXY", "http://127.0.0.1:9")
         .env("BAML_LOG", "off")
         .envs(envs.iter().copied());
+    for var in remove {
+        cmd.env_remove(var);
+    }
     let out = cmd.output().unwrap();
     assert_eq!(
         std::fs::read_dir(cache.path()).unwrap().count(),
@@ -443,7 +488,7 @@ fn child_parse() {
 
 #[test]
 fn parse_needs_no_baml_library() {
-    let out = child("child_parse", &[]);
+    let out = child("child_parse", &[], &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success() && stdout.contains("CHILD parsed"),
@@ -454,7 +499,7 @@ fn parse_needs_no_baml_library() {
 #[test]
 fn child_direct() {
     if is_child() {
-        match direct(Role::Maintainer, Mode::Review, "brief") {
+        match direct(Role::Maintainer, Mode::Review, "api", "brief") {
             Ok(_) => println!("CHILD called"),
             Err(e) => println!(
                 "CHILD {}",
@@ -471,7 +516,7 @@ fn direct_error(config: &str, envs: &[(&str, &str)]) -> Value {
     let home_path = home.path().to_str().unwrap();
     let mut envs = envs.to_vec();
     envs.push(("STEWARDS_HOME", home_path));
-    let out = child("child_direct", &envs);
+    let out = child("child_direct", &envs, &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let line = stdout
         .lines()
@@ -521,14 +566,86 @@ fn direct_with_an_empty_key_is_no_api_key() {
 }
 
 #[test]
+fn direct_with_a_blank_key_is_no_api_key() {
+    let e = direct_error(
+        "[models.direct]\nmaintainer = \"google-ai/m\"\n",
+        &[("GOOGLE_API_KEY", " \t ")],
+    );
+    assert_eq!(e["code"], "no_api_key");
+    assert_eq!(e["fix"], "export GOOGLE_API_KEY");
+}
+
+#[test]
 fn direct_without_the_baml_library_is_baml_runtime_unavailable() {
     let e = direct_error(
         "[models.direct]\nmaintainer = \"anthropic/m\"\n",
         &[("ANTHROPIC_API_KEY", "sk-test-not-a-key")],
     );
     assert_eq!(e["code"], "baml_runtime_unavailable");
+    let message = e["message"].as_str().unwrap();
     assert!(
-        e["fix"].as_str().unwrap().contains("BAML_LIBRARY_PATH"),
+        message.contains("0.226.3") && message.contains("baml_cffi"),
         "{e}"
     );
+    assert!(!message.contains("Searched"), "{e}");
+    assert!(
+        e["fix"]
+            .as_str()
+            .unwrap()
+            .contains("STEWARDS_BAML_DOWNLOAD=1"),
+        "{e}"
+    );
+}
+
+#[test]
+fn child_prepared_env() {
+    if is_child() {
+        // SAFETY: this child runs one test with --test-threads=1; libtest's main thread only waits.
+        unsafe { prepare_baml_env() };
+        for var in [
+            "BAML_LOG",
+            "BAML_LIBRARY_DISABLE_DOWNLOAD",
+            "BOUNDARY_API_KEY",
+        ] {
+            println!("CHILD {var}={:?}", std::env::var(var).ok());
+        }
+        let e = direct(Role::Maintainer, Mode::Review, "api", "brief").unwrap_err();
+        println!("CHILD code={}", e.downcast_ref::<CliError>().unwrap().code);
+    }
+}
+
+// simplified: no CLI command reaches `direct` yet, so this checks prepare_baml_env (what main runs
+// first) in a child test process; move it to the binary once a command takes --direct.
+#[test]
+fn prepared_env_turns_off_baml_logging_and_download_before_direct() {
+    let home = TempDir::new().unwrap();
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[models.direct]\nmaintainer = \"anthropic/m\"\n",
+    )
+    .unwrap();
+    let out = child(
+        "child_prepared_env",
+        &[
+            ("STEWARDS_HOME", home.path().to_str().unwrap()),
+            ("ANTHROPIC_API_KEY", "sk-test-not-a-key"),
+            ("BOUNDARY_API_KEY", "x"),
+        ],
+        &[
+            "BAML_LOG",
+            "BAML_LIBRARY_DISABLE_DOWNLOAD",
+            "STEWARDS_BAML_DOWNLOAD",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for line in [
+        "CHILD BAML_LOG=Some(\"off\")",
+        "CHILD BAML_LIBRARY_DISABLE_DOWNLOAD=Some(\"true\")",
+        "CHILD BOUNDARY_API_KEY=None",
+        "CHILD code=baml_runtime_unavailable",
+    ] {
+        assert!(stdout.contains(line), "{line}: {stdout}");
+    }
+    assert!(!stderr.contains("Downloading"), "{stderr}");
 }

@@ -75,22 +75,16 @@ pub fn output_format(role: Role, mode: Mode) -> &'static str {
 /// Strictly validates `text` as the role's answer: exactly one JSON object, no unknown fields.
 pub fn parse(role: Role, mode: Mode, text: &str) -> Result<Answer, Vec<FieldError>> {
     let example = example(role, mode);
-    let value: Value = serde_json::from_str(text).map_err(|e| {
-        vec![FieldError {
-            field: "(document)".into(),
-            problem: format!("not a single JSON object: {e}"),
-            example: example.to_string(),
-        }]
-    })?;
     let answer = match (role, mode) {
-        (Role::Maintainer, Mode::Review) => typed(&value, &example).map(Answer::MaintainerReview),
-        (Role::Maintainer, Mode::Explain) => typed(&value, &example).map(Answer::MaintainerExplain),
-        (Role::Developer, _) => typed(&value, &example).map(Answer::Developer),
-        (Role::Tester, _) => typed(&value, &example).map(Answer::Tester),
-        (Role::Documenter, _) => typed(&value, &example).map(Answer::Documenter),
-        (Role::Validator, _) => typed(&value, &example).map(Answer::Validator),
-        (Role::Architect, _) => typed(&value, &example).map(Answer::Architect),
+        (Role::Maintainer, Mode::Review) => typed(text, &example).map(Answer::MaintainerReview),
+        (Role::Maintainer, Mode::Explain) => typed(text, &example).map(Answer::MaintainerExplain),
+        (Role::Developer, _) => typed(text, &example).map(Answer::Developer),
+        (Role::Tester, _) => typed(text, &example).map(Answer::Tester),
+        (Role::Documenter, _) => typed(text, &example).map(Answer::Documenter),
+        (Role::Validator, _) => typed(text, &example).map(Answer::Validator),
+        (Role::Architect, _) => typed(text, &example).map(Answer::Architect),
     }?;
+    let value: Value = serde_json::from_str(text).expect("typed() accepted it as one JSON value");
     // The generated types do not deny unknown fields, so compare the input with what serde kept.
     let known = serde_json::to_value(&answer).expect("answer serializes");
     let mut unknown = vec![];
@@ -115,11 +109,14 @@ enum Step {
     Index(usize),
 }
 
+/// Deserializes straight from the text, not through a `Value`, so a duplicate key is an error
+/// rather than a silent last-wins.
 fn typed<T: serde::de::DeserializeOwned>(
-    value: &Value,
+    text: &str,
     example: &Value,
 ) -> Result<T, Vec<FieldError>> {
-    serde_path_to_error::deserialize(value).map_err(|e| {
+    let mut de = serde_json::Deserializer::from_str(text);
+    let answer = serde_path_to_error::deserialize(&mut de).map_err(|e| {
         let mut path: Vec<Step> = e
             .path()
             .iter()
@@ -129,20 +126,30 @@ fn typed<T: serde::de::DeserializeOwned>(
                 _ => None,
             })
             .collect();
-        let problem = e.into_inner().to_string();
-        // serde reports a missing field at its parent; name the field itself.
-        if let Some(name) = problem
-            .strip_prefix("missing field `")
-            .and_then(|r| r.strip_suffix('`'))
-        {
+        let mut problem = e.into_inner().to_string();
+        // serde reports a missing or duplicate field at its parent; name the field itself.
+        let named = ["missing field `", "duplicate field `"]
+            .iter()
+            .find_map(|p| problem.strip_prefix(p)?.split('`').next());
+        if let Some(name) = named {
             path.push(Step::Key(name.into()));
+        } else if path.is_empty() {
+            problem = format!("not a single JSON object: {problem}");
         }
         vec![FieldError {
             field: display(&path),
             example: example_at(example, &path),
             problem,
         }]
-    })
+    })?;
+    de.end().map_err(|e| {
+        vec![FieldError {
+            field: "(document)".into(),
+            problem: format!("text after the JSON object: {e}"),
+            example: example.to_string(),
+        }]
+    })?;
+    Ok(answer)
 }
 
 fn unknown_fields(input: &Value, known: &Value, path: &mut Vec<Step>, out: &mut Vec<Vec<Step>>) {
@@ -205,7 +212,7 @@ fn example(role: Role, mode: Mode) -> Value {
     let card_patch = json!({
         "interface": [{"id": "create-item", "anchor": "src/api.rs::create_item", "contract": "POST /items returns 201"}],
         "anchors": [{"path": "src/api.rs", "name": "router"}],
-        "gaps": [{"kind": "gap", "title": "no paging", "anchor": "src/api.rs::list", "note": "list returns everything", "repro": null}]
+        "gaps": [{"kind": "gap", "title": "no paging", "anchor": "src/api.rs::list", "note": "list returns everything", "repro": "cargo test list_pages"}]
     });
     let mut v = match (role, mode) {
         (Role::Maintainer, Mode::Review) => json!({
@@ -222,10 +229,10 @@ fn example(role: Role, mode: Mode) -> Value {
         (Role::Developer, _) => json!({
             "check": {"command": "cargo test api", "pass": true, "output": "1 passed"},
             "summary": "added the priority field",
-            "blocked_on": null
+            "blocked_on": "need src/store.rs to add the column"
         }),
         (Role::Tester, _) => json!({
-            "scenario_patch": [{"id": "create-ok", "interface": "create-item", "given": "a valid body", "expect": "201", "level": "integration", "command": null}],
+            "scenario_patch": [{"id": "create-ok", "interface": "create-item", "given": "a valid body", "expect": "201", "level": "integration", "command": "cargo test create_ok"}],
             "results": [{"scenario": "create-ok", "pass": true, "output": "ok"}],
             "bugs": [{"title": "count off by one", "repro": "cargo test count", "evidence": "expected 2, got 3", "interface": "create-item"}],
             "tests_written": ["tests/api.rs"]
@@ -241,7 +248,7 @@ fn example(role: Role, mode: Mode) -> Value {
         }),
         (Role::Architect, _) => json!({
             "plan": {"title": "add priority end to end", "steps": [{"unit": "api", "change": "accept priority", "interfaces": ["create-item"], "check": "cargo test api"}]},
-            "flows": [{"name": "create-item", "units": ["api", "store"], "entry": "src/api.rs::create_item", "check": null}],
+            "flows": [{"name": "create-item", "units": ["api", "store"], "entry": "src/api.rs::create_item", "check": "cargo test create_item"}],
             "decisions": [{"title": "store has no HTTP knowledge", "why": "keeps storage testable"}],
             "unit_proposals": [{"name": "auth", "purpose": "login and tokens", "paths": ["src/auth/**"]}],
             "explanation": "Two steps, api then store."
@@ -252,8 +259,34 @@ fn example(role: Role, mode: Mode) -> Value {
     v
 }
 
+/// Makes the BAML library download opt-in (`STEWARDS_BAML_DOWNLOAD`), keeps BAML from logging
+/// prompts and replies to stderr unless `BAML_LOG` is set, and drops `BOUNDARY_*` variables so
+/// nothing is sent to Boundary's cloud.
+///
+/// # Safety
+/// Mutates the process environment: call it before any other thread exists.
+pub unsafe fn prepare_baml_env() {
+    let boundary: Vec<_> = std::env::vars_os()
+        .map(|(k, _)| k)
+        .filter(|k| k.to_string_lossy().starts_with("BOUNDARY_"))
+        .collect();
+    // SAFETY: the caller guarantees no other thread exists.
+    unsafe {
+        if std::env::var_os("STEWARDS_BAML_DOWNLOAD").is_none() {
+            std::env::set_var("BAML_LIBRARY_DISABLE_DOWNLOAD", "true");
+        }
+        if std::env::var_os("BAML_LOG").is_none() {
+            std::env::set_var("BAML_LOG", "off");
+        }
+        for k in boundary {
+            std::env::remove_var(k);
+        }
+    }
+}
+
 /// Calls the role's model through BAML (`--direct`) and returns the answer as JSON text.
-pub fn direct(role: Role, mode: Mode, brief_text: &str) -> Result<String> {
+/// `unit` fills the role text; the architect ignores it.
+pub fn direct(role: Role, mode: Mode, unit: &str, brief_text: &str) -> Result<String> {
     let config = crate::user::load_config()?;
     let role_name = match role {
         Role::Developer => "developer",
@@ -288,7 +321,7 @@ pub fn direct(role: Role, mode: Mode, brief_text: &str) -> Result<String> {
     };
     let key = std::env::var(key_var)
         .ok()
-        .filter(|k| !k.is_empty())
+        .filter(|k| !k.trim().is_empty())
         .ok_or_else(|| {
             CliError::new(
                 "no_api_key",
@@ -310,38 +343,56 @@ pub fn direct(role: Role, mode: Mode, brief_text: &str) -> Result<String> {
         (Role::Maintainer, Mode::Review) => Answer::MaintainerReview(
             B.MaintainerReview
                 .with_client_registry(&registry)
-                .call(brief_text)?,
+                .call(unit, brief_text)
+                .map_err(call_failed)?,
         ),
         (Role::Maintainer, Mode::Explain) => Answer::MaintainerExplain(
             B.MaintainerExplain
                 .with_client_registry(&registry)
-                .call(brief_text)?,
+                .call(unit, brief_text)
+                .map_err(call_failed)?,
         ),
         (Role::Developer, _) => Answer::Developer(
             B.Developer
                 .with_client_registry(&registry)
-                .call(brief_text)?,
+                .call(unit, brief_text)
+                .map_err(call_failed)?,
         ),
-        (Role::Tester, _) => {
-            Answer::Tester(B.Tester.with_client_registry(&registry).call(brief_text)?)
-        }
+        (Role::Tester, _) => Answer::Tester(
+            B.Tester
+                .with_client_registry(&registry)
+                .call(unit, brief_text)
+                .map_err(call_failed)?,
+        ),
         (Role::Documenter, _) => Answer::Documenter(
             B.Documenter
                 .with_client_registry(&registry)
-                .call(brief_text)?,
+                .call(unit, brief_text)
+                .map_err(call_failed)?,
         ),
         (Role::Validator, _) => Answer::Validator(
             B.Validator
                 .with_client_registry(&registry)
-                .call(brief_text)?,
+                .call(unit, brief_text)
+                .map_err(call_failed)?,
         ),
         (Role::Architect, _) => Answer::Architect(
             B.Architect
                 .with_client_registry(&registry)
-                .call(brief_text)?,
+                .call(brief_text)
+                .map_err(call_failed)?,
         ),
     };
     Ok(serde_json::to_string(&answer)?)
+}
+
+/// Fixed text: BAML's error can carry the brief, the reply, or the provider's response.
+fn call_failed(_: baml::BamlError) -> CliError {
+    CliError::new(
+        "direct_call_failed",
+        "the model call through BAML failed",
+        "rerun with BAML_LOG=info to see the provider error",
+    )
 }
 
 /// Loads the native library; the generated client panics when it is missing, so catch that.
@@ -350,16 +401,19 @@ fn load_runtime() -> Result<(), CliError> {
     std::panic::set_hook(Box::new(|_| {}));
     let loaded = std::panic::catch_unwind(baml_client::init);
     std::panic::set_hook(hook);
-    loaded.map_err(|panic| {
-        let why = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied())
-            .unwrap_or("unknown error");
+    loaded.map_err(|_| {
+        use std::env::consts::{ARCH, DLL_EXTENSION, DLL_PREFIX, OS};
+        let target = match OS {
+            "macos" => "apple-darwin",
+            "windows" => "pc-windows-msvc",
+            _ => "unknown-linux-gnu",
+        };
         CliError::new(
             "baml_runtime_unavailable",
-            format!("the BAML native library could not load: {why}"),
-            "set BAML_LIBRARY_PATH to libbaml_cffi 0.226.3, or unset BAML_LIBRARY_DISABLE_DOWNLOAD to allow the download",
+            format!(
+                "the BAML native library 0.226.3 ({DLL_PREFIX}baml_cffi-{ARCH}-{target}.{DLL_EXTENSION}) was not found or could not load"
+            ),
+            "set BAML_LIBRARY_PATH to the library, or set STEWARDS_BAML_DOWNLOAD=1 to let stewards download it",
         )
     })
 }
@@ -380,41 +434,46 @@ mod tests {
             .collect()
     }
 
-    /// Rewrites src/llm_schema/ from baml_src through the compiled client; needs the native
-    /// library (BAML_LIBRARY_PATH) and no key. Run after `baml-cli generate`.
+    /// Rewrites src/llm_schema/ from baml_src through the compiled client; needs no key, but
+    /// needs BAML_LIBRARY_PATH set to the native library and fails at once without it, so it
+    /// never triggers the download. Run after `baml-cli generate`.
     #[test]
     #[ignore]
     fn refresh_llm_schema() {
+        assert!(
+            std::env::var_os("BAML_LIBRARY_PATH").is_some(),
+            "set BAML_LIBRARY_PATH to libbaml_cffi 0.226.3 to refresh src/llm_schema"
+        );
         let shapes = [
             (
                 "maintainer-review",
                 B.MaintainerReviewSchema.build_request(),
-                B.MaintainerReview.build_request("BRIEF"),
+                B.MaintainerReview.build_request("<unit>", "BRIEF"),
             ),
             (
                 "maintainer-explain",
                 B.MaintainerExplainSchema.build_request(),
-                B.MaintainerExplain.build_request("BRIEF"),
+                B.MaintainerExplain.build_request("<unit>", "BRIEF"),
             ),
             (
                 "developer",
                 B.DeveloperSchema.build_request(),
-                B.Developer.build_request("BRIEF"),
+                B.Developer.build_request("<unit>", "BRIEF"),
             ),
             (
                 "tester",
                 B.TesterSchema.build_request(),
-                B.Tester.build_request("BRIEF"),
+                B.Tester.build_request("<unit>", "BRIEF"),
             ),
             (
                 "documenter",
                 B.DocumenterSchema.build_request(),
-                B.Documenter.build_request("BRIEF"),
+                B.Documenter.build_request("<unit>", "BRIEF"),
             ),
             (
                 "validator",
                 B.ValidatorSchema.build_request(),
-                B.Validator.build_request("BRIEF"),
+                B.Validator.build_request("<unit>", "BRIEF"),
             ),
             (
                 "architect",
@@ -443,10 +502,28 @@ mod tests {
             .unwrap();
         }
         std::fs::write(
-            dir.join("baml_src.sha256"),
-            format!("{}\n", baml_src_hash()),
+            dir.join("llm_sources.sha256"),
+            format!("{}\n", llm_sources_hash()),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn no_example_is_null() {
+        for (role, mode) in [
+            (Role::Maintainer, Mode::Review),
+            (Role::Maintainer, Mode::Explain),
+            (Role::Developer, Mode::Review),
+            (Role::Tester, Mode::Review),
+            (Role::Documenter, Mode::Review),
+            (Role::Validator, Mode::Review),
+            (Role::Architect, Mode::Review),
+        ] {
+            assert!(
+                !example(role, mode).to_string().contains("null"),
+                "{role:?} {mode:?}"
+            );
+        }
     }
 
     #[test]
@@ -466,18 +543,24 @@ mod tests {
         }
     }
 
-    fn baml_src_hash() -> String {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("baml_src");
-        let mut files: Vec<_> = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .collect();
+    /// Must match `llm_sources_hash` in tests/llm.rs.
+    fn llm_sources_hash() -> String {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = vec![];
+        for dir in ["baml_src", "src/llm_schema"] {
+            for entry in std::fs::read_dir(root.join(dir)).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|e| e == "baml" || e == "txt") {
+                    files.push(path.strip_prefix(root).unwrap().to_path_buf());
+                }
+            }
+        }
         files.sort();
         let mut hash = Sha256::new();
         for f in files {
-            hash.update(f.file_name().unwrap().as_encoded_bytes());
+            hash.update(f.as_os_str().as_encoded_bytes());
             hash.update([0]);
-            hash.update(std::fs::read(f).unwrap());
+            hash.update(std::fs::read(root.join(f)).unwrap());
         }
         hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
     }

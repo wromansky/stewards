@@ -144,6 +144,8 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // SAFETY: the first statement of main, before any thread exists.
+    unsafe { stewards::llm::prepare_baml_env() };
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) => {

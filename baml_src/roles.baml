@@ -1,10 +1,11 @@
-// Role texts are verbatim from DESIGN.md 'Role prompts'; `<unit>` stays literal for brief.rs to fill.
+// Role texts are verbatim from DESIGN.md 'Role prompts' with the unit as a parameter; the rendered
+// role text passes the literal `<unit>` so brief.rs can fill it.
 
-function MaintainerReview(brief: string) -> MaintainerReviewAnswer {
+function MaintainerReview(unit: string, brief: string) -> MaintainerReviewAnswer {
   client Default
   prompt #"
     {{ _.role("system") }}
-    You maintain unit `<unit>`. Review this diff against the request. Approve
+    You maintain unit `{{ unit }}`. Review this diff against the request. Approve
     only a diff where every changed line traces to the request and nothing
     fails the ladder; an approval has no findings. For each problem give the file, line, the first rung it
     fails (not needed, already in repo, stdlib, platform, installed
@@ -31,11 +32,11 @@ function MaintainerReviewSchema() -> MaintainerReviewAnswer {
   "#
 }
 
-function MaintainerExplain(brief: string) -> MaintainerExplainAnswer {
+function MaintainerExplain(unit: string, brief: string) -> MaintainerExplainAnswer {
   client Default
   prompt #"
     {{ _.role("system") }}
-    You maintain unit `<unit>`. Answer the question from the card and the
+    You maintain unit `{{ unit }}`. Answer the question from the card and the
     anchors. Cite anchors as `path::name`; never paste more than the lines
     that prove the point. Say what you could not verify from source. Put the
     answer in `explanation`; it is all your caller will see. When the task is
@@ -58,11 +59,11 @@ function MaintainerExplainSchema() -> MaintainerExplainAnswer {
   "#
 }
 
-function Developer(brief: string) -> DeveloperAnswer {
+function Developer(unit: string, brief: string) -> DeveloperAnswer {
   client Default
   prompt #"
     {{ _.role("system") }}
-    You implement one task in unit `<unit>`. The task, its lane, and its
+    You implement one task in unit `{{ unit }}`. The task, its lane, and its
     check are below. Write only files in your lane; if the task cannot be
     done inside it, stop and say which file you need and why. Follow the
     rules above: the smallest change that does the task, in the style of the
@@ -86,11 +87,11 @@ function DeveloperSchema() -> DeveloperAnswer {
   "#
 }
 
-function Tester(brief: string) -> TesterAnswer {
+function Tester(unit: string, brief: string) -> TesterAnswer {
   client Default
   prompt #"
     {{ _.role("system") }}
-    You test unit `<unit>`. Its contract is the interface list; its scenarios
+    You test unit `{{ unit }}`. Its contract is the interface list; its scenarios
     prove the contract. For this change: run the scenarios the diff affects,
     then the unit's test command once; write the missing scenario for any
     interface entry the diff touched; record results. A failing scenario is a
@@ -113,11 +114,11 @@ function TesterSchema() -> TesterAnswer {
   "#
 }
 
-function Documenter(brief: string) -> DocumenterAnswer {
+function Documenter(unit: string, brief: string) -> DocumenterAnswer {
   client Default
   prompt #"
     {{ _.role("system") }}
-    You document unit `<unit>` for a human reader. Write three sections:
+    You document unit `{{ unit }}` for a human reader. Write three sections:
     overview (what it is for, in the reader's terms), how it works (the path
     through the anchors), how to change it (where to start, what to keep
     true). Plain prose, no headings inside sections, no code longer than three
@@ -138,11 +139,11 @@ function DocumenterSchema() -> DocumenterAnswer {
   "#
 }
 
-function Validator(brief: string) -> ValidatorAnswer {
+function Validator(unit: string, brief: string) -> ValidatorAnswer {
   client Default
   prompt #"
     {{ _.role("system") }}
-    You judge one bug report for unit `<unit>`. The repro result is given; you
+    You judge one bug report for unit `{{ unit }}`. The repro result is given; you
     do not run anything. Decide severity: critical = a primary path cannot
     complete or data is lost; medium = wrong or missing output with no visible
     error; low = visible, recoverable, non-blocking. With no repro result,

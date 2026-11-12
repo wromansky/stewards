@@ -1,0 +1,99 @@
+unit = "git"
+
+[reviewed]
+commit = "3c6db68cfc894ad163e09f30bc03928e40c91d3e"
+fingerprint = "sha256:e6251acff7aed381756324a0d7211af7cdf444c97726a0bce1c4cb95619cc231"
+tree = "7383ef47d38cf1da373d9eb50f106e2674c121ea"
+documenter = "db3fe3918864c4acbf8bb43666101b9d66e4a89e"
+
+[[interface]]
+id = "ls_files"
+anchor = "src/git.rs::ls_files"
+contract = "Tracked paths from the index (ls-files -z), raw UTF-8; errors when git fails."
+
+[[interface]]
+id = "snapshot"
+anchor = "src/git.rs::snapshot"
+contract = "Tree sha of the working tree (tracked, modified, untracked-not-ignored) built in a private temp index copy that keeps the real index's mtime; real index, HEAD and refs untouched; refuses a pre-existing temp path; works with no commits and in linked worktrees."
+
+[[interface]]
+id = "ls_tree"
+anchor = "src/git.rs::ls_tree"
+contract = "(path, blob sha) for every file in a tree, recursive; a leading-dash rev is an error."
+
+[[interface]]
+id = "has_object"
+anchor = "src/git.rs::has_object"
+contract = "True only when the name resolves to a tree (or a commit's tree); blob, unknown, or leading-dash name is false."
+
+[[interface]]
+id = "is_tree"
+anchor = "src/git.rs::is_tree"
+contract = "True only when the name is a tree object itself; commit, blob, or unknown is false."
+
+[[interface]]
+id = "diff_names"
+anchor = "src/git.rs::diff_names"
+contract = "Paths changed between two revs, no rename detection; leading-dash revs are errors."
+
+[[interface]]
+id = "diff_file"
+anchor = "src/git.rs::diff_file"
+contract = "Unified diff (-U3, no color, no ext diff, a/ b/ prefixes) of one path between two revs; the path is matched literally, never as a glob."
+
+[[interface]]
+id = "diff_added_lines"
+anchor = "src/git.rs::diff_added_lines"
+contract = "Added lines as (path, new-file line number, text); paths with spaces handled; C-quoted paths skipped."
+
+[[interface]]
+id = "head_commit"
+anchor = "src/git.rs::head_commit"
+contract = "HEAD commit sha; None before the first commit; error for any other git failure."
+
+[[interface]]
+id = "task_text"
+anchor = "src/git.rs::task_text"
+contract = "Current branch (HEAD when detached), then the last commit subject on the next line, omitted before the first commit; error outside a repo."
+
+[[interface]]
+id = "recent_commit_files"
+anchor = "src/git.rs::recent_commit_files"
+contract = "Files touched by each of the last n commits, newest first, merges list none; empty with no commits."
+
+[[anchor]]
+path = "src/git.rs"
+name = "run_raw"
+
+[[anchor]]
+path = "src/git.rs"
+name = "snapshot"
+
+[[anchor]]
+path = "src/git.rs"
+name = "diff_added_lines"
+
+[[anchor]]
+path = "src/git.rs"
+name = "head_commit"
+
+[[anchor]]
+path = "src/git.rs"
+name = "recent_commit_files"
+
+[[gap]]
+kind = "gap"
+title = "recent_commit_files hides every rev-parse failure as 'no commits'"
+anchor = "src/git.rs::recent_commit_files"
+note = "It returns empty on any rev-parse error (e.g. outside a repo), unlike head_commit which errors; reusing head_commit would separate 'no commits' from real failures."
+
+[[gap]]
+kind = "gap"
+title = "recent_commit_files returns C-quoted names for paths with special characters"
+anchor = "src/git.rs::recent_commit_files"
+note = "log --name-only is not -z, so names containing newline, tab, quote or backslash come back C-quoted and will not match ls_files paths."
+
+[doc]
+overview = "The git unit is the one place in the program that talks to git. It shells out to the git CLI and hands back plain Rust values: the list of tracked files, a tree sha that stands for the current working tree, the (path, blob sha) pairs inside a tree, yes/no answers about whether a name is a tree, the paths and text of a diff between two trees, the HEAD commit, the task text built from the branch and last commit subject, and the files touched by recent commits. Callers use it to ask what the repository looks like now and what changed between two points, without knowing any git command lines. It does not touch the real index, HEAD or refs."
+how_it_works = "Everything goes through two private helpers in src/git.rs. run_raw starts `git` in the repo root with core.quotepath turned off, so paths come back as raw UTF-8, and it can point git at another index file through GIT_INDEX_FILE. run wraps it and turns a non-zero exit into an error carrying the command and git's stderr. Listing functions such as ls_files use NUL-separated output and split it on NUL. snapshot is the involved one: it finds the real index with rev-parse --git-path (so linked worktrees work), creates a uniquely named temp file with create_new so it never reuses an existing path, copies the real index into it and gives the copy the real index's mtime so git does not misjudge a same-second edit as unchanged, or starts from read-tree --empty when there is no index yet. It then runs add -A and write-tree against that private index and returns the tree sha; a drop guard deletes the temp file. ls_tree, has_object and is_tree inspect a tree: a leading-dash name is an error in ls_tree and false in the two checks, has_object accepts a tree or a commit's tree, and is_tree accepts only a tree itself. diff_names, diff_file and diff_added_lines compare two revs; diff_file matches its path literally, and diff_added_lines reports added lines with their new-file line number and skips C-quoted paths. head_commit returns None before the first commit, task_text gives the branch (HEAD when detached) and the last commit subject on the next line, and recent_commit_files lists files per commit, newest first, with merges listing none. The tests live in tests/git.rs."
+how_to_change = "Start in src/git.rs and add or change a function there, going through run or run_raw rather than spawning Command directly, so the quotepath setting and error format stay the same. Keep these true: snapshot must never modify the real index, HEAD or refs, must keep the real index's mtime on its copy, must refuse a pre-existing temp path, and must work with no commits and in linked worktrees; revs and names that start with a dash must stay errors or false rather than being read as git options; diff_file must treat its path literally; head_commit must return None only for the no-commits case and an error for any other failure. The contract table is the list of behaviours to preserve, so when you change one, update the matching test in tests/git.rs, which covers this unit, and this document."

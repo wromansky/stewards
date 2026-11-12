@@ -1,0 +1,44 @@
+[[unit]]
+name = "cli"
+purpose = "The stewards binary: clap command parsing and dispatch, global flags (--human, --repo, -C, --direct), the JSON envelope and markdown output, CLI errors, and the shared test helpers."
+paths = ["src/main.rs", "src/lib.rs", "src/output.rs", "src/completions.rs", "src/eval.rs", "src/render.rs", "src/review.rs", "src/validate.rs", "tests/skeleton.rs", "tests/common/**"]
+
+[[unit]]
+name = "model"
+purpose = "The data model and its loading: repo.toml and units.toml types (units, flows, decisions, roles, anchors), workspace and repo discovery, and the read-only user config and memory under ~/.stewards."
+paths = ["src/model.rs", "src/workspace.rs", "src/user.rs", "tests/workspace.rs", "tests/user.rs", "tests/safety.rs", "tests/fixtures/**"]
+
+[[unit]]
+name = "git"
+purpose = "Thin wrapper over the git CLI: tracked files, snapshot trees, ls-tree, object checks, and diffs between trees."
+paths = ["src/git.rs", "tests/git.rs"]
+
+[[unit]]
+name = "analysis"
+purpose = "Read-only facts about the repo's files: path-to-unit routing, anchor resolution and source windows, unit fingerprints and review stamps (check, stamp), and simplified: debt scanning."
+paths = ["src/anchors.rs", "src/route.rs", "src/check.rs", "src/debt.rs", "tests/anchors.rs", "tests/route.rs", "tests/route_workspace.rs", "tests/check.rs", "tests/debt.rs"]
+
+[[unit]]
+name = "pack"
+purpose = "Builds a role's context pack within the byte budget: unit summaries, anchors with source windows, owned files, and diff hunks; the pack command."
+paths = ["src/pack.rs", "tests/pack.rs"]
+
+[[unit]]
+name = "next"
+purpose = "Workspace state reports: status (units, freshness, coverage, gaps, debt) and next (which review jobs are due, optionally writing their briefs)."
+paths = ["src/next.rs", "src/status.rs", "tests/next.rs", "tests/status.rs"]
+
+[[unit]]
+name = "llm"
+purpose = "Role prompts and answer schemas: baml_src is their one source, rendered into src/llm_schema; answer parsing through the generated types, and direct model calls."
+paths = ["src/llm.rs", "baml_src/**", "src/baml_client/**", "src/llm_schema/**", "tests/llm.rs"]
+
+[[unit]]
+name = "jobs"
+purpose = "The brief/submit job cycle: renders and writes a role's brief with its header, validates the typed answer against it, writes the updates and retires the brief, and appends telemetry."
+paths = ["src/brief.rs", "src/submit.rs", "src/telemetry.rs", "tests/brief.rs", "tests/submit.rs", "tests/submit_roles.rs", "tests/developer.rs"]
+
+[[unit]]
+name = "setup"
+purpose = "Onboarding and generated files: init proposes units and writes .stewards, the guide and AGENTS.md block, the per-harness facts table, and docs rendering from unit cards."
+paths = ["src/init.rs", "src/guide.rs", "src/harness.rs", "src/docs.rs", "tests/init.rs", "tests/init_draft.rs", "tests/guide.rs", "tests/docs.rs"]

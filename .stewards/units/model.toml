@@ -1,0 +1,141 @@
+unit = "model"
+
+[reviewed]
+commit = "3c6db68cfc894ad163e09f30bc03928e40c91d3e"
+fingerprint = "sha256:6473eaeda82d52fa0ce0bb0fad510630ab28a2b49d1f55b69f375dccdbc8e378"
+tree = "7383ef47d38cf1da373d9eb50f106e2674c121ea"
+documenter = "6ae3d8d452002386d6763d0290ac61de602beb23"
+
+[[interface]]
+id = "load-repo"
+anchor = "src/model.rs::load_repo"
+contract = "Reads .stewards/ under git root into Loaded. Errors: not_a_git_repo, no_stewards_dir, schema_too_new (checked before the full parse), invalid_toml with file:line (also duplicate unit name), unsafe_path for a symlinked file or dir. A missing units.toml, card, or test card is fine."
+
+[[interface]]
+id = "unit-name"
+anchor = "src/model.rs::unit_name"
+contract = "A unit name in units.toml must match [a-z0-9][a-z0-9_-]*, else deserialization fails."
+
+[[interface]]
+id = "anchor-parse"
+anchor = "src/model.rs::parse"
+contract = "Anchor::parse splits `path::name` at the first `::`; both sides non-empty, else an error."
+
+[[interface]]
+id = "loaded-unit"
+anchor = "src/model.rs::unit"
+contract = "Loaded::unit(name) returns the unit or unknown_unit listing every unit name."
+
+[[interface]]
+id = "role-from-str"
+anchor = "src/model.rs::from_str"
+contract = "Parses the six lowercase role names; anything else is unknown_role."
+
+[[interface]]
+id = "discover"
+anchor = "src/workspace.rs::discover"
+contract = "A stewards.toml at or above cwd wins over the nearer .git and lists repos (workspace_repo_missing for a non-dir entry); else the enclosing git root, or not_a_git_repo. A repo without .stewards/repo.toml loads as None. `only` keeps one repo by name, else unknown_repo listing names."
+
+[[interface]]
+id = "repo-containing"
+anchor = "src/workspace.rs::repo_containing"
+contract = "The repo with the deepest root containing canonical `path`, so a nested repo owns its files; None when none contains it."
+
+[[interface]]
+id = "current-repo"
+anchor = "src/workspace.rs::current_repo"
+contract = "The repo containing cwd, else the lone repo, else not_in_repo."
+
+[[interface]]
+id = "loaded-repos"
+anchor = "src/workspace.rs::loaded_repos"
+contract = "Each repo with its Loaded; uninitialized siblings in an unselected workspace are skipped, otherwise an uninitialized repo is no_stewards_dir."
+
+[[interface]]
+id = "display-name"
+anchor = "src/workspace.rs::display_name"
+contract = "`<repo>/<unit>` in a workspace, `<unit>` otherwise."
+
+[[interface]]
+id = "safe-path"
+anchor = "src/workspace.rs::safe_path"
+contract = "root/rel only when every `/`-separated part is a plain name and no existing component below root is a symlink, else unsafe_path. With create_dirs, missing parents are made one at a time and checked. The single path check for repo reads and writes."
+
+[[interface]]
+id = "repo-write"
+anchor = "src/workspace.rs::write"
+contract = "Replaces rel via a unique temp file renamed over it (a planted link is replaced, never followed), keeping the old file's permissions; the temp file is removed on failure."
+
+[[interface]]
+id = "repo-append"
+anchor = "src/workspace.rs::append"
+contract = "Appends to the regular file rel, creating it when missing; refuses a non-regular file or a symlinked path."
+
+[[interface]]
+id = "repo-remove"
+anchor = "src/workspace.rs::remove"
+contract = "Removes the regular file rel; missing is Ok; a non-regular file or symlinked path is refused."
+
+[[interface]]
+id = "user-config"
+anchor = "src/user.rs::load_config_from"
+contract = "Reads config.toml from the user dir ($STEWARDS_HOME, else ~/.stewards); missing file is an empty Config; Config::model(harness, role) is the pinned alias or None. Never writes."
+
+[[interface]]
+id = "user-memory"
+anchor = "src/user.rs::load_memory_from"
+contract = "Reads memory.toml [[entry]] items from the user dir; missing file is empty; malformed is invalid_toml with file:line. Never writes."
+
+[[interface]]
+id = "memory-for"
+anchor = "src/user.rs::memory_for"
+contract = "Entries whose roles (absent = all) include role and whose languages (absent = all) share one with `languages`, in file order, stopping before the first entry that pushes total text bytes past budget_bytes."
+
+[[anchor]]
+path = "src/model.rs"
+name = "SCHEMA"
+
+[[anchor]]
+path = "src/model.rs"
+name = "RepoConfig"
+
+[[anchor]]
+path = "src/model.rs"
+name = "UnitCard"
+
+[[anchor]]
+path = "src/model.rs"
+name = "TestCard"
+
+[[anchor]]
+path = "src/model.rs"
+name = "parse_toml"
+
+[[anchor]]
+path = "src/workspace.rs"
+name = "workspace_roots"
+
+[[anchor]]
+path = "src/user.rs"
+name = "user_dir"
+
+[[anchor]]
+path = "src/user.rs"
+name = "read_toml"
+
+[[gap]]
+kind = "gap"
+title = "stewards.toml parse error has no line number"
+anchor = "src/workspace.rs::workspace_roots"
+note = "invalid_toml from workspace_roots names the file but not the line, unlike parse_toml and read_toml which give file:line."
+
+[[gap]]
+kind = "future"
+title = "toml-to-invalid_toml mapping is duplicated"
+anchor = "src/user.rs::read_toml"
+note = "read_toml repeats parse_toml's read/NotFound/line-number error mapping; workspace_roots has a third, partial copy. One shared helper would keep the three in step."
+
+[doc]
+overview = "The model unit is how stewards learns what a repo says about itself and where it lives. It defines the types behind repo.toml and units.toml (units, flows, decisions, roles, anchors), finds the repo or workspace you are standing in, and reads the optional per-user config and memory under ~/.stewards. It is the one place that touches the .stewards/ directory on disk, so every other unit gets its repo data, and its safe file reads and writes, from here. The user config and memory are read-only: this unit never writes them."
+how_it_works = "Loading starts in src/workspace.rs. discover looks for a stewards.toml at or above the cwd; one found wins over a nearer .git and lists the workspace's repos. Otherwise it takes the enclosing git root, or fails with not_a_git_repo. A repo without .stewards/repo.toml loads as None, and `only` narrows a workspace to one repo or fails with unknown_repo. current_repo picks the repo containing the cwd, else the lone repo, else not_in_repo. repo_containing gives the repo with the deepest root containing a path. loaded_repos pairs each repo with its Loaded, skipping uninitialized siblings in an unselected workspace (otherwise no_stewards_dir). Parsing is load_repo in src/model.rs: it reads .stewards/ under the git root, checks the schema version first (schema_too_new), then parses fully, reporting invalid_toml with file:line (also for a duplicate unit name). A missing units.toml, card or test card is fine. Anchor::parse splits `path::name` at the first `::`, both sides non-empty. Roles parse from six lowercase names, else unknown_role; Loaded::unit gives the unit or unknown_unit. All repo file access goes through safe_path: root/rel only when each part is a plain name and no existing component below root is a symlink, else unsafe_path. write renames a unique temp file over the target, so a planted link is replaced, never followed; it keeps permissions. append and remove act only on regular files and refuse symlinked paths; removing a missing file is Ok. In src/user.rs, load_config_from reads config.toml from $STEWARDS_HOME or ~/.stewards (missing is empty); Config::model(harness, role) returns the pinned alias or None. load_memory_from reads memory.toml [[entry]] items (missing is empty, malformed is invalid_toml with file:line). memory_for keeps entries matching the role and languages (absent means all), in file order, stopping before the first entry that pushes text past budget_bytes."
+how_to_change = "Start from the anchor for the behavior you want: load_repo or the type definitions for repo.toml and units.toml changes, discover and its neighbours for workspace and repo selection, and load_config_from, load_memory_from or memory_for for user data. Keep every repo read and write going through safe_path, which is the single path check; do not open files under .stewards/ any other way, and keep write replacing rather than following a symlink. Keep the schema_too_new check ahead of the full parse so a newer file gives that error instead of a confusing parse failure. Keep errors carrying file:line for invalid TOML, keep a missing units.toml, card or test card non-fatal, and keep the user config and memory read-only. Keep memory_for's truncation at the first entry over budget, not skipping to later smaller ones, and keep file order. The tests are tests/workspace.rs, tests/user.rs and tests/safety.rs, with inputs in tests/fixtures; add a case there for any new error or path rule, especially symlink cases in tests/safety.rs."

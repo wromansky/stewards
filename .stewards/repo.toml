@@ -1,0 +1,7 @@
+schema = 1
+name = "stewards"
+test_roots = ["tests"]
+
+[commands]
+test = ["cargo test"]
+lint = ["cargo clippy", "cargo fmt"]

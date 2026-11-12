@@ -6,7 +6,7 @@ use std::path::Path;
 
 use common::{edit, fixture, git, pairs, run, stamp_units};
 use serde_json::Value;
-use stewards::check::{check, fingerprint};
+use stewards::check::{check, fingerprint, one_line};
 use stewards::model::{UnitDef, load_repo};
 use stewards::route::Router;
 use stewards::workspace::discover;
@@ -377,4 +377,9 @@ how_to_change = "tab\there\nback\\slash \"\"\" triple\n"
     );
     let (b, a) = (before.reviewed.unwrap(), after.reviewed.unwrap());
     assert_eq!((a.tester, a.documenter), (b.tester, b.documenter));
+}
+
+#[test]
+fn one_line_replaces_unicode_line_and_paragraph_separators() {
+    assert_eq!(one_line("a\u{2028}b\u{2029}c\nd"), "a b c d");
 }

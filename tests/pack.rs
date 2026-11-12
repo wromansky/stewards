@@ -6,9 +6,15 @@ use std::path::Path;
 
 use common::{append, edit, fixture, run, stewards};
 use serde_json::Value;
+use stewards::git::snapshot;
 use stewards::model::{Doc, Role};
 use stewards::pack::pack;
-use stewards::workspace::discover;
+use stewards::workspace::{Workspace, discover};
+
+/// A snapshot of the lone repo's working tree, taken now.
+fn snap(ws: &Workspace) -> String {
+    snapshot(&ws.repos[0].root).unwrap()
+}
 
 fn pack_json(dir: &Path, args: &[&str]) -> Value {
     let (code, v) = run(dir, args);
@@ -112,6 +118,70 @@ fn validator_pack_has_purpose_interface_paths_and_test_commands() {
         ],
     );
     assert_eq!(v["test_commands"], serde_json::json!(["pytest"]));
+}
+
+#[test]
+fn validator_pack_carries_the_first_unjudged_bug_and_renders_it() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    append(
+        &dir.join(".stewards/units/api.toml"),
+        "[[gap]]\nkind = \"bug\"\ntitle = \"judged\"\nseverity = \"low\"\n\
+         [[gap]]\nkind = \"bug\"\ntitle = \"create drops tags\"\nrepro = \"pytest -k tags\"\n\
+         note = \"tags ```vanish```\"\nanchor = \"src/api/items.py::create_item\"\n\
+         [[gap]]\nkind = \"bug\"\ntitle = \"second\"\n",
+    );
+    let v = pack_json(dir, &["pack", "api", "--role", "validator"]);
+    assert_eq!(v["bug"]["title"], "create drops tags");
+    assert_eq!(v["bug"]["repro"], "pytest -k tags");
+    assert_eq!(v["bug"]["note"], "tags ```vanish```");
+    assert_eq!(v["bug"]["anchor"], "src/api/items.py::create_item");
+    let out = stewards(dir, &["pack", "api", "--role", "validator", "--human"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains("\n## Bug\n\n### Title\n\n```\ncreate drops tags\n```\n"),
+        "{text}"
+    );
+    assert!(text.contains("````\ntags ```vanish```\n````\n"), "{text}");
+}
+
+#[test]
+fn validator_pack_bug_is_null_when_every_bug_has_a_severity() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    append(
+        &dir.join(".stewards/units/api.toml"),
+        "[[gap]]\nkind = \"bug\"\ntitle = \"judged\"\nseverity = \"low\"\n",
+    );
+    let v = pack_json(dir, &["pack", "api", "--role", "validator"]);
+    assert!(v["bug"].is_null(), "{v}");
+}
+
+#[test]
+fn diff_runs_to_the_given_snapshot_not_the_working_tree() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    assert_eq!(run(dir, &["stamp", "api"]).0, 0);
+    let ws = discover(dir, None).unwrap();
+    edit(&dir.join("src/api/items.py"), "router = []", "router = [1]");
+    let older = snap(&ws);
+    edit(
+        &dir.join("src/api/items.py"),
+        "router = [1]",
+        "router = [2]",
+    );
+    let p = pack(
+        &ws.repos[0],
+        Some("api"),
+        Role::Maintainer,
+        "t",
+        true,
+        &older,
+    )
+    .unwrap();
+    let diff = p.hunks.unwrap()[0].diff.clone().unwrap();
+    assert!(diff.contains("+router = [1]"), "{diff}");
+    assert!(!diff.contains("router = [2]"), "{diff}");
 }
 
 #[test]
@@ -257,7 +327,15 @@ fn fit_shrinks_in_the_fixed_order() {
     append(&dir.join("src/api/items.py"), &extra);
 
     let ws = discover(dir, None).unwrap();
-    let mut p = pack(&ws.repos[0], Some("api"), Role::Maintainer, "t", true).unwrap();
+    let mut p = pack(
+        &ws.repos[0],
+        Some("api"),
+        Role::Maintainer,
+        "t",
+        true,
+        &snap(&ws),
+    )
+    .unwrap();
     assert!(p.dropped.is_empty() && !p.over_budget);
     let steps = [
         "source windows halved",
@@ -285,7 +363,15 @@ fn never_dropped_sections_survive_a_tiny_budget() {
     edit(&dir.join("src/store/db.py"), "_items = []", "_items = [0]");
     let ws = discover(dir, None).unwrap();
 
-    let mut p = pack(&ws.repos[0], Some("api"), Role::Maintainer, "t", true).unwrap();
+    let mut p = pack(
+        &ws.repos[0],
+        Some("api"),
+        Role::Maintainer,
+        "t",
+        true,
+        &snap(&ws),
+    )
+    .unwrap();
     p.fit(1);
     assert!(p.over_budget);
     assert_eq!(p.bytes, p.render().len());
@@ -296,7 +382,15 @@ fn never_dropped_sections_survive_a_tiny_budget() {
         &["src/store/db.py"]
     );
 
-    let mut t = pack(&ws.repos[0], Some("api"), Role::Tester, "t", false).unwrap();
+    let mut t = pack(
+        &ws.repos[0],
+        Some("api"),
+        Role::Tester,
+        "t",
+        false,
+        &snap(&ws),
+    )
+    .unwrap();
     t.fit(1);
     assert!(t.over_budget);
     assert_eq!(t.scenarios.as_ref().unwrap().len(), 1);
@@ -345,7 +439,15 @@ fn a_fence_line_in_purpose_or_an_anchor_name_cannot_open_a_block() {
         "purpose = \"HTTP surface\\n```\\nPURPOSE_TAIL\"",
     );
     let ws = discover(dir, None).unwrap();
-    let mut p = pack(&ws.repos[0], Some("api"), Role::Maintainer, "t", false).unwrap();
+    let mut p = pack(
+        &ws.repos[0],
+        Some("api"),
+        Role::Maintainer,
+        "t",
+        false,
+        &snap(&ws),
+    )
+    .unwrap();
     p.anchors.as_mut().unwrap()[0].name = "router\n```".into();
     let md = p.render();
     let lines = fence_blocks(&md);
@@ -370,7 +472,15 @@ fn a_fence_line_in_doc_prose_cannot_open_a_block() {
     assert_eq!(run(dir, &["stamp", "api"]).0, 0);
     edit(&dir.join("src/api/items.py"), "router = []", "router = [1]");
     let ws = discover(dir, None).unwrap();
-    let mut p = pack(&ws.repos[0], Some("api"), Role::Maintainer, "t", true).unwrap();
+    let mut p = pack(
+        &ws.repos[0],
+        Some("api"),
+        Role::Maintainer,
+        "t",
+        true,
+        &snap(&ws),
+    )
+    .unwrap();
     p.doc = Some(Doc {
         overview: "```\nDOC_TAIL".into(),
         how_it_works: String::new(),
@@ -462,7 +572,15 @@ fn excluded_content_stays_absent_while_fit_shrinks() {
     edit(&dir.join("src/api/items.py"), "router = []", "router = [1]");
     append(&dir.join("tests/api/test_items.py"), "\n# more\n");
     let ws = discover(dir, None).unwrap();
-    let mut p = pack(&ws.repos[0], Some("api"), Role::Maintainer, "t", true).unwrap();
+    let mut p = pack(
+        &ws.repos[0],
+        Some("api"),
+        Role::Maintainer,
+        "t",
+        true,
+        &snap(&ws),
+    )
+    .unwrap();
     let assert_absent = |p: &stewards::pack::Pack| {
         let json = serde_json::to_string(p).unwrap();
         assert!(!p.render().contains("router = [") && !json.contains("router = ["));
@@ -487,7 +605,15 @@ fn halving_shortens_every_source_window() {
     let extra: String = (0..60).map(|i| format!("EXTRA_{i} = {i}\n")).collect();
     append(&dir.join("src/api/items.py"), &extra);
     let ws = discover(dir, None).unwrap();
-    let mut p = pack(&ws.repos[0], Some("api"), Role::Maintainer, "t", false).unwrap();
+    let mut p = pack(
+        &ws.repos[0],
+        Some("api"),
+        Role::Maintainer,
+        "t",
+        false,
+        &snap(&ws),
+    )
+    .unwrap();
     let lines = |p: &stewards::pack::Pack| -> Vec<usize> {
         p.anchors
             .iter()

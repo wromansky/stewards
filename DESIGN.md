@@ -585,6 +585,12 @@ route; group per unit.
   tests. Deletes only inside `.stewards/briefs` and `.stewards/telemetry`,
   and closed plans. Snapshots add unreachable objects to `.git/objects`
   (git prunes them) and never touch the index, HEAD, or any ref.
+  Every write, append, and delete inside a repo goes through `Repo::write`,
+  `append`, or `remove`: the path must be plain names, no existing
+  component may be a symlink, and a write renames a fresh temporary file
+  over the target, so a committed link is refused, never followed
+  (`unsafe_path`). `load_repo` refuses the same way to read `.stewards/`,
+  `.stewards/units`, or any file it loads through a link.
 - **Secrets and external text.** `pack` names but never inlines files
   matching `[pack] exclude`. `review --pr` and `next --pr` read the diff and
   file list only, never the PR title, body, or comments. Telemetry stores
@@ -639,6 +645,7 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `no_brief` | no brief, or an unreadable header, for the job | run the brief command named |
 | `no_direct_model` | `--direct` with no `[models.direct]` entry for the role, or an unsupported provider | set `[models.direct] <role> = "<provider>/<model>"` in the user config |
 | `direct_call_failed` | the model call failed (fixed text, never the prompt or key) | rerun with `BAML_LOG=info` |
+| `unsafe_path` | a path the tool reads or writes in a repo is not plain names, or passes through a symlink | remove the symlink at `<path>`; stewards never writes through links |
 | `not_implemented` | a command or flag not built yet | use a release that has it |
 | `internal` | any other failure | report a bug |
 
@@ -1080,7 +1087,13 @@ pub fn load_repo(root: &Path) -> Result<Loaded>     // checks .git and .stewards
 // workspace.rs: a stewards.toml above cwd wins over a nearer .git
 pub fn discover(cwd: &Path, only: Option<&str>) -> Result<Workspace>   // only = --repo
 pub fn here(g: &Global) -> Result<(PathBuf, Workspace)>                 // canonical cwd + discover
-impl Repo { pub fn loaded(&self) -> Result<&Loaded> }                    // the one no_stewards_dir
+impl Repo {
+    pub fn loaded(&self) -> Result<&Loaded>                              // the one no_stewards_dir
+    // the one way to change a file in a repo; unsafe_path on a link or a non-plain rel
+    pub fn write(&self, rel: &str, contents: &[u8]) -> Result<()>       // temp file renamed over
+    pub fn append(&self, rel: &str, contents: &[u8]) -> Result<()>      // creates when missing
+    pub fn remove(&self, rel: &str) -> Result<()>                       // regular file; missing is Ok
+}
 impl Workspace {
     pub fn repo_containing(&self, path: &Path) -> Option<&Repo>          // deepest root
     pub fn current_repo(&self, cwd: &Path) -> Result<&Repo>              // the one not_in_repo
@@ -1124,7 +1137,8 @@ pub fn check_at(ws, filter, snapshots: &[String]) -> Result<CheckReport>
 pub fn one_line(s: &str) -> String
 
 // pack.rs
-pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool) -> Result<Pack>
+pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool, snapshot: &str)
+    -> Result<Pack>                                  // --diff hunks run to `snapshot`
 impl Pack { pub fn render(&self) -> String; pub fn fit(&mut self, budget: usize) }
 
 // next.rs

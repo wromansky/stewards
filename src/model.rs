@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::output::CliError;
+use crate::workspace::safe_path;
 
 /// The newest `repo.toml` schema this build reads.
 pub const SCHEMA: u32 = 1;
@@ -368,6 +369,8 @@ pub fn load_repo(root: &Path) -> Result<Loaded> {
         ));
     }
     let repo: RepoConfig = parse_toml(root, repo_toml)?.expect("repo.toml exists");
+    // a units dir with no cards to read is still refused when it is a link
+    safe_path(root, ".stewards/units", false)?;
     let units = parse_toml::<UnitsFile>(root, ".stewards/units.toml")?
         .map(|f| f.unit)
         .unwrap_or_default();
@@ -391,9 +394,10 @@ pub fn load_repo(root: &Path) -> Result<Loaded> {
     })
 }
 
-/// Reads `root/rel`; `Ok(None)` when it does not exist, `invalid_toml` naming `rel` and the line.
+/// Reads `root/rel`; `Ok(None)` when it does not exist, `invalid_toml` naming `rel` and the line,
+/// `unsafe_path` when it or a directory above it is a symlink.
 fn parse_toml<T: DeserializeOwned>(root: &Path, rel: &str) -> Result<Option<T>> {
-    let text = match std::fs::read_to_string(root.join(rel)) {
+    let text = match std::fs::read_to_string(safe_path(root, rel, false)?) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(anyhow::Error::new(e).context(rel.to_string())),

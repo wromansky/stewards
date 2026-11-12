@@ -2,7 +2,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -16,9 +16,13 @@ use crate::workspace::{Repo, Workspace, here};
 /// Unowned files named in the one `unowned` finding.
 const UNOWNED_LISTED: usize = 10;
 
-/// Card or `--task` text printed on one line: control characters, newlines included, become spaces.
+/// Card or `--task` text printed on one line: control characters, newlines included, and the
+/// Unicode line and paragraph separators become spaces.
 pub fn one_line(s: &str) -> String {
-    s.replace(char::is_control, " ")
+    s.replace(
+        |c: char| c.is_control() || c == '\u{2028}' || c == '\u{2029}',
+        " ",
+    )
 }
 
 /// True when the unit has no `[reviewed]`, or its fingerprint differs from `current`.
@@ -63,10 +67,10 @@ pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed> {
         documenter: marks.and_then(|r| r.documenter),
     };
     card.reviewed = Some(reviewed.clone());
-    let path = repo.root.join(format!(".stewards/units/{unit}.toml"));
-    std::fs::create_dir_all(path.parent().expect("a file has a parent"))?;
-    std::fs::write(&path, toml::to_string(&card)?)
-        .with_context(|| format!("write {}", path.display()))?;
+    repo.write(
+        &format!(".stewards/units/{unit}.toml"),
+        toml::to_string(&card)?.as_bytes(),
+    )?;
     Ok(reviewed)
 }
 

@@ -9,7 +9,9 @@ use serde::Serialize;
 use crate::anchors::{self, Resolution};
 use crate::check::{one_line, stale_files};
 use crate::git;
-use crate::model::{Anchor, CommandEntry, Decision, Doc, Flow, Gap, Interface, Role, Scenario};
+use crate::model::{
+    Anchor, CommandEntry, Decision, Doc, Flow, Gap, GapKind, Interface, Role, Scenario,
+};
 use crate::output::{CliError, Global, Human, emit, not_implemented};
 use crate::route::Router;
 use crate::workspace::{Repo, here};
@@ -106,7 +108,15 @@ fn window(root: &Path, a: Anchor, exclude: &GlobSet, dropped: &mut Vec<String>) 
     }
 }
 
-pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool) -> Result<Pack> {
+/// The pack for `unit` in `role`; `--diff` hunks run from the stamped tree to `snapshot`.
+pub fn pack(
+    repo: &Repo,
+    unit: Option<&str>,
+    role: Role,
+    task: &str,
+    diff: bool,
+    snapshot: &str,
+) -> Result<Pack> {
     match (role, unit) {
         (Role::Architect, Some(u)) => bail!(usage(
             format!("the architect's pack takes no unit, got `{u}`"),
@@ -253,6 +263,13 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
                     })
                     .collect(),
             );
+            p.bug = card
+                .and_then(|c| {
+                    c.gaps
+                        .iter()
+                        .find(|g| g.kind == GapKind::Bug && g.severity.is_none())
+                })
+                .cloned();
             None
         }
         Role::Architect => unreachable!("the architect has no unit"),
@@ -267,10 +284,9 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
         && let Some(reviewed) = stamped
     {
         let tree = reviewed.tree.as_str();
-        let snapshot = git::snapshot(root)?;
         let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
-        let entries = git::ls_tree(root, &snapshot)?;
-        let owned = stale_files(root, &snapshot, &entries, &router, name, Some(reviewed))?
+        let entries = git::ls_tree(root, snapshot)?;
+        let owned = stale_files(root, snapshot, &entries, &router, name, Some(reviewed))?
             .unwrap_or_default();
         if let Some(specs) = &mut anchor_specs {
             specs.retain(|a| owned.contains(&a.path));
@@ -282,7 +298,7 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
                     .push(format!("hunk {path} (excluded by [pack] exclude)"));
                 None
             } else {
-                Some(git::diff_file(root, tree, &snapshot, path)?)
+                Some(git::diff_file(root, tree, snapshot, path)?)
             };
             hunks.push(Hunk {
                 path: path.clone(),
@@ -297,7 +313,7 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
             for u in loaded.units.iter().filter(|u| u.name != name) {
                 let reviewed = loaded.cards.get(&u.name).and_then(|c| c.reviewed.as_ref());
                 other.extend(
-                    stale_files(root, &snapshot, &entries, &router, &u.name, reviewed)?
+                    stale_files(root, snapshot, &entries, &router, &u.name, reviewed)?
                         .unwrap_or_default(),
                 );
             }
@@ -512,6 +528,19 @@ impl Pack {
         if let Some(list) = &self.other_changed_files {
             section("Other changed files", paths_table(list));
         }
+        if let Some(bug) = &self.bug {
+            let field = |v: Option<&str>| v.map_or("(none)\n".into(), |v| fenced("", v));
+            section(
+                "Bug",
+                format!(
+                    "### Title\n\n{}\n### Repro\n\n{}\n### Note\n\n{}\n### Anchor\n\n{}",
+                    field(Some(&bug.title)),
+                    field(bug.repro.as_deref()),
+                    field(Some(&bug.note)),
+                    field(bug.anchor.as_deref())
+                ),
+            );
+        }
         out
     }
 
@@ -584,6 +613,7 @@ pub fn run(
         Some(t) => t.to_string(),
         None => git::task_text(&repo.root)?,
     };
-    emit(&pack(repo, unit, role, &task, diff)?, g.human);
+    let snapshot = git::snapshot(&repo.root)?;
+    emit(&pack(repo, unit, role, &task, diff, &snapshot)?, g.human);
     Ok(ExitCode::SUCCESS)
 }

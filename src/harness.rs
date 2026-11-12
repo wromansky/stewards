@@ -133,7 +133,7 @@ pub static HARNESSES: [Harness; 10] = [
         spawn_tool: "delegate_task",
         model_pin: false,
         env: EnvRule::Prefix("HERMES_"),
-        delegation: "Call `delegate_task(tasks=[{goal: \"Read <absolute brief path> and follow it\", context: \"<repo path>\"}])`. Children run in the background by default: wait for the completion message. `role` is ignored by the source.",
+        delegation: "`delegate_task(tasks=[{goal: \"Read <absolute brief path> and follow it\", context: \"<repo path>\"}])`; children run in the background by default, wait for the completion message; `role` is ignored by the source.",
         verified: VERIFIED,
     },
     Harness {
@@ -145,7 +145,7 @@ pub static HARNESSES: [Harness; 10] = [
         spawn_tool: "spawn_subagent, delegate",
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "Call `spawn_subagent{prompt: \"Read <absolute brief path> and follow it\"}` (same agent, fresh session, blocks; the risk profile must not exclude it), or `delegate{agent, prompt, context}` to a same-profile agent in bounded mode.",
+        delegation: "`spawn_subagent{prompt: \"Read <absolute brief path> and follow it\"}` (same agent, fresh session, blocks; the risk profile must not exclude it), or `delegate{agent, prompt, context}` to a same-profile agent in bounded mode.",
         verified: VERIFIED,
     },
     Harness {
@@ -157,7 +157,7 @@ pub static HARNESSES: [Harness; 10] = [
         spawn_tool: "spawn_agent",
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "Call `spawn_agent(role=\"coder\", blocking=true, message=\"Read <absolute brief path> and follow it\", context=\"<task>\")`, or start a fresh `borg ask` session per brief. Run inside the repo workspace (`-w` or `borg acp`), because `borg ask` defaults to the daemon's cwd.",
+        delegation: "`spawn_agent(role=\"coder\", blocking=true, message=\"Read <absolute brief path> and follow it\", context=\"<task>\")`, or a fresh `borg ask` session per brief; run inside the repo workspace (`-w` or `borg acp`), because `borg ask` defaults to the daemon's cwd.",
         verified: VERIFIED,
     },
 ];

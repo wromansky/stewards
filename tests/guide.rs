@@ -232,3 +232,99 @@ fn second_upsert_changes_nothing() {
     assert!(!upsert_block(&agents_md(dir.path())).unwrap());
     assert_eq!(std::fs::read(agents_md(dir.path())).unwrap(), first);
 }
+
+#[test]
+fn block_equals_the_block_in_the_design_record() {
+    let design = include_str!("../DESIGN.md");
+    let start = design.find("<!-- stewards:start -->").unwrap();
+    let end_marker = "<!-- stewards:end -->";
+    let end = start + design[start..].find(end_marker).unwrap() + end_marker.len();
+    assert_eq!(&design[start..end], block());
+}
+
+#[test]
+fn briefed_delegation_text_matches_facts_word_for_word() {
+    let (v, _) = guide(&[], &["--all"]);
+    let text = |name: &str| {
+        v["all_delegations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["harness"] == name)
+            .unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        text("hermes"),
+        r#"`delegate_task(tasks=[{goal: "Read <absolute brief path> and follow it", context: "<repo path>"}])`; children run in the background by default, wait for the completion message; `role` is ignored by the source."#
+    );
+    assert_eq!(
+        text("zeroclaw"),
+        r#"`spawn_subagent{prompt: "Read <absolute brief path> and follow it"}` (same agent, fresh session, blocks; the risk profile must not exclude it), or `delegate{agent, prompt, context}` to a same-profile agent in bounded mode."#
+    );
+    assert_eq!(
+        text("borg"),
+        r#"`spawn_agent(role="coder", blocking=true, message="Read <absolute brief path> and follow it", context="<task>")`, or a fresh `borg ask` session per brief; run inside the repo workspace (`-w` or `borg acp`), because `borg ask` defaults to the daemon's cwd."#
+    );
+}
+
+#[test]
+fn zeroclaw_and_borg_delegation_name_their_spawn_tool() {
+    let zeroclaw = guide(&[], &["--harness", "zeroclaw"]).0;
+    assert!(
+        zeroclaw["delegation"]
+            .as_str()
+            .unwrap()
+            .contains("spawn_subagent")
+    );
+    let borg = guide(&[], &["--harness", "borg"]).0;
+    assert!(borg["delegation"].as_str().unwrap().contains("spawn_agent"));
+}
+
+#[test]
+fn guide_output_names_all_six_roles() {
+    let (v, _) = guide(&[], &[]);
+    let roles = v["roles"].as_str().unwrap();
+    for role in [
+        "maintainer",
+        "tester",
+        "documenter",
+        "validator",
+        "architect",
+        "developer",
+    ] {
+        assert!(roles.contains(&format!("- {role}:")), "{role}");
+    }
+}
+
+#[test]
+fn upsert_keeps_crlf_content_byte_for_byte() {
+    let dir = TempDir::new().unwrap();
+    let old = "# Mine\r\n\r\nrules\r\n";
+    std::fs::write(agents_md(dir.path()), old).unwrap();
+    assert!(upsert_block(&agents_md(dir.path())).unwrap());
+    let text = std::fs::read(agents_md(dir.path())).unwrap();
+    assert!(text.ends_with(old.as_bytes()));
+    assert_eq!(text.len(), block().len() + 2 + old.len());
+}
+
+#[test]
+fn upsert_keeps_content_without_trailing_newline() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(agents_md(dir.path()), "# Mine\nno newline").unwrap();
+    assert!(upsert_block(&agents_md(dir.path())).unwrap());
+    let text = std::fs::read_to_string(agents_md(dir.path())).unwrap();
+    assert_eq!(text, format!("{}\n\n# Mine\nno newline", block()));
+}
+
+#[test]
+fn upsert_replacing_a_block_keeps_crlf_and_missing_final_newline_outside_it() {
+    let dir = TempDir::new().unwrap();
+    let old = "# Top\r\n<!-- stewards:start -->\r\nold\r\n<!-- stewards:end -->\r\nend";
+    std::fs::write(agents_md(dir.path()), old).unwrap();
+    assert!(upsert_block(&agents_md(dir.path())).unwrap());
+    let text = std::fs::read_to_string(agents_md(dir.path())).unwrap();
+    assert_eq!(text, format!("# Top\r\n{}\r\nend", block()));
+}

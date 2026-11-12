@@ -20,6 +20,7 @@
 - next-job-scheduling: [next](next.md) → [analysis](analysis.md) → [git](git.md) → [model](model.md) → [jobs](jobs.md)
 - documenter-card-to-docs-page: [jobs](jobs.md) → [setup](setup.md)
 - maintainer-card-patch: [llm](llm.md) → [jobs](jobs.md) → [model](model.md)
+- answer-length-caps: [llm](llm.md) → [jobs](jobs.md)
 
 ## Decisions
 
@@ -30,3 +31,5 @@
 - The docs index is not part of the documenter's lost-update check: docs/units/README.md is rendered from every card, so documenters of two units in one round both rewrite it; refusing the second as a lost update would block a correct submit. The unit's card and its own page stay checked.
 - A task's change has its own cap above the prose cap: A changes review joins every finding into one fix task, so with several findings the 2000-byte prose cap made a valid review impossible to submit. TASK\_CHANGE\_CAP (20000) applies to task changes only; other prose keeps the 2000 cap.
 - A tester's bug takes the anchor of the interface it names: The anchor shows the validator where the bug is. A bug naming an interface takes that interface's anchor; one naming none keeps the anchor it had, and a repeated bug keeps its severity and issue so a tester's rerun does not undo the validator's judgment.
+- Tester and documenter jobs trigger on an interface's lines, not its file: Maintainers record most public functions as interfaces, so a file trigger made a small edit in each of eight units cost 33 role jobs over two rounds. next\:\:interfaces\_touched now counts an interface only when a hunk of git\:\:diff\_hunks (mark to snapshot), on its old or new side or the line just before or after it, hits the interface's lines from anchors\:\:interface\_lines in that side's blob (git\:\:blob\_text). The line rule is a text block around each whole-word occurrence, for a fixed list of languages only; when the lines cannot be found (other language, name absent, file added or gone, mark tree pruned, blob unreadable) the file changing is enough. A change only in a private helper set apart by blank lines touches no interface; the maintainer's tester\_needed covers it. Shortcut until tree-sitter gives exact spans.
+- Answer schemas state every length cap submit enforces: A model learned a cap only by being rejected; one review was lost to a 301-character contract. baml\_src stays the one source\: each capped field carries its cap there, rendered into src/llm\_schema, and the brief says an over-cap field is rejected. submit's cap constants stay the enforcement and are public so a test pins each constant to a schema field that states it, so the stated and enforced caps cannot drift.

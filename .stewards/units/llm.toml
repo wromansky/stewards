@@ -1,11 +1,11 @@
 unit = "llm"
 
 [reviewed]
-commit = "e68ec0e8d29e804bf3091e0216bb44f63665e6b9"
-fingerprint = "sha256:881e83634bc237de1945fc707ffd38f1f5fa124c2834e4504701cb8b3cb962bb"
-tree = "64110da736d6bb8f449874c0df270f013fae0d73"
-tester = "40cb9db840e00f158b4d273e778f4e6cb817f874"
-documenter = "d288514be1f089a94eb37204155b5d4817d2d10c"
+commit = "8dba1769c1ed3a9c0ecb3808e5e21f7055caae78"
+fingerprint = "sha256:476c18254162b01ca3bf5f4fae08d1e9e0f13d9013795ed41481de1431d34bb8"
+tree = "12bb5a9ac7cfdbf842cdd2a8cbf7d19c6401ade6"
+tester = "c73edc4e7f723da02e6e3c06358b314d21f49adf"
+documenter = "754848df605dda226386feb27c4b6ba36847ab10"
 
 [[interface]]
 id = "role-text"
@@ -15,7 +15,7 @@ contract = "Returns the role's prompt text rendered from baml_src (src/llm_schem
 [[interface]]
 id = "output-format"
 anchor = "src/llm.rs::output_format"
-contract = "Returns BAML's ctx.output_format text for the role's answer shape (src/llm_schema/<role>.schema.txt); non-maintainer roles ignore the mode."
+contract = "Returns BAML's ctx.output_format text for the role's answer shape (src/llm_schema/<role>.schema.txt), with a `max N` comment on every capped field matching the cap submit enforces; non-maintainer roles ignore the mode."
 
 [[interface]]
 id = "parse-answer"
@@ -41,6 +41,11 @@ contract = "After direct_guards, calls the role's BAML function with a ClientReg
 id = "schema-freshness"
 anchor = "tests/llm.rs::generated_client_and_rendered_text_match_baml_src"
 contract = "src/baml_client embeds every baml_src file verbatim, llm_sources.sha256 matches baml_src/*.baml plus src/llm_schema/*.txt, and every generated enum has the on_generate snake_case rename. Refresh: baml-cli generate, then the ignored llm::tests::refresh_llm_schema."
+
+[[interface]]
+id = "schema-caps"
+anchor = "tests/llm.rs::every_role_schema_states_the_caps_submit_enforces"
+contract = "Sampled fields of every role's schema state exactly submit's cap (ID_CAP, LINE_CAP, PROSE_CAP, TASK_CHANGE_CAP, EXPLANATION_CAP, LIST_CAP), and every number a schema states after `max ` is one of those caps."
 
 [[anchor]]
 path = "src/llm.rs"
@@ -87,6 +92,6 @@ anchor = "src/llm.rs::llm_sources_hash"
 note = "llm_sources_hash is copied in src/llm.rs tests and tests/llm.rs and must stay identical by comment only; a drift would make refresh write a hash the freshness test rejects."
 
 [doc]
-overview = "The llm unit holds the role prompts and the answer schemas that the other units use to talk to a model. The prompts and schemas are written once, in baml_src, and rendered into src/llm_schema (a role text and a schema text per role). The unit gives callers three things: the prompt text for a role, the output-format description that tells a model what shape to answer in, and a strict parser that checks a reply against the role's answer type. It can also call a model directly, when a direct model is configured for a role."
-how_it_works = "Role text and output format are read from the rendered files in src/llm_schema. role_text returns <role>.role.txt with the `<unit>` placeholder left for the caller to fill; only the maintainer distinguishes Review and Explain modes. output_format returns BAML's ctx.output_format text from <role>.schema.txt, and non-maintainer roles ignore the mode. parse validates a reply through the types generated in src/baml_client: it accepts one JSON object with no surrounding text, no duplicate or unknown fields and snake_case enums. A failure is a FieldError carrying the field path, the problem and an example at that path. The maintainer's card_patch may carry the optional lists remove_interface (ids), remove_anchors (path::name) and remove_gaps (titles) in both modes; each must be a list of strings, and a wrong element is reported at a path such as card_patch.remove_gaps[0]. Parsing needs no BAML native library. The direct path is separate. prepare_baml_env is unsafe and must run before threads exist; it sets BAML_LIBRARY_DISABLE_DOWNLOAD unless STEWARDS_BAML_DOWNLOAD is set, sets BAML_LOG=off unless BAML_LOG is set, and removes every BOUNDARY_* variable. direct_guards then checks, in order, that [models.direct] for the role is <provider>/<model> with provider anthropic, openai or google-ai (else no_direct_model), that the provider's API key variable is non-blank (else no_api_key), and that the BAML native library loads (else baml_runtime_unavailable). It returns provider, model and key. direct calls the role's BAML function with a ClientRegistry client carrying that model and key, and returns the typed answer as JSON text. Any BAML error becomes the fixed direct_call_failed error, which never echoes the brief, the reply or the provider response."
-how_to_change = "Start in baml_src: change a prompt or an answer shape there, never in src/llm_schema or src/baml_client by hand, because those are generated. Then refresh: run baml-cli generate, then the ignored test llm::tests::refresh_llm_schema, which rewrites the rendered text and llm_sources.sha256. Keep the schema-freshness test in tests/llm.rs passing (generated_client_and_rendered_text_match_baml_src): src/baml_client must embed every baml_src file verbatim, llm_sources.sha256 must match baml_src/*.baml plus src/llm_schema/*.txt, and every generated enum must keep the on_generate snake_case rename. If you touch the card_patch shape in baml_src/answers.baml, keep the remove_interface, remove_anchors and remove_gaps lists parsing in both modes; tests/llm.rs card_patch_remove_lists_parse_and_must_be_string_lists covers them. Keep parse strict and free of the BAML native library. Keep the guard order in direct_guards, keep prepare_baml_env called before threads exist, and keep direct_call_failed fixed so no brief, reply or provider output leaks into an error. Leave `<unit>` in role text for the caller to fill."
+overview = "The llm unit holds the role prompts and the answer schemas that the other units use to talk to a model. The prompts and schemas are written once, in baml_src, and rendered into src/llm_schema (a role text and a schema text per role). The unit gives callers three things: the prompt text for a role, the output-format description that tells a model what shape to answer in (with the length cap of each capped field stated), and a strict parser that checks a reply against the role's answer type. It can also call a model directly, when a direct model is configured for a role."
+how_it_works = "Role text and output format are read from the rendered files in src/llm_schema. role_text returns <role>.role.txt with the `<unit>` placeholder left for the caller to fill; only the maintainer distinguishes Review and Explain modes. output_format returns BAML's ctx.output_format text from <role>.schema.txt, with a `max N` comment on every capped field that matches the cap submit enforces; non-maintainer roles ignore the mode. parse validates a reply through the types generated in src/baml_client: one JSON object, no surrounding text, no duplicate or unknown fields, snake_case enums. A failure is a FieldError with the field path, the problem and an example at that path. The maintainer's card_patch may carry optional remove_interface, remove_anchors and remove_gaps lists of strings in both modes; a wrong element is reported at a path like card_patch.remove_gaps[0]. Parsing needs no BAML native library. The direct path is separate. prepare_baml_env is unsafe and must run before threads exist; it sets BAML_LIBRARY_DISABLE_DOWNLOAD unless STEWARDS_BAML_DOWNLOAD is set, BAML_LOG=off unless BAML_LOG is set, and removes every BOUNDARY_* variable. direct_guards checks, in order, that [models.direct] for the role is <provider>/<model> (anthropic, openai or google-ai; else no_direct_model), that the provider's API key variable is non-blank (else no_api_key), and that the BAML native library loads (else baml_runtime_unavailable). direct then calls the role's BAML function with a client carrying that model and key and returns the typed answer as JSON text; any BAML error becomes the fixed direct_call_failed error, which never echoes the brief, reply or provider response."
+how_to_change = "Start in baml_src: change a prompt or an answer shape there, never in src/llm_schema or src/baml_client by hand, because those are generated. Then run baml-cli generate, then the ignored test llm::tests::refresh_llm_schema, which rewrites the rendered text and llm_sources.sha256. Keep generated_client_and_rendered_text_match_baml_src in tests/llm.rs passing: src/baml_client must embed every baml_src file verbatim, llm_sources.sha256 must match baml_src/*.baml plus src/llm_schema/*.txt, and every generated enum keeps the on_generate snake_case rename. Keep each capped field's `max N` comment equal to the cap submit enforces (ID_CAP, LINE_CAP, PROSE_CAP, TASK_CHANGE_CAP, EXPLANATION_CAP, LIST_CAP); every_role_schema_states_the_caps_submit_enforces checks sampled fields of every role and that every number after `max ` is one of those caps, so change a cap in submit and the schema together. If you touch card_patch in baml_src/answers.baml, keep the three remove lists parsing in both modes (card_patch_remove_lists_parse_and_must_be_string_lists). Keep parse strict and free of the BAML native library, keep the guard order in direct_guards, call prepare_baml_env before threads exist, keep direct_call_failed fixed, and leave `<unit>` in role text."

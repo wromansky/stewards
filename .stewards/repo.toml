@@ -16,7 +16,7 @@ check = "cargo test --test submit approve_stamps_the_brief_snapshot_so_a_later_e
 name = "next-job-scheduling"
 units = ["next", "analysis", "git", "model", "jobs"]
 entry = "src/next.rs::next"
-check = "cargo test --test next interface_file_edit_gives_maintainer_tester_documenter"
+check = "cargo test --test next interface_body_edit_gives_maintainer_tester_documenter"
 
 [[flow]]
 name = "documenter-card-to-docs-page"
@@ -29,6 +29,12 @@ name = "maintainer-card-patch"
 units = ["llm", "jobs", "model"]
 entry = "src/submit.rs::maintainer"
 check = "cargo test --test submit one_interface_entry_updates_it_and_keeps_the_others_unchanged_in_order"
+
+[[flow]]
+name = "answer-length-caps"
+units = ["llm", "jobs"]
+entry = "src/llm.rs::output_format"
+check = "cargo test --test llm every_role_schema_states_the_caps_submit_enforces"
 
 [[decision]]
 title = "Docs fixtures route to setup through a narrower glob than model's tests/fixtures/**"
@@ -57,3 +63,11 @@ why = "A changes review joins every finding into one fix task, so with several f
 [[decision]]
 title = "A tester's bug takes the anchor of the interface it names"
 why = "The anchor shows the validator where the bug is. A bug naming an interface takes that interface's anchor; one naming none keeps the anchor it had, and a repeated bug keeps its severity and issue so a tester's rerun does not undo the validator's judgment."
+
+[[decision]]
+title = "Tester and documenter jobs trigger on an interface's lines, not its file"
+why = "Maintainers record most public functions as interfaces, so a file trigger made a small edit in each of eight units cost 33 role jobs over two rounds. next::interfaces_touched now counts an interface only when a hunk of git::diff_hunks (mark to snapshot), on its old or new side or the line just before or after it, hits the interface's lines from anchors::interface_lines in that side's blob (git::blob_text). The line rule is a text block around each whole-word occurrence, for a fixed list of languages only; when the lines cannot be found (other language, name absent, file added or gone, mark tree pruned, blob unreadable) the file changing is enough. A change only in a private helper set apart by blank lines touches no interface; the maintainer's tester_needed covers it. Shortcut until tree-sitter gives exact spans."
+
+[[decision]]
+title = "Answer schemas state every length cap submit enforces"
+why = "A model learned a cap only by being rejected; one review was lost to a 301-character contract. baml_src stays the one source: each capped field carries its cap there, rendered into src/llm_schema, and the brief says an over-cap field is rejected. submit's cap constants stay the enforcement and are public so a test pins each constant to a schema field that states it, so the stated and enforced caps cannot drift."

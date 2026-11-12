@@ -31,3 +31,27 @@ given = "origin remote whose url is configured empty"
 expect = "None"
 level = "integration"
 command = "cargo test --test git -- --ignored origin_url_is_none_when_the_url_is_empty"
+
+[[scenario]]
+id = "diff_hunks_both_sides"
+interface = "diff_hunks"
+given = "two snapshots: a file edited, with a line deleted and a line appended, a new file whose content starts with '++ ', and a deleted file"
+expect = "one (path, (old start, count), (new start, count)) per hunk; count 0 on an empty side; the deleted file has no hunks"
+level = "integration"
+command = "cargo test --test git diff_hunks_gives_both_sides_with_count_zero_for_an_empty_side"
+
+[[scenario]]
+id = "diff_hunks_skips_binary_and_quoted"
+interface = "diff_hunks"
+given = """snapshots that add a binary file, a file named q"uote.txt, and a file named 'sp ace.txt'"""
+expect = "only the sp ace.txt hunk ((0,0),(1,1)); binary and C-quoted files have none"
+level = "integration"
+command = "cargo test --test git diff_hunks_skips_binary_and_c_quoted_files_and_handles_a_space"
+
+[[scenario]]
+id = "blob_text_reads_blob"
+interface = "blob_text"
+given = '''a snapshot tree holding a.txt with 'hello\n''''
+expect = '''blob_text of that file's blob sha is 'hello\n''''
+level = "integration"
+command = "cargo test --test git blob_text_reads_a_snapshot_file"

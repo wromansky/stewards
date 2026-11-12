@@ -31,3 +31,19 @@ given = "a card with role marks, gaps, doc prose"
 expect = "stamp keeps them exactly and rewrites only [reviewed]"
 level = "integration"
 command = "cargo test --test check stamping_keeps_role_marks_and_the_rest_of_the_card"
+
+[[scenario]]
+id = "anchor-resolve-overlapping-match"
+interface = "anchor-resolve"
+given = "a file where a rejected partial match overlaps a later whole-word match of the name"
+expect = "resolve returns Found at the later whole-word match (the occurrences refactor still steps one char)"
+level = "integration"
+command = "cargo test --test anchors match_overlapping_a_rejected_match_is_found"
+
+[[scenario]]
+id = "anchor-resolve-whole-word-after-partial"
+interface = "anchor-resolve"
+given = "a file with the name first inside a longer identifier, then as a whole word"
+expect = "resolve returns Found on the whole-word line, not DeadName"
+level = "integration"
+command = "cargo test --test anchors a_whole_word_after_a_partial_one_is_found"

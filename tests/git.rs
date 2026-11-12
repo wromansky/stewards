@@ -241,6 +241,21 @@ fn diff_hunks_gives_both_sides_with_count_zero_for_an_empty_side() {
 }
 
 #[test]
+fn diff_hunks_skips_binary_and_c_quoted_files_and_handles_a_space() {
+    let r = repo();
+    let p = r.path();
+    let from = git::snapshot(p).unwrap();
+    std::fs::write(p.join("bin.dat"), b"a\0b\n").unwrap();
+    write(p, "q\"uote.txt", "hi\n");
+    write(p, "sp ace.txt", "hi\n");
+    let to = git::snapshot(p).unwrap();
+    assert_eq!(
+        git::diff_hunks(p, &from, &to).unwrap(),
+        [("sp ace.txt".to_string(), (0, 0), (1, 1))]
+    );
+}
+
+#[test]
 fn blob_text_reads_a_snapshot_file() {
     let r = repo();
     let p = r.path();

@@ -6,6 +6,8 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+use crate::check::one_line;
+use crate::llm::types::UnitProposal;
 use crate::llm::{self, Mode};
 use crate::model::{self, Role, SCHEMA, UnitDef};
 use crate::next::{self, Job};
@@ -600,6 +602,35 @@ fn unit_of(job: &Job) -> Option<&str> {
     job.unit.rsplit('/').next().filter(|u| !u.is_empty())
 }
 
+/// Cap on each summary or proposal carried in a failed `--direct` run.
+const CARRIED_CAP: usize = 300;
+
+/// The failure text for a `--direct` run that stopped: how many jobs were submitted, and what they
+/// printed (summaries and unit proposals not applied), which exists nowhere else.
+fn failure_note(submitted: &[Submitted], total: usize) -> String {
+    let done: Vec<_> = submitted
+        .iter()
+        .map(|s| (s.summary.as_str(), s.unit_proposals.as_slice()))
+        .collect();
+    failure_text(&done, total)
+}
+
+/// `failure_note` over each submitted job's summary and unapplied proposals.
+fn failure_text(submitted: &[(&str, &[UnitProposal])], total: usize) -> String {
+    let mut note = format!(
+        "{} of {total} init --draft jobs submitted before this one; their results stay",
+        submitted.len()
+    );
+    let carried = |s: &str| one_line(s).chars().take(CARRIED_CAP).collect::<String>();
+    for (summary, proposals) in submitted {
+        note += &format!("; submitted: {}", carried(summary));
+        for u in *proposals {
+            note += &format!("; not applied: {}", carried(&submit::proposal_line(u)));
+        }
+    }
+    note
+}
+
 /// `init --draft`: the architect's naming job and a first review for every never-stamped unit,
 /// briefed for agents, or run through `llm::direct` and submitted with `--direct`.
 fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -> Result<ExitCode> {
@@ -661,11 +692,7 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
                 submit::submit_file(repo, unit, j.role, &repo.root.join(answer_rel))
             };
             let out = done().map_err(|e| {
-                let note = format!(
-                    "{} of {} init --draft jobs submitted before this one; their results stay",
-                    submitted.len(),
-                    jobs.len()
-                );
+                let note = failure_note(&submitted, jobs.len());
                 match e.downcast::<CliError>() {
                     Ok(mut err) => {
                         err.message = format!("{}; {note}", err.message);
@@ -692,4 +719,44 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         g.human,
     );
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_note_carries_cleaned_capped_summaries_and_unapplied_proposals() {
+        let proposals = [UnitProposal {
+            name: "auth".into(),
+            purpose: "login\nflow".into(),
+            paths: vec!["src/auth/**".into()],
+        }];
+        let long = format!("architect: 0 purposes set\n{}", "x".repeat(400));
+        let note = failure_text(&[(&long, &proposals), ("api maintainer: approve", &[])], 3);
+        assert!(
+            note.starts_with("2 of 3 init --draft jobs submitted before this one"),
+            "{note}"
+        );
+        assert!(!note.contains('\n'), "{note}");
+        assert!(
+            note.contains("; not applied: unit proposal: auth: login flow; paths src/auth/**"),
+            "{note}"
+        );
+        assert!(
+            note.contains("; submitted: api maintainer: approve"),
+            "{note}"
+        );
+        let first = note.split("; submitted: ").nth(1).unwrap();
+        let first = first.split("; not applied: ").next().unwrap();
+        assert_eq!(first.chars().count(), 300, "{first}");
+    }
+
+    #[test]
+    fn failure_note_with_nothing_submitted_is_the_count_alone() {
+        assert_eq!(
+            failure_text(&[], 2),
+            "0 of 2 init --draft jobs submitted before this one; their results stay"
+        );
+    }
 }

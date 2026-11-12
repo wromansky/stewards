@@ -635,6 +635,70 @@ fn tester_command_with_test_id_characters_is_accepted() {
 }
 
 #[test]
+fn documenter_with_all_three_prose_fields_blank_is_rejected_and_keeps_the_brief() {
+    let dir = fixture("single");
+    let d = dir.path();
+    let mut a = documenter("");
+    a["doc"]["how_it_works"] = json!("  \n");
+    a["doc"]["how_to_change"] = json!("");
+    submit_rejected(d, "documenter", &a, "answer_parse_failed", "doc", CARD);
+    assert!(!d.join("docs/units").exists());
+}
+
+#[test]
+fn architect_blank_purpose_sets_nothing_and_stays_a_proposal() {
+    for purpose in ["", "   "] {
+        let dir = fixture("single");
+        let d = dir.path();
+        fs::write(
+            d.join(".stewards/units.toml"),
+            "[[unit]]\nname = \"api\"\npaths = [\"src/api/**\"]\n",
+        )
+        .unwrap();
+        let units = fs::read(d.join(".stewards/units.toml")).unwrap();
+        let proposals = json!([{"name": "api", "purpose": purpose, "paths": ["src/api/**"]}]);
+        let v = submit_ok(
+            d,
+            "architect",
+            &architect(json!([]), json!([]), proposals.clone(), Value::Null),
+        );
+        assert_eq!(v["unit_proposals"], proposals);
+        assert!(
+            v["summary"]
+                .as_str()
+                .unwrap()
+                .starts_with("architect: 0 purposes set;")
+        );
+        assert_eq!(fs::read(d.join(".stewards/units.toml")).unwrap(), units);
+    }
+}
+
+#[test]
+fn architect_stores_a_purpose_trimmed() {
+    let dir = fixture("single");
+    let d = dir.path();
+    fs::write(
+        d.join(".stewards/units.toml"),
+        "[[unit]]\nname = \"api\"\npaths = [\"src/api/**\"]\n",
+    )
+    .unwrap();
+    let proposals = json!([{"name": "api", "purpose": "  HTTP surface ", "paths": ["src/api/**"]}]);
+    let v = submit_ok(
+        d,
+        "architect",
+        &architect(json!([]), json!([]), proposals, Value::Null),
+    );
+    assert!(
+        v["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("architect: 1 purpose set;")
+    );
+    let units = fs::read_to_string(d.join(".stewards/units.toml")).unwrap();
+    assert!(units.contains("purpose = \"HTTP surface\""), "{units}");
+}
+
+#[test]
 fn documenter_prose_that_could_fake_or_swallow_a_section_is_rejected() {
     let dir = fixture("single");
     let d = dir.path();

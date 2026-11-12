@@ -156,3 +156,17 @@ fn human_prints_a_table() {
     assert!(text.starts_with("| unit | freshness |"), "{text}");
     assert!(text.contains("| store | unreviewed | 1/2 |"), "{text}");
 }
+
+#[test]
+fn human_escapes_a_pipe_and_a_newline_in_a_purpose() {
+    let repo = fixture("single");
+    fs::write(
+        repo.path().join(".stewards/units.toml"),
+        "[[unit]]\nname = \"api\"\npurpose = \"a | b\\nc\"\npaths = []\n",
+    )
+    .unwrap();
+    let out = stewards(repo.path(), &["status", "--human"]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("| a \\| b c |"), "{text}");
+}

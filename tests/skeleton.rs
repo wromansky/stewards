@@ -135,6 +135,20 @@ fn bad_unit_name_is_invalid_toml() {
 }
 
 #[test]
+fn duplicate_unit_name_is_invalid_toml() {
+    let repo = fixture("single");
+    std::fs::write(
+        repo.path().join(".stewards/units.toml"),
+        "[[unit]]\nname = \"api\"\npaths = []\n\n[[unit]]\nname = \"api\"\npaths = []\n",
+    )
+    .unwrap();
+    let e = load_err(repo.path());
+    assert_eq!(e.code, "invalid_toml");
+    assert!(e.message.contains(".stewards/units.toml"), "{}", e.message);
+    assert!(e.message.contains("`api`"), "{}", e.message);
+}
+
+#[test]
 fn anchor_parse_splits_at_the_first_double_colon() {
     let a = Anchor::parse("a.rs::m::f").unwrap();
     assert_eq!((a.path.as_str(), a.name.as_str()), ("a.rs", "m::f"));

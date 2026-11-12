@@ -57,12 +57,12 @@ const SHELL_CHARS: &[char] = &[
 
 #[derive(Serialize, Default)]
 pub(crate) struct Submitted {
-    summary: String,
+    pub(crate) summary: String,
     explanation: Option<String>,
     tester_brief: Option<PathBuf>,
     /// The architect's that set no purpose; printed for the user to put in units.toml.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    unit_proposals: Vec<types::UnitProposal>,
+    pub(crate) unit_proposals: Vec<types::UnitProposal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
     #[serde(flatten)]
@@ -78,6 +78,16 @@ struct DeveloperReport {
     blocked_on: Option<String>,
 }
 
+/// A unit proposal on one line.
+pub(crate) fn proposal_line(u: &types::UnitProposal) -> String {
+    one_line(&format!(
+        "unit proposal: {}: {}; paths {}",
+        u.name,
+        u.purpose,
+        u.paths.join(", ")
+    ))
+}
+
 impl Human for Submitted {
     fn render(&self) -> String {
         let mut out = vec![self.summary.clone()];
@@ -87,14 +97,7 @@ impl Human for Submitted {
                 .as_ref()
                 .map(|p| format!("tester brief: {}", p.display())),
         );
-        out.extend(self.unit_proposals.iter().map(|u| {
-            one_line(&format!(
-                "unit proposal: {}: {}; paths {}",
-                u.name,
-                u.purpose,
-                u.paths.join(", ")
-            ))
-        }));
+        out.extend(self.unit_proposals.iter().map(proposal_line));
         out.extend(self.warning.as_ref().map(|w| format!("warning: {w}")));
         out.join("\n")
     }
@@ -878,6 +881,20 @@ fn documenter(
         check_text(&mut p, field, value, PROSE_CAP, false);
         check_doc_markdown(&mut p, field, value);
     }
+    // an empty doc leaves `next` listing the job again, forever
+    if [&a.doc.overview, &a.doc.how_it_works, &a.doc.how_to_change]
+        .iter()
+        .all(|v| v.trim().is_empty())
+    {
+        p.push((
+            "answer_parse_failed",
+            FieldError {
+                field: "doc".into(),
+                problem: "all three prose fields are empty".into(),
+                example: "{\"overview\": \"Serves items over HTTP.\", ...}".into(),
+            },
+        ));
+    }
     check_common(&mut p, &a.pulled_anchors, &a.notes);
     if !p.is_empty() {
         return Err(rejected(p));
@@ -1125,10 +1142,12 @@ fn architect(
     let mut left = vec![];
     let mut set = 0;
     for u in a.unit_proposals {
-        let same = loaded
-            .units
-            .iter()
-            .any(|d| d.name == u.name && d.paths == u.paths);
+        // a blank purpose sets nothing: it would block a later architect from naming the unit
+        let same = !u.purpose.trim().is_empty()
+            && loaded
+                .units
+                .iter()
+                .any(|d| d.name == u.name && d.paths == u.paths);
         let table = units
             .get_mut("unit")
             .and_then(|i| i.as_array_of_tables_mut())
@@ -1148,7 +1167,7 @@ fn architect(
                     .get("purpose")
                     .and_then(|i| i.as_value())
                     .map(|v| v.decor().clone());
-                let mut purpose = toml_edit::Value::from(u.purpose.as_str());
+                let mut purpose = toml_edit::Value::from(u.purpose.trim());
                 if let Some(decor) = decor {
                     *purpose.decor_mut() = decor;
                 }

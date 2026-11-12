@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::check::fingerprint;
+use crate::check::{fingerprint, one_line};
 use crate::debt;
 use crate::git;
 use crate::model::GapKind;
@@ -93,7 +93,14 @@ impl Human for StatusReport {
         out.extend(self.units.iter().map(|u| {
             format!(
                 "| {} | {} | {}/{} | {} | {} | {} | {} |",
-                u.unit, u.freshness, u.covered, u.interfaces, u.gaps, u.bugs, u.debt, u.purpose
+                u.unit,
+                u.freshness,
+                u.covered,
+                u.interfaces,
+                u.gaps,
+                u.bugs,
+                u.debt,
+                one_line(&u.purpose).replace('|', "\\|")
             )
         }));
         if !self.uninitialized.is_empty() {

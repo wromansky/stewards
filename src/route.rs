@@ -152,8 +152,7 @@ fn lexical_absolute(cwd: &Path, path: &str) -> PathBuf {
 }
 
 pub fn run(g: &Global, paths: &[String]) -> Result<ExitCode> {
-    let cwd = std::env::current_dir()?.canonicalize()?;
-    let ws = crate::workspace::discover(&cwd, g.repo.as_deref())?;
+    let (cwd, ws) = crate::workspace::here(g)?;
     // A lone repo must be initialized; in a workspace an uninitialized repo just owns nothing.
     if !ws.is_workspace
         && let Some(repo) = ws.repos.first()
@@ -163,7 +162,11 @@ pub fn run(g: &Global, paths: &[String]) -> Result<ExitCode> {
     let mut routers: HashMap<&Path, Router> = HashMap::new();
     let mut routes = Vec::new();
     for path in paths {
-        let abs = lexical_absolute(&cwd, path);
+        // canonical like the repo roots, so a symlinked directory still lands inside its repo
+        let abs = cwd
+            .join(path)
+            .canonicalize()
+            .unwrap_or_else(|_| lexical_absolute(&cwd, path));
         let repo = ws.repo_containing(&abs).ok_or_else(|| {
             CliError::new(
                 "path_outside_repo",

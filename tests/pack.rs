@@ -4,7 +4,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{edit, fixture, run, stewards};
+use common::{append, edit, fixture, run, stewards};
 use serde_json::Value;
 use stewards::model::{Doc, Role};
 use stewards::pack::pack;
@@ -14,11 +14,6 @@ fn pack_json(dir: &Path, args: &[&str]) -> Value {
     let (code, v) = run(dir, args);
     assert_eq!(code, 0, "{v}");
     v
-}
-
-fn append(path: &Path, text: &str) {
-    let old = fs::read_to_string(path).unwrap();
-    fs::write(path, old + text).unwrap();
 }
 
 /// Asserts that exactly the `present` sections of the pack `v` are non-null.

@@ -4,7 +4,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{edit, fixture, git, pairs, run};
+use common::{edit, fixture, git, pairs, run, stamp_units};
 use serde_json::Value;
 use stewards::check::{check, fingerprint};
 use stewards::model::{UnitDef, load_repo};
@@ -12,9 +12,7 @@ use stewards::route::Router;
 use stewards::workspace::discover;
 
 fn stamp_all(dir: &Path) {
-    for unit in ["api", "store"] {
-        assert_eq!(run(dir, &["stamp", unit]).0, 0);
-    }
+    stamp_units(dir, &["api", "store"]);
 }
 
 /// `(kind, unit)` of each finding in `list`.
@@ -152,9 +150,44 @@ fn tracked_file_no_unit_owns_warns_unowned_but_tool_owned_does_not() {
         .unwrap()
         .iter()
         .filter(|w| w["kind"] == "unowned")
-        .map(|w| w["path"].as_str().unwrap())
         .collect();
-    assert_eq!(unowned, ["Makefile"]);
+    assert_eq!(unowned.len(), 1);
+    assert!(unowned[0]["path"].is_null());
+    assert_eq!(
+        unowned[0]["message"],
+        "1 tracked file(s) have no owner: Makefile"
+    );
+}
+
+#[test]
+fn many_unowned_files_make_one_warning_listing_ten_sorted_then_the_count_left() {
+    let repo = fixture("single");
+    for i in 1..=12 {
+        let path = repo.path().join(format!("loose/f{i:02}.txt"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "x\n").unwrap();
+    }
+    git(repo.path(), &["add", "-A"]);
+    let (_, v) = run(repo.path(), &["check"]);
+    let unowned: Vec<_> = v["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["kind"] == "unowned")
+        .collect();
+    assert_eq!(unowned.len(), 1);
+    let listed: Vec<String> = ["Makefile"]
+        .into_iter()
+        .map(String::from)
+        .chain((1..=9).map(|i| format!("loose/f{i:02}.txt")))
+        .collect();
+    assert_eq!(
+        unowned[0]["message"],
+        format!(
+            "13 tracked file(s) have no owner: {} (+3 more)",
+            listed.join(", ")
+        )
+    );
 }
 
 #[test]

@@ -4,14 +4,8 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{edit, fixture, pairs, run, stewards, workspace_fixture};
+use common::{append, edit, fixture, pairs, run, stamp_units, stewards, workspace_fixture};
 use serde_json::Value;
-
-fn stamp(dir: &Path, units: &[&str]) {
-    for unit in units {
-        assert_eq!(run(dir, &["stamp", unit]).0, 0);
-    }
-}
 
 /// `(unit, role)` of each job.
 fn jobs(v: &Value) -> Vec<(String, String)> {
@@ -70,14 +64,13 @@ fn snapshot(dir: &Path) -> String {
 
 fn add_gaps(dir: &Path, unit: &str, gaps: &str) {
     let path = dir.join(format!(".stewards/units/{unit}.toml"));
-    let text = fs::read_to_string(&path).unwrap();
-    fs::write(&path, format!("{text}\n{gaps}")).unwrap();
+    append(&path, &format!("\n{gaps}"));
 }
 
 #[test]
 fn never_stamped_unit_gets_a_maintainer_job_listing_all_its_files() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api"]);
+    stamp_units(repo.path(), &["api"]);
     let (code, v) = run(repo.path(), &["next"]);
     assert_eq!(code, 1);
     let job = &v["jobs"][0];
@@ -100,7 +93,7 @@ fn never_stamped_unit_gets_a_maintainer_job_listing_all_its_files() {
 #[test]
 fn everything_stamped_and_unchanged_has_no_jobs() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     let (code, v) = run(repo.path(), &["next"]);
     assert_eq!(code, 0, "{v}");
     assert!(jobs(&v).is_empty());
@@ -110,7 +103,7 @@ fn everything_stamped_and_unchanged_has_no_jobs() {
 #[test]
 fn non_interface_non_test_edit_gives_only_a_maintainer_job() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     fs::write(repo.path().join("src/store/README.md"), "changed\n").unwrap();
     let (code, v) = run(repo.path(), &["next"]);
     assert_eq!(code, 1);
@@ -119,10 +112,21 @@ fn non_interface_non_test_edit_gives_only_a_maintainer_job() {
     assert_eq!(strings(&v["jobs"][0]["changed"]), ["src/store/README.md"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_changed_file_with_a_quoted_name_does_not_stop_next_listing_jobs() {
+    let repo = fixture("single");
+    stamp_units(repo.path(), &["api", "store"]);
+    fs::write(repo.path().join("src/store/q\"uote.py"), "x = 1\n").unwrap();
+    let (code, v) = run(repo.path(), &["next"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(jobs(&v), pairs(&[("store", "maintainer")]));
+}
+
 #[test]
 fn interface_file_edit_gives_maintainer_tester_documenter() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join("src/store/db.py"),
         "_items = []",
@@ -146,7 +150,7 @@ fn interface_file_edit_gives_maintainer_tester_documenter() {
 #[test]
 fn test_root_edit_gives_maintainer_and_tester() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join("tests/store/test_db.py"),
         "== 1",
@@ -166,7 +170,7 @@ fn test_root_edit_gives_maintainer_and_tester() {
 #[test]
 fn tester_mark_after_the_change_suppresses_the_tester_job() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join("src/store/db.py"),
         "_items = []",
@@ -184,7 +188,7 @@ fn tester_mark_after_the_change_suppresses_the_tester_job() {
 #[test]
 fn documenter_mark_after_the_change_suppresses_the_documenter_job() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join("src/store/db.py"),
         "_items = []",
@@ -202,7 +206,7 @@ fn documenter_mark_after_the_change_suppresses_the_documenter_job() {
 #[test]
 fn dead_anchor_on_a_fresh_unit_has_no_jobs_but_next_exits_1() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join(".stewards/units/store.toml"),
         "count_items",
@@ -217,7 +221,7 @@ fn dead_anchor_on_a_fresh_unit_has_no_jobs_but_next_exits_1() {
 #[test]
 fn scenario_naming_an_unknown_interface_has_no_jobs_but_next_exits_1() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join(".stewards/units/store.test.toml"),
         "interface = \"save-item\"",
@@ -237,7 +241,7 @@ fn human_output_keeps_card_text_on_one_line() {
         "store",
         "[[gap]]\nkind = \"bug\"\ntitle = \"x\\n- `fake`: job\"\n",
     );
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     let out = stewards(repo.path(), &["next", "--human"]);
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("bug not judged: x - `fake`: job"), "{text}");
@@ -246,7 +250,7 @@ fn human_output_keeps_card_text_on_one_line() {
 #[test]
 fn fresh_unit_with_an_older_tester_mark_still_gets_a_tester_job() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     let card = fs::read_to_string(repo.path().join(".stewards/units/store.toml")).unwrap();
     let stamped = card
         .lines()
@@ -260,7 +264,7 @@ fn fresh_unit_with_an_older_tester_mark_still_gets_a_tester_job() {
         "_items = []",
         "_items = [0]",
     );
-    stamp(repo.path(), &["store"]);
+    stamp_units(repo.path(), &["store"]);
     let (code, v) = run(repo.path(), &["next"]);
     assert_eq!(code, 1);
     assert_eq!(jobs(&v), pairs(&[("store", "tester")]));
@@ -269,7 +273,7 @@ fn fresh_unit_with_an_older_tester_mark_still_gets_a_tester_job() {
 #[test]
 fn two_stamped_changed_units_set_architect() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     fs::write(repo.path().join("src/store/README.md"), "changed\n").unwrap();
     edit(
         &repo.path().join("src/api/items.py"),
@@ -289,7 +293,7 @@ fn two_stamped_changed_units_set_architect() {
 #[test]
 fn never_stamped_unit_does_not_count_toward_architect() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api"]);
+    stamp_units(repo.path(), &["api"]);
     edit(
         &repo.path().join("src/api/items.py"),
         "router = []",
@@ -308,7 +312,7 @@ fn unjudged_bugs_give_one_validator_job_for_the_first() {
         "store",
         "[[gap]]\nkind = \"bug\"\ntitle = \"save loses items\"\n\n[[gap]]\nkind = \"bug\"\ntitle = \"count is off\"\n",
     );
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     let (code, v) = run(repo.path(), &["next"]);
     assert_eq!(code, 1);
     assert_eq!(jobs(&v), pairs(&[("store", "validator")]));
@@ -326,7 +330,7 @@ fn bug_with_a_severity_gives_no_validator_job() {
         "store",
         "[[gap]]\nkind = \"bug\"\ntitle = \"save loses items\"\nseverity = \"high\"\n",
     );
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     let (code, v) = run(repo.path(), &["next"]);
     assert_eq!(code, 0, "{v}");
 }
@@ -334,7 +338,7 @@ fn bug_with_a_severity_gives_no_validator_job() {
 #[test]
 fn added_simplified_comment_appears_in_debt_added() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join("src/store/db.py"),
         "_items = []",
@@ -367,7 +371,7 @@ fn pr_flag_is_not_implemented() {
 #[test]
 fn pruned_stamped_tree_falls_back_to_all_owned_files() {
     let repo = fixture("single");
-    stamp(repo.path(), &["api", "store"]);
+    stamp_units(repo.path(), &["api", "store"]);
     fs::write(repo.path().join("src/store/README.md"), "changed\n").unwrap();
     set_tree_line(repo.path(), "store", |_| {
         format!("tree = \"{}\"", "ab".repeat(20))

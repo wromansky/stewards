@@ -70,6 +70,19 @@ pub fn edit(path: &Path, from: &str, to: &str) {
     std::fs::write(path, text.replace(from, to)).unwrap();
 }
 
+/// Appends `text` to the file at `path`.
+pub fn append(path: &Path, text: &str) {
+    let old = std::fs::read_to_string(path).unwrap();
+    std::fs::write(path, old + text).unwrap();
+}
+
+/// Runs `stewards stamp` for each unit in `dir`; each must succeed.
+pub fn stamp_units(dir: &Path, units: &[&str]) {
+    for unit in units {
+        assert_eq!(run(dir, &["stamp", unit]).0, 0);
+    }
+}
+
 /// Owned copies of string pairs, for comparing against `(String, String)` lists.
 pub fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
     list.iter()

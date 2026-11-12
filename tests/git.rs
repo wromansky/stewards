@@ -216,18 +216,6 @@ fn diff_added_lines_gives_new_file_line_numbers() {
 }
 
 #[test]
-fn head_is_the_commit_sha() {
-    let r = repo();
-    write(r.path(), "a.txt", "a\n");
-    run_git(r.path(), &["add", "a.txt"]);
-    run_git(r.path(), &["commit", "-q", "-m", "init"]);
-    assert_eq!(
-        git::head(r.path()).unwrap(),
-        run_git(r.path(), &["rev-parse", "HEAD"]).trim()
-    );
-}
-
-#[test]
 fn task_text_is_branch_then_last_commit_subject() {
     let r = repo();
     let p = r.path();
@@ -270,14 +258,21 @@ fn diff_added_lines_handles_a_path_with_a_space() {
 }
 
 #[test]
-fn diff_added_lines_errors_on_a_c_quoted_path() {
+fn diff_added_lines_skips_a_c_quoted_path_and_keeps_the_rest() {
     let r = repo();
     let p = r.path();
     let from = git::snapshot(p).unwrap();
+    write(p, "a.txt", "first\n");
     write(p, "q\"uote.txt", "hi\n");
+    write(p, "z.txt", "last\n");
     let to = git::snapshot(p).unwrap();
-    let e = git::diff_added_lines(p, &from, &to).unwrap_err();
-    assert!(e.to_string().contains("q\\\"uote.txt"), "{e}");
+    assert_eq!(
+        git::diff_added_lines(p, &from, &to).unwrap(),
+        [
+            ("a.txt".to_string(), 1, "first".to_string()),
+            ("z.txt".to_string(), 1, "last".to_string()),
+        ]
+    );
 }
 
 #[test]

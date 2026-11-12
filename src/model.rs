@@ -322,6 +322,20 @@ pub struct Loaded {
     pub tests: BTreeMap<String, TestCard>,
 }
 
+impl Loaded {
+    /// The unit named `name`; `unknown_unit` lists the names that exist.
+    pub fn unit(&self, name: &str) -> Result<&UnitDef> {
+        Ok(self.units.iter().find(|u| u.name == name).ok_or_else(|| {
+            let names: Vec<_> = self.units.iter().map(|u| u.name.as_str()).collect();
+            CliError::new(
+                "unknown_unit",
+                format!("no unit named `{name}`; units: {}", names.join(", ")),
+                "one of the listed units",
+            )
+        })?)
+    }
+}
+
 /// Reads `.stewards/` under the git root `root`. A unit's card or test card may be absent.
 pub fn load_repo(root: &Path) -> Result<Loaded> {
     if !root.join(".git").exists() {

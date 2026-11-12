@@ -12,7 +12,7 @@ use crate::git;
 use crate::model::{Anchor, CommandEntry, Decision, Doc, Flow, Gap, Interface, Role, Scenario};
 use crate::output::{CliError, Global, Human, emit, not_implemented};
 use crate::route::Router;
-use crate::workspace::{Repo, discover};
+use crate::workspace::{Repo, here};
 
 /// Lines of source on each side of an anchor's match.
 const WINDOW: usize = 20;
@@ -190,18 +190,7 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
         return Ok(p);
     };
 
-    let def = loaded
-        .units
-        .iter()
-        .find(|u| u.name == name)
-        .ok_or_else(|| {
-            let names: Vec<_> = loaded.units.iter().map(|u| u.name.as_str()).collect();
-            CliError::new(
-                "unknown_unit",
-                format!("no unit named `{name}`; units: {}", names.join(", ")),
-                "one of the listed units",
-            )
-        })?;
+    let def = loaded.unit(name)?;
     let card = loaded.cards.get(name);
     let test = loaded.tests.get(name);
     let interface = card.map_or(vec![], |c| c.interface.clone());
@@ -272,18 +261,17 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
 
     let stamped = card
         .and_then(|c| c.reviewed.as_ref())
-        .map(|r| r.tree.as_str())
-        .filter(|tree| git::has_object(root, tree));
+        .filter(|r| git::has_object(root, &r.tree));
     if diff
         && matches!(role, Role::Maintainer | Role::Tester)
-        && let Some(tree) = stamped
+        && let Some(reviewed) = stamped
     {
+        let tree = reviewed.tree.as_str();
         let snapshot = git::snapshot(root)?;
         let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
-        let owned: Vec<String> = git::diff_names(root, tree, &snapshot)?
-            .into_iter()
-            .filter(|f| router.owner(f) == Some(name))
-            .collect();
+        let entries = git::ls_tree(root, &snapshot)?;
+        let owned = stale_files(root, &snapshot, &entries, &router, name, Some(reviewed))?
+            .unwrap_or_default();
         if let Some(specs) = &mut anchor_specs {
             specs.retain(|a| owned.contains(&a.path));
         }
@@ -305,7 +293,6 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
         p.changed_files = Some(owned);
         if role == Role::Maintainer {
             // Each other unit measured from its own stamp; fresh units contribute nothing.
-            let entries = git::ls_tree(root, &snapshot)?;
             let mut other = Vec::new();
             for u in loaded.units.iter().filter(|u| u.name != name) {
                 let reviewed = loaded.cards.get(&u.name).and_then(|c| c.reviewed.as_ref());
@@ -591,8 +578,7 @@ pub fn run(
     diff: bool,
     task: Option<&str>,
 ) -> Result<ExitCode> {
-    let cwd = std::env::current_dir()?.canonicalize()?;
-    let ws = discover(&cwd, g.repo.as_deref())?;
+    let (cwd, ws) = here(g)?;
     let repo = ws.current_repo(&cwd)?;
     let task = match task {
         Some(t) => t.to_string(),

@@ -11,7 +11,7 @@ use crate::git;
 use crate::model::{Anchor, GapKind, Role};
 use crate::output::{Global, Human, emit, not_implemented};
 use crate::route::Router;
-use crate::workspace::{Workspace, discover};
+use crate::workspace::{Workspace, here};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Job {
@@ -261,7 +261,7 @@ pub fn run(
     if pr.is_some() {
         return not_implemented("next --pr");
     }
-    let ws = discover(&std::env::current_dir()?.canonicalize()?, g.repo.as_deref())?;
+    let (_, ws) = here(g)?;
     let report = next(&ws, task)?;
     emit(&report, g.human);
     Ok(

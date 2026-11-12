@@ -1,4 +1,4 @@
-// Git CLI wrappers: ls-files, snapshot, ls-tree, diffs, head.
+// Git CLI wrappers: ls-files, snapshot, ls-tree, diffs, head commit.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -140,7 +140,7 @@ pub fn diff_file(root: &Path, from: &str, to: &str, path: &str) -> Result<String
     run(root, &args, None)
 }
 
-/// Added lines as `(path, line number in the new file, text)`.
+/// Added lines as `(path, line number in the new file, text)`; a file whose name is C-quoted is skipped.
 pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String, u32, String)>> {
     let mut args = DIFF.to_vec();
     args.extend([
@@ -161,10 +161,8 @@ pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String
             in_hunk = false;
             path = None;
         } else if !in_hunk && l.starts_with("+++ ") {
-            if l.starts_with("+++ \"") {
-                bail!("cannot parse C-quoted path in diff line: {l}");
-            }
-            // git appends a tab to the line when the path contains a space
+            // A C-quoted name (`+++ "b/..."`) does not match `+++ b/`, so its lines are skipped.
+            // git appends a tab to the line when the path contains a space.
             path = l
                 .strip_prefix("+++ b/")
                 .map(|p| p.trim_end_matches('\t').to_string());
@@ -188,10 +186,6 @@ pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String
         }
     }
     Ok(added)
-}
-
-pub fn head(root: &Path) -> Result<String> {
-    Ok(run(root, &["rev-parse", "HEAD"], None)?.trim().to_string())
 }
 
 /// HEAD's commit sha; `None` before the first commit, an error for any other failure.

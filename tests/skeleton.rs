@@ -76,13 +76,6 @@ fn human_errors_print_error_and_fix_lines() {
 }
 
 #[test]
-fn bad_role_is_unknown_role() {
-    let (v, code) = json_error(&["pack", "api", "--role", "boss"]);
-    assert_eq!(code, Some(2));
-    assert_eq!(v["error"]["code"], "unknown_role");
-}
-
-#[test]
 fn load_repo_outside_git_is_not_a_git_repo() {
     let dir = tempfile::TempDir::new().unwrap();
     assert_eq!(load_err(dir.path()).code, "not_a_git_repo");

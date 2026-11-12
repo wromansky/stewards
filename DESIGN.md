@@ -1079,6 +1079,7 @@ pub fn load_repo(root: &Path) -> Result<Loaded>     // checks .git and .stewards
 
 // workspace.rs: a stewards.toml above cwd wins over a nearer .git
 pub fn discover(cwd: &Path, only: Option<&str>) -> Result<Workspace>   // only = --repo
+pub fn here(g: &Global) -> Result<(PathBuf, Workspace)>                 // canonical cwd + discover
 impl Repo { pub fn loaded(&self) -> Result<&Loaded> }                    // the one no_stewards_dir
 impl Workspace {
     pub fn repo_containing(&self, path: &Path) -> Option<&Repo>          // deepest root
@@ -1095,7 +1096,6 @@ pub fn has_object(root, sha) -> bool                 // resolves to a tree
 pub fn diff_names(root, from, to) -> Result<Vec<String>>
 pub fn diff_file(root, from, to, path) -> Result<String>
 pub fn diff_added_lines(root, from, to) -> Result<Vec<(String, u32, String)>>
-pub fn head(root) -> Result<String>
 pub fn head_commit(root) -> Result<Option<String>>   // None = no commits yet
 pub fn task_text(root) -> Result<String>
 
@@ -1111,6 +1111,8 @@ impl Router {
     pub fn tool_owned(&self, path: &str) -> bool
     pub fn overlaps(&self, files: &[String]) -> Vec<(String, Vec<String>)>
 }
+
+// model.rs also: impl Loaded { pub fn unit(&self, name: &str) -> Result<&UnitDef> }   // the one unknown_unit
 
 // check.rs
 pub fn fingerprint(tree: &[(String, String)], unit: &str, router: &Router) -> String

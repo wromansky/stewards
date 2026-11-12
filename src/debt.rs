@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::git;
 use crate::output::{Global, Human, emit};
 use crate::route::Router;
-use crate::workspace::{Repo, discover};
+use crate::workspace::{Repo, here};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DebtItem {
@@ -103,7 +103,7 @@ impl Human for Debt {
 }
 
 pub fn run(g: &Global) -> Result<ExitCode> {
-    let ws = discover(&std::env::current_dir()?.canonicalize()?, g.repo.as_deref())?;
+    let (_, ws) = here(g)?;
     let mut units = Vec::new();
     for (repo, _) in ws.loaded_repos()? {
         for (unit, items) in scan(repo)? {

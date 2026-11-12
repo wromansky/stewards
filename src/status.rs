@@ -10,7 +10,7 @@ use crate::git;
 use crate::model::GapKind;
 use crate::output::{Global, Human, emit};
 use crate::route::Router;
-use crate::workspace::{Workspace, discover};
+use crate::workspace::{Workspace, here};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UnitStatus {
@@ -108,7 +108,7 @@ impl Human for StatusReport {
 }
 
 pub fn run(g: &Global, telemetry: bool) -> Result<ExitCode> {
-    let ws = discover(&std::env::current_dir()?.canonicalize()?, g.repo.as_deref())?;
+    let (_, ws) = here(g)?;
     let mut report = status(&ws)?;
     // simplified: telemetry has no source yet, so it is null until stage 2 adds one
     report.telemetry = telemetry.then_some(serde_json::Value::Null);

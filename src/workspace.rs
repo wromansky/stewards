@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::model::{Loaded, load_repo};
-use crate::output::CliError;
+use crate::output::{CliError, Global};
 
 pub struct Repo {
     pub name: String,
@@ -77,6 +77,13 @@ pub fn discover(cwd: &Path, only: Option<&str>) -> anyhow::Result<Workspace> {
         is_workspace,
         selected: only.is_some(),
     })
+}
+
+/// The canonical current directory and the workspace visible from it.
+pub fn here(g: &Global) -> anyhow::Result<(PathBuf, Workspace)> {
+    let cwd = std::env::current_dir()?.canonicalize()?;
+    let ws = discover(&cwd, g.repo.as_deref())?;
+    Ok((cwd, ws))
 }
 
 /// The repo roots listed in `file`, each checked to exist.

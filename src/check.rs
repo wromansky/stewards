@@ -9,9 +9,12 @@ use sha2::{Digest, Sha256};
 use crate::anchors::{Resolution, resolve};
 use crate::git;
 use crate::model::{Anchor, Reviewed, UnitCard};
-use crate::output::{CliError, Global, Human, emit};
+use crate::output::{Global, Human, emit};
 use crate::route::Router;
-use crate::workspace::{Repo, Workspace, discover};
+use crate::workspace::{Repo, Workspace, here};
+
+/// Unowned files named in the one `unowned` finding.
+const UNOWNED_LISTED: usize = 10;
 
 /// Card or `--task` text printed on one line: control characters, newlines included, become spaces.
 pub fn one_line(s: &str) -> String {
@@ -39,14 +42,7 @@ pub fn fingerprint(tree: &[(String, String)], unit: &str, router: &Router) -> St
 /// Writes `[reviewed]` for `unit` at snapshot `tree` into its card, keeping the role marks and the rest.
 pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed> {
     let loaded = repo.loaded()?;
-    if !loaded.units.iter().any(|u| u.name == unit) {
-        let names: Vec<_> = loaded.units.iter().map(|u| u.name.as_str()).collect();
-        anyhow::bail!(CliError::new(
-            "unknown_unit",
-            format!("no unit named `{unit}`; units: {}", names.join(", ")),
-            "one of the listed units",
-        ));
-    }
+    loaded.unit(unit)?;
     let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
     let entries = git::ls_tree(&repo.root, tree)?;
     let mut card = loaded.cards.get(unit).cloned().unwrap_or_else(|| UnitCard {
@@ -262,16 +258,31 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
                 anchor: None,
             });
         }
-        for path in tracked
+        let mut unowned: Vec<_> = tracked
             .iter()
             .filter(|p| router.owner(p).is_none() && !router.tool_owned(p))
-        {
+            .collect();
+        unowned.sort();
+        if !unowned.is_empty() {
+            let more = match unowned.len().saturating_sub(UNOWNED_LISTED) {
+                0 => String::new(),
+                n => format!(" (+{n} more)"),
+            };
+            let listed: Vec<_> = unowned
+                .iter()
+                .take(UNOWNED_LISTED)
+                .map(|p| p.as_str())
+                .collect();
             report.warnings.push(Finding {
                 kind: "unowned",
                 unit: None,
-                path: Some(path.clone()),
+                path: None,
                 anchor: None,
-                message: format!("no unit owns {path}"),
+                message: format!(
+                    "{} tracked file(s) have no owner: {}{more}",
+                    unowned.len(),
+                    listed.join(", ")
+                ),
             });
         }
     }
@@ -299,7 +310,7 @@ impl Human for CheckReport {
 }
 
 pub fn run(g: &Global) -> Result<ExitCode> {
-    let ws = discover(&std::env::current_dir()?.canonicalize()?, g.repo.as_deref())?;
+    let (_, ws) = here(g)?;
     let report = check(&ws, None)?;
     emit(&report, g.human);
     Ok(if report.failures.is_empty() {
@@ -325,8 +336,7 @@ impl Human for Stamped {
 }
 
 pub fn run_stamp(g: &Global, unit: &str) -> Result<ExitCode> {
-    let cwd = std::env::current_dir()?.canonicalize()?;
-    let ws = discover(&cwd, g.repo.as_deref())?;
+    let (cwd, ws) = here(g)?;
     let repo = ws.current_repo(&cwd)?;
     let reviewed = stamp(repo, unit, &git::snapshot(&repo.root)?)?;
     emit(

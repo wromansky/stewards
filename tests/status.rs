@@ -3,7 +3,7 @@ mod common;
 
 use std::fs;
 
-use common::{fixture, git, run, stewards, workspace_fixture};
+use common::{append, fixture, git, run, stewards, workspace_fixture};
 use serde_json::Value;
 
 /// The status entry of `unit`.
@@ -51,9 +51,7 @@ fn fresh_fixture_is_unreviewed_with_counts() {
 fn debt_is_counted_per_unit() {
     let repo = fixture("single");
     let file = repo.path().join("src/store/db.py");
-    let mut text = fs::read_to_string(&file).unwrap();
-    text.push_str("# simplified: no index\n# simplified: no locking\n");
-    fs::write(&file, text).unwrap();
+    append(&file, "# simplified: no index\n# simplified: no locking\n");
     git(repo.path(), &["add", "-A"]);
     let (_, v) = run(repo.path(), &["status"]);
     assert_eq!(unit(&v, "store")["debt"], 3); // two added, one in the fixture README
@@ -74,9 +72,7 @@ fn edited_unit_is_stale_and_status_still_exits_zero() {
     let repo = fixture("single");
     assert_eq!(run(repo.path(), &["stamp", "api"]).0, 0);
     let file = repo.path().join("src/api/items.py");
-    let mut text = fs::read_to_string(&file).unwrap();
-    text.push_str("\n# changed\n");
-    fs::write(&file, text).unwrap();
+    append(&file, "\n# changed\n");
     let (code, v) = run(repo.path(), &["status"]);
     assert_eq!(code, 0);
     assert_eq!(unit(&v, "api")["freshness"], "stale");
@@ -86,9 +82,10 @@ fn edited_unit_is_stale_and_status_still_exits_zero() {
 fn bug_gap_is_counted_as_a_bug_not_a_gap() {
     let repo = fixture("single");
     let card = repo.path().join(".stewards/units/api.toml");
-    let mut text = fs::read_to_string(&card).unwrap();
-    text.push_str("\n[[gap]]\nkind = \"bug\"\ntitle = \"create drops tags\"\nnote = \"\"\n");
-    fs::write(&card, text).unwrap();
+    append(
+        &card,
+        "\n[[gap]]\nkind = \"bug\"\ntitle = \"create drops tags\"\nnote = \"\"\n",
+    );
     let (_, v) = run(repo.path(), &["status"]);
     let api = unit(&v, "api");
     assert_eq!(

@@ -117,13 +117,19 @@ fn single_fixture_routes_as_its_units_toml_says() {
     }
 }
 
+#[cfg(unix)]
 #[test]
-fn route_command_reports_owner_and_unowned() {
+fn route_command_follows_a_symlinked_directory_into_the_repo() {
     let repo = common::fixture("single");
-    let out = common::stewards(repo.path(), &["route", "src/api/items.py", "Makefile"]);
+    let outside = tempfile::TempDir::new().unwrap();
+    let link = outside.path().join("api-link");
+    std::os::unix::fs::symlink(repo.path().join("src/api"), &link).unwrap();
+    let out = common::stewards(
+        repo.path(),
+        &["route", link.join("items.py").to_str().unwrap()],
+    );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["routes"][0]["unit"], "api");
-    assert!(v["routes"][1]["unit"].is_null());
+    assert_eq!(v["routes"][0]["unit"], "api", "{v}");
     assert_eq!(out.status.code(), Some(0));
 }
 

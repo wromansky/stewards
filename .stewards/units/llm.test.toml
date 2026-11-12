@@ -63,3 +63,11 @@ given = "baml_src and the generated client and rendered text"
 expect = "client embeds baml_src, hash matches, enums renamed snake_case"
 level = "unit"
 command = "cargo test --test llm generated_client_and_rendered_text_match_baml_src"
+
+[[scenario]]
+id = "schema-caps-match-submit"
+interface = "schema-caps"
+given = "each role's rendered schema text and submit's ID/LINE/PROSE/TASK_CHANGE/EXPLANATION/LIST caps"
+expect = "sampled fields state exactly submit's cap, and every number after `max ` in any schema is one of those caps"
+level = "unit"
+command = "cargo test --test llm every_role_schema_states_the_caps_submit_enforces"

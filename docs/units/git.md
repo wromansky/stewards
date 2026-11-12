@@ -4,15 +4,15 @@
 
 ## Overview
 
-The git unit is the one place in the program that talks to git. It shells out to the git CLI and hands back plain Rust values: the list of tracked files, a tree sha that stands for the current working tree, the (path, blob sha) pairs inside a tree, yes/no answers about whether a name is a tree, the paths and text of a diff between two trees, the HEAD commit, the URL of the origin remote, the task text built from the branch and last commit subject, and the files touched by recent commits. Callers use it to ask what the repository looks like now and what changed between two points, without knowing any git command lines. It does not touch the real index, HEAD or refs.
+The git unit is the one place in the program that talks to git. It shells out to the git CLI and returns plain Rust values: the tracked files, a tree sha standing for the current working tree, the (path, blob sha) pairs in a tree, yes/no answers about whether a name is a tree, the paths, text, added lines and hunk ranges of a diff between two trees, the text of a blob, the HEAD commit, the origin remote URL, the task text built from the branch and last commit subject, and the files touched by recent commits. Callers ask what the repository looks like now and what changed between two points without knowing any git command lines. It never touches the real index, HEAD or refs.
 
 ## How it works
 
-Everything goes through two private helpers in src/git.rs. run_raw starts `git` in the repo root with core.quotepath turned off, so paths come back as raw UTF-8, and it can point git at another index file through GIT_INDEX_FILE. run wraps it and turns a non-zero exit into an error carrying the command and git's stderr. Listing functions such as ls_files use NUL-separated output and split it on NUL. snapshot is the involved one: it finds the real index with rev-parse --git-path (so linked worktrees work), creates a uniquely named temp file with create_new so it never reuses an existing path, copies the real index into it and gives the copy the real index's mtime so git does not misjudge a same-second edit as unchanged, or starts from read-tree --empty when there is no index yet. It then runs add -A and write-tree against that private index and returns the tree sha; a drop guard deletes the temp file. ls_tree, has_object and is_tree inspect a tree: a leading-dash name is an error in ls_tree and false in the two checks, has_object accepts a tree or a commit's tree, and is_tree accepts only a tree itself. diff_names, diff_file and diff_added_lines compare two revs; diff_file matches its path literally, and diff_added_lines reports added lines with their new-file line number and skips C-quoted paths. head_commit returns None before the first commit, origin_url returns the origin remote's URL or None when there is no origin (init uses it to name the repo), task_text gives the branch (HEAD when detached) and the last commit subject on the next line, and recent_commit_files lists files per commit, newest first, with merges listing none. The tests live in tests/git.rs.
+Everything goes through two private helpers in src/git.rs. run_raw starts git in the repo root with core.quotepath off, so paths are raw UTF-8, and can point git at another index file via GIT_INDEX_FILE. run turns a non-zero exit into an error carrying the command and stderr. Listings such as ls_files use NUL-separated output. snapshot finds the real index with rev-parse --git-path (so linked worktrees work), creates a uniquely named temp file with create_new, copies the index into it with the real index's mtime (or read-tree --empty when none exists), runs add -A and write-tree there, and returns the tree sha; a drop guard deletes the temp file. ls_tree, has_object and is_tree inspect trees; a leading-dash name is an error in ls_tree and false in the checks. diff_names and diff_file compare two revs; diff_file matches its path literally. diff_added_lines and diff_hunks share a private -U0 diff (diff_u0) and parse it the same way: new_path reads each +++ b/ line, hunk_sides reads the @@ header into (start, count) pairs for each side. diff_added_lines yields (path, new line number, text); diff_hunks yields (path, old range, new range) per hunk, where a count of 0 means no lines on that side. Both skip C-quoted names; diff_hunks also has none for deleted or binary files. blob_text reads a blob by sha with cat-file. head_commit, origin_url, task_text and recent_commit_files are as in the contract table. Tests are in tests/git.rs.
 
 ## How to change it
 
-Start in src/git.rs and add or change a function there, going through run or run_raw rather than spawning Command directly, so the quotepath setting and error format stay the same. Keep these true: snapshot must never modify the real index, HEAD or refs, must keep the real index's mtime on its copy, must refuse a pre-existing temp path, and must work with no commits and in linked worktrees; revs and names that start with a dash must stay errors or false rather than being read as git options; diff_file must treat its path literally; head_commit must return None only for the no-commits case and an error for any other failure; origin_url must stay None, not an error, when there is no origin. The contract table is the list of behaviours to preserve, so when you change one, update the matching test in tests/git.rs, which covers this unit, and this document.
+Start in src/git.rs and add or change a function there, going through run or run_raw rather than spawning Command directly, so the quotepath setting and error format stay the same. Keep these true: snapshot must never modify the real index, HEAD or refs, must keep the real index's mtime on its copy, must refuse a pre-existing temp path, and must work with no commits and in linked worktrees; revs and names starting with a dash must stay errors or false, never read as git options (diff and cat-file calls pass --end-of-options); diff_file must treat its path literally; diff_added_lines and diff_hunks must keep agreeing on which files they skip, since both use diff_u0 and new_path; head_commit returns None only before the first commit; origin_url stays None, not an error, without an origin. The contract table lists the behaviours to preserve; when you change one, update the matching test in tests/git.rs and this document. diff_hunks and blob_text are not yet in the card's interface table.
 
 ## Interface
 
@@ -25,15 +25,20 @@ Start in src/git.rs and add or change a function there, going through run or run
 | is\_tree | True only when the name is a tree object itself; commit, blob, or unknown is false. | [src/git.rs\:\:is\_tree](../../src/git.rs#L124) |
 | diff\_names | Paths changed between two revs, no rename detection; leading-dash revs are errors. | [src/git.rs\:\:diff\_names](../../src/git.rs#L130) |
 | diff\_file | Unified diff (-U3, no color, no ext diff, a/ b/ prefixes) of one path between two revs; the path is matched literally, never as a glob. | [src/git.rs\:\:diff\_file](../../src/git.rs#L136) |
-| diff\_added\_lines | Added lines as (path, new-file line number, text); paths with spaces handled; C-quoted paths skipped. | [src/git.rs\:\:diff\_added\_lines](../../src/git.rs#L154) |
-| head\_commit | HEAD commit sha; None before the first commit; error for any other git failure. | [src/git.rs\:\:head\_commit](../../src/git.rs#L202) |
-| task\_text | Current branch (HEAD when detached), then the last commit subject on the next line, omitted before the first commit; error outside a repo. | [src/git.rs\:\:task\_text](../../src/git.rs#L225) |
-| recent\_commit\_files | Files touched by each of the last n commits, newest first, merges list none; empty with no commits. | [src/git.rs\:\:recent\_commit\_files](../../src/git.rs#L237) |
-| origin\_url | URL of the origin remote, trimmed; None when there is no origin, it is empty, or git fails. | [src/git.rs\:\:origin\_url](../../src/git.rs#L218) |
+| diff\_added\_lines | Added lines as (path, new-file line number, text); paths with spaces handled; C-quoted paths skipped. | [src/git.rs\:\:diff\_added\_lines](../../src/git.rs#L186) |
+| head\_commit | HEAD commit sha; None before the first commit; error for any other git failure. | [src/git.rs\:\:head\_commit](../../src/git.rs#L243) |
+| task\_text | Current branch (HEAD when detached), then the last commit subject on the next line, omitted before the first commit; error outside a repo. | [src/git.rs\:\:task\_text](../../src/git.rs#L266) |
+| recent\_commit\_files | Files touched by each of the last n commits, newest first, merges list none; empty with no commits. | [src/git.rs\:\:recent\_commit\_files](../../src/git.rs#L278) |
+| origin\_url | URL of the origin remote, trimmed; None when there is no origin, it is empty, or git fails. | [src/git.rs\:\:origin\_url](../../src/git.rs#L259) |
 
 ## Scenarios
 
-_None._
+| id | interface | given | expect | level |
+|---|---|---|---|---|
+| origin\_url\_none\_without\_origin | origin\_url | repo with no origin remote (or only an upstream remote) | None | integration |
+| origin\_url\_returns\_origin | origin\_url | repo with origin remote https\://h/o/name.git | Some(that url) | integration |
+| origin\_url\_none\_outside\_repo | origin\_url | a directory that is not a git repo | None | integration |
+| origin\_url\_none\_when\_url\_empty | origin\_url | origin remote whose url is configured empty | None | integration |
 
 ## Flows
 
@@ -46,6 +51,7 @@ _None._
 |---|---|---|
 | gap | recent\_commit\_files hides every rev-parse failure as 'no commits' | It returns empty on any rev-parse error (e.g. outside a repo), unlike head\_commit which errors; reusing head\_commit would separate 'no commits' from real failures. |
 | gap | recent\_commit\_files returns C-quoted names for paths with special characters | log --name-only is not -z, so names containing newline, tab, quote or backslash come back C-quoted and will not match ls\_files paths. |
+| bug (low) | origin\_url returns Some("origin") when the origin url is empty | git remote get-url prints the remote name when remote.origin.url is set to an empty string, so the empty filter never fires and the contract's 'None when it is empty' is broken. |
 
 ## Last reviewed
 

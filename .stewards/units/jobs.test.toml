@@ -103,3 +103,11 @@ given = "a tester bug naming an interface, and a repeat of a bug whose card gap 
 expect = "the gap anchor is the named interface's anchor; a bug naming no interface keeps the gap's existing anchor"
 level = "integration"
 command = "cargo test --test submit_roles tester_repeated_bug_sets_the_anchor_only_when_it_names_an_interface"
+
+[[scenario]]
+id = "brief-states-cap-rule"
+interface = "brief-build"
+given = "a maintainer brief built for a unit"
+expect = "after the schema and answer path, the brief says a field over its stated cap is rejected and to stay under it"
+level = "integration"
+command = "cargo test --test brief sections_appear_in_frame_order"

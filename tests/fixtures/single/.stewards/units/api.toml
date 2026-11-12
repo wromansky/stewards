@@ -1,0 +1,15 @@
+unit = "api"
+[[interface]]
+id = "create-item"
+anchor = "src/api/items.py::create_item"
+contract = "POST /items; 201 with body; 422 on invalid"
+[[anchor]]
+path = "src/api/items.py"
+name = "router"
+[[gap]]
+kind = "gap"
+title = "no pagination on list"
+anchor = "src/api/items.py::list_items"
+note = "list returns every item"
+[doc]
+overview = """The HTTP surface for items."""

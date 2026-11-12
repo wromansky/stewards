@@ -1,0 +1,9 @@
+unit = "store"
+primary_paths = ["save-item"]
+test_command = "pytest tests/store"
+[[scenario]]
+id = "save-returns-id"
+interface = "save-item"
+given = "an empty store"
+expect = "save_item returns 1"
+level = "unit"

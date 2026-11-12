@@ -37,13 +37,19 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   to validate the contract are listed in Facts.
 - **Stack:** a Rust CLI that agents call through their shell tool. No MCP
   server. Rust owns facts (units, anchors, packs, staleness, debt,
-  rendering). BAML defines each role's prompt and typed answer schema, so
-  every job's output is validated the same way in every harness.
+  rendering). BAML defines each role's prompt and typed answer schema; the
+  generated Rust types validate every job's output strictly with serde, the
+  same way in every harness. The schema and role text shown to agents are
+  rendered from BAML at development time and checked in, so no ordinary
+  command loads BAML's native library.
 - **LLM modes:** the harness's own agents think by default: the tool writes
   a brief, the agent answers, the tool validates. `--direct` (or
   `STEWARDS_DIRECT=1`) makes the tool call the model through BAML with a key
-  from the usual env vars, for CI and batch. A missing key is an error,
-  never a silent fallback.
+  from the usual env vars, for CI and batch. It is the only mode that needs
+  BAML's native library. A missing model entry, key, or library is an
+  error, never a silent fallback, and the library is never downloaded
+  unless `STEWARDS_BAML_DOWNLOAD` is set. The tool never names a model
+  itself.
 - **Delivery:** the repo's `AGENTS.md` block is the one truth: the ritual,
   the roles, the editing rules, how to delegate. Every harness reads it with
   no install. User-level hooks and instructions are optional accelerators.
@@ -140,7 +146,10 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   snapshot they finished at, beside the stamp. Their jobs are due by what
   changed since their own mark, not since the stamp, so a fix round that
   does not touch their paths does not run them again, and a tester's own
-  new tests do not call the tester back. With no mark, the stamp is used.
+  new tests do not call the tester back. With no mark, the stamp is used;
+  when a new stamp replaces it, a role with no mark takes the old stamp as
+  its mark, so a pending tester or documenter job survives the maintainer's
+  approval.
 - **Triggers:** before changing, `route` the files and brief the owning
   maintainer to explain and plan; two or more units, or no owner, brief the
   architect first. To change, `brief <unit> --role developer` writes one
@@ -209,6 +218,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   language or role filters; roles never write it; matching entries are
   packed into every brief under a byte budget.
 - **Workspaces:** `stewards.toml` with `repos = [...]` in a parent folder.
+  It is the user's own file and is trusted: its paths may be absolute or
+  reach through links, so it belongs outside any repo it lists.
   Read commands (`route`, `status`, `debt`, `check`, `next`) span all repos
   with units named `<repo>/<unit>`; write commands act on one repo.
 
@@ -399,8 +410,10 @@ check = "pytest tests/api -k priority"   # must start with a commands.test prefi
 repos = ["backend", "frontend"]          # paths relative to this file
 ```
 
-User-level files: `~/.stewards/config.toml` (`[models.<harness>] <role> =
-"<alias>"`), `~/.stewards/memory.toml` (`[[entry]] text, languages?,
+User-level files live in `$STEWARDS_HOME` when it is set, else `~/.stewards`:
+`config.toml` (`[models.<harness>] <role> = "<alias>"`, and `[models.direct]
+<role> = "<provider>/<model>"` for `--direct`, providers anthropic, openai,
+google-ai), `memory.toml` (`[[entry]] text, languages?,
 roles?`), `~/.stewards/grammars/<lang>/{lib.so|.dylib, tags.scm}`.
 
 Anchor grammar: `path` is the text before the first `::`, `name` is the rest
@@ -430,7 +443,7 @@ never routed, never reported as unowned.
 | `route <path>...` | owning unit per path, `null` when none; no LLM: an unowned path goes to the architect |
 | `pack [unit] --role <r> [--diff] [--task t]` | the context pack; no unit for the architect |
 | `brief [unit] --role <r> [--task t] [--stdout]` | writes an explain brief, prints its path and size |
-| `submit [unit] --role <r> --file <f>` | validates a typed answer with BAML against the job's brief header, writes the update; an approving maintainer review stamps |
+| `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update; an approving maintainer review stamps |
 | `stamp <unit>` | records `[reviewed]` at the current snapshot; the human override |
 | `next [--task t] [--no-brief] [--no-run] [--pr n]` | finds the stale units, runs `check` and plan step checks, writes the review briefs, prints the jobs |
 | `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files |
@@ -492,7 +505,8 @@ two units matching the same tracked file at equal specificity.
 
 ### next
 
-One snapshot per run. A unit is stale when its fingerprint in the snapshot
+One snapshot per repo per run, shared with the embedded `check`; each job
+carries the snapshot of its repo. A unit is stale when its fingerprint in the snapshot
 differs from `[reviewed].fingerprint` or it has no `[reviewed]`. Its changed
 files are `git diff --name-only <stamped tree> <snapshot>` restricted to the
 files it owns; with no stamp, or a stamped tree git has pruned, every owned
@@ -555,6 +569,17 @@ route; group per unit.
   instructions come first and last. `submit` enforces per-field length caps,
   rejects control characters and fence breakouts, and stores prose as plain
   text.
+- **Git and file reads.** Every rev or tree handed to git follows
+  `--end-of-options`, and a path is passed as a literal pathspec, so nothing
+  from a card or a file name can become an option or a pattern. An anchor
+  path must be made of plain components and pass through no symlink, else
+  it is dead: an anchor can never read outside the repo or reach an
+  excluded file through a link. An anchor is alive only when its path is a
+  file in the repo's snapshot tree (tracked, modified, or untracked and not
+  ignored), so `.git/` and ignored files are dead and never inlined. Card text printed on one line has its
+  control characters replaced; purpose and prose in a rendered pack sit in
+  fences longer than any backtick run they contain; rendered docs escape
+  card text and refuse a `docs_path` at or outside the repo root.
 - **Execution.** Only commands whose argv starts with the whole argv of a
   `commands.*` entry from `repo.toml` ever run (`pytest` does not allow
   `pytest-x`): repro, plan step checks, scenario commands, test and
@@ -567,6 +592,12 @@ route; group per unit.
   tests. Deletes only inside `.stewards/briefs` and `.stewards/telemetry`,
   and closed plans. Snapshots add unreachable objects to `.git/objects`
   (git prunes them) and never touch the index, HEAD, or any ref.
+  Every write, append, and delete inside a repo goes through `Repo::write`,
+  `append`, or `remove`: the path must be plain names, no existing
+  component may be a symlink, and a write renames a fresh temporary file
+  over the target, so a committed link is refused, never followed
+  (`unsafe_path`). `load_repo` refuses the same way to read `.stewards/`,
+  `.stewards/units`, or any file it loads through a link.
 - **Secrets and external text.** `pack` names but never inlines files
   matching `[pack] exclude`. `review --pr` and `next --pr` read the diff and
   file list only, never the PR title, body, or comments. Telemetry stores
@@ -609,10 +640,21 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `command_not_allowed` | command outside the allowlist | prefix with one of `commands.test` or add it to `repo.toml` |
 | `command_timeout` | allowlisted command exceeded its timeout | raise `timeout_seconds` or fix the test |
 | `workspace_repo_missing` | `stewards.toml` lists a path that doesn't exist | fix `repos` in `<path>` |
-| `baml_runtime_unavailable` | the native lib can't load | set `BAML_LIBRARY_PATH` or allow the download |
-| `no_api_key` | `--direct` with no provider key | export `ANTHROPIC_API_KEY` (or the configured provider's key) |
+| `baml_runtime_unavailable` | `--direct` and the native lib is not found | set `BAML_LIBRARY_PATH` to the library, or set `STEWARDS_BAML_DOWNLOAD=1` to let stewards download it |
+| `no_api_key` | `--direct` and the configured provider's key is unset or blank | export the variable named (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`) |
 | `tracker_auth` | `gh`/`glab` not logged in, or Jira or Linear env missing | `gh auth login` / `glab auth login` / set `JIRA_URL`, `JIRA_TOKEN` / set `LINEAR_API_KEY` |
 | `harness_unknown` | unsupported harness name | one of the listed harnesses |
+| `usage` | bad arguments, a bad `-C`, or a role given with or without a unit wrongly | run `stewards <command> --help` |
+| `not_in_repo` | the current directory is in no repo of the workspace | run inside a repo or pass `--repo <name>` |
+| `unknown_repo` | `--repo` names no repo | one of the listed repos |
+| `path_outside_repo` | `route` given a path in no repo | pass a path inside the repo |
+| `already_initialized` | `init` where `.stewards/` files exist | edit `.stewards/units.toml` instead |
+| `no_brief` | no brief, or an unreadable header, for the job | run the brief command named |
+| `no_direct_model` | `--direct` with no `[models.direct]` entry for the role, or an unsupported provider | set `[models.direct] <role> = "<provider>/<model>"` in the user config |
+| `direct_call_failed` | the model call failed (fixed text, never the prompt or key) | rerun with `BAML_LOG=info` |
+| `unsafe_path` | a path the tool reads or writes in a repo is not plain names, or passes through a symlink | remove the symlink at `<path>`; stewards never writes through links |
+| `not_implemented` | a command or flag not built yet | use a release that has it |
+| `internal` | any other failure | report a bug |
 
 ## AGENTS.md block
 
@@ -753,6 +795,19 @@ validator `real, severity, reason, evidence[]`; architect `plan | null,
 flows[], decisions[], unit_proposals[], explanation`. All carry
 `pulled_anchors[]` and `notes`.
 
+Details the shapes leave open: enum values are lowercase snake case
+(`approve|changes`, `critical|medium|low`, `gap|future|bug`, the rungs as
+`not_needed` … `no_check`). A nullable field may be absent or null; every
+other field and every list is required; unknown fields, duplicate fields,
+and any text around the JSON are errors. `card_patch` has three optional
+lists (`interface`, `anchors`, `gaps`); a list that is present is the full
+new list for that part of the card, which is how a patch closes a gap. A
+patch gap is `{kind, title, anchor?, note, repro?}`; severity and issue are
+the tool's. `scenario_patch` upserts scenarios by id. A plan is `{title,
+steps[] {unit, change, interfaces[], check}}`. A unit proposal is `{name,
+purpose, paths[]}`. A validation error names the field path, or
+`(document)`, and carries an example value.
+
 `guide` prints the long form: the ritual, the roles, the editing rules, the
 hygiene rules, and the delegation paragraph for the harness detected from
 env; `--harness <name>` forces one, `--all` prints every variant. The
@@ -773,9 +828,13 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
 ## Evals
 
 - **Fixture, zero external deps:** `evals/fixture/` with `api/` (Python
-  in-memory items store, `unittest`), `client/` (TypeScript, `tsc` +
-  `node:test`), `cli/` (Rust binary that shells out to the api); one flow
-  `create-item` crossing all three; about 400 lines.
+  in-memory items store, `unittest`), `client/` (TypeScript run by Node
+  directly with type stripping, Node 22.18 or newer, no `tsc`;
+  `node:test`), `cli/` (Rust binary; `create` goes through the client, the
+  rest shells out to the api); one flow `create-item` crossing cli, client,
+  and api; about 400 lines. The fixture's own tests pass and never expose a
+  seeded bug; only the hidden repros under `evals/repros/` do, each with a
+  `fix.patch`.
 - **Seeded bugs, five:** critical, `cli` panics on empty input; medium, `api`
   pagination skips the last item; low, `client` logs a misleading retry
   message; cross-unit, `api` renamed a response field and `client` still
@@ -965,6 +1024,27 @@ What the loop takes from it:
   fixture-and-parser task. Three reviewers then found the same two loose
   edges in it; none found any in the Sonnet or Opus work.
 
+### Stage 1, as it ran (2026-11-12)
+
+- Five waves and their fix rounds built stage 1, with the stage-2 tasks
+  that needed only the skeleton running beside it. Every module's review
+  found something real: option injection through a rev, an anchor reading
+  outside the repo, a pack leaking an excluded file three ways, `stamp`
+  writing to the wrong nested repo, a docs path overwriting the README.
+- A signature-only stub committed by the parent lets parallel writers code
+  against a module another writer is filling in.
+- A resumed writer works in its old worktree: good for a fix inside its own
+  files, wrong for a fix that needs newer code, which goes to a fresh
+  worker.
+- `pi-subagents` reads its config at session start. Until a restart picks
+  up the warm-target hook, each brief starts with `test -e target || cp -al
+  <built target> target`; hard-linked targets were unchanged after
+  concurrent builds.
+- The parent must check the test suite's own exit code before a checkpoint
+  commit, and must not apply a patch during an unfinished rebase.
+- A spike is told to make no network request beyond fetching tools and
+  docs.
+
 ### Waves
 
 | stage | waves (‖ = together, → = then) |
@@ -998,41 +1078,46 @@ Flows: `next-to-submit` (`cli` → `next` → `analysis` → `pack` → `llm` �
 facts in Rust, judgment in BAML; git through the CLI; text anchors first,
 tree-sitter behind the same function.
 
-## Module API (stage 1)
+## Module API (as built, stage 1)
+
+The code is the reference; this is the map. `src/lib.rs` declares every
+module and `src/main.rs` is a thin binary over it: clap, then one `run` per
+command returning `anyhow::Result<ExitCode>`. A `CliError` anywhere becomes
+the JSON error; anything else is `internal`.
 
 ```rust
-// model.rs
-pub struct RepoConfig { schema: u32, name: String, test_roots: Vec<String>, docs_path: String,
-    commands: Commands, budgets: Budgets, pack: PackConfig, flows: Vec<Flow>, decisions: Vec<Decision> }
-pub struct UnitDef { name: String, purpose: String, paths: Vec<String> }
-pub struct UnitCard { unit: String, reviewed: Option<Reviewed>, interface: Vec<Interface>,
-    anchors: Vec<Anchor>, gaps: Vec<Gap>, doc: Option<Doc> }
-pub struct TestCard { unit: String, primary_paths: Vec<String>, test_command: Option<String>, scenarios: Vec<Scenario> }
-pub struct Reviewed { commit: String, fingerprint: String, tree: String,
-    tester: Option<String>, documenter: Option<String> }
-pub struct Anchor { path: String, name: String }
+// model.rs: the schemas as serde types, plus
+pub enum Role { Developer, Maintainer, Tester, Documenter, Validator, Architect }  // FromStr, as_str
 impl Anchor { pub fn parse(s: &str) -> Result<Anchor> }
-pub struct Loaded { root: PathBuf, repo: RepoConfig, units: Vec<UnitDef>,
-    cards: BTreeMap<String, UnitCard>, tests: BTreeMap<String, TestCard> }
-pub fn load_repo(root: &Path) -> Result<Loaded>
+pub fn load_repo(root: &Path) -> Result<Loaded>     // checks .git and .stewards for the root it is given
 
-// workspace.rs
-pub struct Repo { name: String, root: PathBuf, loaded: Option<Loaded> }   // None = uninitialized
-pub struct Workspace { repos: Vec<Repo>, is_workspace: bool }
-pub fn discover(cwd: &Path) -> Result<Workspace>
-impl Workspace { pub fn display_name(&self, repo: &Repo, unit: &str) -> String }
+// workspace.rs: a stewards.toml above cwd wins over a nearer .git
+pub fn discover(cwd: &Path, only: Option<&str>) -> Result<Workspace>   // only = --repo
+pub fn here(g: &Global) -> Result<(PathBuf, Workspace)>                 // canonical cwd + discover
+impl Repo {
+    pub fn loaded(&self) -> Result<&Loaded>                              // the one no_stewards_dir
+    // the one way to change a file in a repo; unsafe_path on a link or a non-plain rel
+    pub fn write(&self, rel: &str, contents: &[u8]) -> Result<()>       // temp file renamed over
+    pub fn append(&self, rel: &str, contents: &[u8]) -> Result<()>      // creates when missing
+    pub fn remove(&self, rel: &str) -> Result<()>                       // regular file; missing is Ok
+}
+impl Workspace {
+    pub fn repo_containing(&self, path: &Path) -> Option<&Repo>          // deepest root
+    pub fn current_repo(&self, cwd: &Path) -> Result<&Repo>              // the one not_in_repo
+    pub fn loaded_repos(&self) -> Result<Vec<(&Repo, &Loaded)>>          // skips uninitialized siblings
+    pub fn display_name(&self, repo: &Repo, unit: &str) -> String
+}
 
-// git.rs
-pub fn is_repo(root) -> bool
+// git.rs: the only module that runs git
 pub fn ls_files(root) -> Result<Vec<String>>
-pub fn snapshot(root) -> Result<String>                              // temp index, add -A, write-tree
-pub fn ls_tree(root, tree: &str) -> Result<Vec<(String, String)>>    // (path, blob)
-pub fn has_object(root, sha: &str) -> bool                           // a stamped tree may be pruned
-pub fn diff_names(root, from: &str, to: &str) -> Result<Vec<String>>
-pub fn diff_file(root, from: &str, to: &str, path: &str) -> Result<String>
-pub fn diff_added_lines(root, from: &str, to: &str) -> Result<Vec<(String, u32, String)>>
-pub fn head(root) -> Result<String>
-pub fn task_text(root) -> Result<String>                             // branch + last commit subject
+pub fn snapshot(root) -> Result<String>
+pub fn ls_tree(root, tree) -> Result<Vec<(String, String)>>
+pub fn has_object(root, sha) -> bool                 // resolves to a tree
+pub fn diff_names(root, from, to) -> Result<Vec<String>>
+pub fn diff_file(root, from, to, path) -> Result<String>
+pub fn diff_added_lines(root, from, to) -> Result<Vec<(String, u32, String)>>
+pub fn head_commit(root) -> Result<Option<String>>   // None = no commits yet
+pub fn task_text(root) -> Result<String>
 
 // anchors.rs
 pub enum Resolution { Found { line: u32 }, DeadPath, DeadName }
@@ -1040,58 +1125,69 @@ pub fn resolve(root, a: &Anchor) -> Resolution
 pub fn source_window(root, a: &Anchor, before: usize, after: usize) -> Option<String>
 
 // route.rs
-pub struct Router { /* compiled globsets in units.toml order */ }
-impl Router { pub fn new(units: &[UnitDef]) -> Result<Router>;
-    pub fn owner(&self, path: &str) -> Option<&str>;
-    pub fn overlaps(&self, files: &[String]) -> Vec<(String, Vec<String>)> }
+impl Router {
+    pub fn new(units: &[UnitDef], docs_path: &str) -> Result<Router>
+    pub fn owner(&self, path: &str) -> Option<&str>
+    pub fn tool_owned(&self, path: &str) -> bool
+    pub fn overlaps(&self, files: &[String]) -> Vec<(String, Vec<String>)>
+}
+
+// model.rs also: impl Loaded { pub fn unit(&self, name: &str) -> Result<&UnitDef> }   // the one unknown_unit
 
 // check.rs
 pub fn fingerprint(tree: &[(String, String)], unit: &str, router: &Router) -> String
-pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed>   // CLI: current snapshot; submit: the brief's
-pub struct CheckReport { failures: Vec<Finding>, warnings: Vec<Finding> }
-pub fn check(ws: &Workspace, filter: Option<&str>) -> Result<CheckReport>
+pub fn is_stale(reviewed: Option<&Reviewed>, current: &str) -> bool
+pub fn changed_since(..) / pub fn stale_files(..)    // a unit's changed files; all owned files with no usable tree
+pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed>
+pub fn check(ws, filter) -> Result<CheckReport>      // takes the snapshots, then
+pub fn check_at(ws, filter, snapshots: &[String]) -> Result<CheckReport>
+pub fn one_line(s: &str) -> String
 
 // pack.rs
-pub enum Role { Developer, Maintainer, Tester, Documenter, Validator, Architect }
-pub struct Pack { /* fields as in Rules */ }
-pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool) -> Result<Pack>   // None = architect
+pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool, snapshot: &str)
+    -> Result<Pack>                                  // --diff hunks run to `snapshot`
 impl Pack { pub fn render(&self) -> String; pub fn fit(&mut self, budget: usize) }
 
 // next.rs
-pub struct Job { unit: String, role: Role, task: String, reasons: Vec<String>, changed: Vec<String>,
-    brief_path: Option<PathBuf>, command: String, debt_added: Vec<DebtItem> }
-pub struct NextReport { snapshot: String, jobs: Vec<Job>, architect: bool,
-    flow_checks: Vec<FlowCheck>, check: CheckReport }   // FlowCheck { flow, command, pass, output }
+pub struct Job { unit, role, task, snapshot, reasons, changed, brief_path, command, debt_added }
+pub struct NextReport { jobs, architect, flow_checks, check }
 pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport>
 
 // debt.rs
-pub struct DebtItem { path: String, line: u32, text: String }
-pub fn scan(repo: &Repo) -> Result<BTreeMap<Option<String>, Vec<DebtItem>>>   // None = unrouted
+pub fn is_debt_line(line: &str) -> bool
+pub fn scan(repo: &Repo) -> Result<BTreeMap<Option<String>, Vec<DebtItem>>>
 
 // status.rs
 pub fn status(ws: &Workspace) -> Result<StatusReport>
 
 // output.rs
+pub struct Global { human, repo, direct }
 pub trait Human { fn render(&self) -> String }
 pub fn emit<T: Serialize + Human>(v: &T, human: bool)
-pub struct CliError { code: &'static str, message: String, fix: String }
+pub struct CliError { code, message, fix }
 ```
+
+In a workspace a job's `command` is `stewards --repo <repo> brief <unit>
+--role <role>`: write commands act on one repo and look units up by their
+plain name.
 
 Dependencies for stage 1: `clap` (derive), `serde`, `serde_json`, `toml`,
 `globset`, `sha2`, `anyhow`; dev `tempfile`. No git library, no walker, no
-regex. Stage 2 adds `baml` and `toml_edit` (writes keep comments and order).
+regex. Stage 2 adds `baml` and `baml-sys` (both pinned exactly; building
+them needs `protoc`), `toml_edit`, and `serde_path_to_error`.
 
-Stage 1 tests run the binary via `env!("CARGO_BIN_EXE_stewards")` against
-`tests/fixtures/single/` (two units, a `simplified:` comment in code and one
-in markdown, an uncovered interface, a cross-unit flow) and
-`tests/fixtures/workspace/` (two repos, one uninitialized), copied to a temp
-dir, `git init`, committed, stamped, committed again. One behavior per test.
+Tests run the binary via `env!("CARGO_BIN_EXE_stewards")`, and the library
+directly where that is simpler, against `tests/fixtures/single/` (two units,
+a `simplified:` comment in code and one in markdown, an uncovered interface,
+a cross-unit flow, one unowned file) and `tests/fixtures/workspace/` (two
+repos, one uninitialized), copied to a temp dir and `git init`ed by the
+helpers in `tests/common`. One behavior per test.
 
 ## Risk register
 
 | # | Risk | Signal | Mitigation | Kill criterion |
 |---|---|---|---|---|
-| 1 | BAML Rust client immature | `cargo update` breaks the generated client; runtime download fails | Pin `baml` exactly; vendor the lib in releases; every LLM step behind `llm.rs` so templates + serde is a one-module swap | Two consecutive BAML releases break the client with no fix in 30 days → templates + serde |
+| 1 | BAML Rust client immature | `cargo update` breaks the generated client; runtime download fails | Pin `baml` and `baml-sys` exactly; validation is serde on the generated types, so only `--direct` touches the native lib; vendor the lib in releases; every LLM step behind `llm.rs` so templates + serde is a one-module swap | Two consecutive BAML releases break the client with no fix in 30 days → templates + serde |
 | 2 | Harness drift across the supported harnesses | Agent dirs, subagent tools, or env vars change | Per-harness facts in one `harness.rs` table with a last-verified date; evals on three; spot-check list for the rest per release | A harness drops repo AGENTS.md or shell → drop it |
 | 3 | Subagents ignore the pack | `pulled_anchors` large; tokens per job far above pack size | Pull rule stated twice; budget shown; token grader | Two prompt-tuning rounds after the first eval; still missing the 20% main-context criterion → reopen delegation before stage 3 starts |
 | 4 | Cards rot despite `check` | Many `card_patch: null` while anchors drift; prose contradicts code | Fingerprint staleness; docs-accuracy grader; `next` re-reviews every stale unit | Docs-accuracy fails two releases running → regen-only cards |
@@ -1162,21 +1258,27 @@ paths; done is a `next` with no jobs.
 
 Read this section, then the Build order, then start.
 
-**State (2026-11-11).** Design complete; every section above is settled.
-Reviewed 2026-11-11: `next` is stale-driven (no base ref), stamps are
-working-tree snapshots, job files have fixed names and a header, bugs are
-gaps, `sync` is gone.
-No code: `src/main.rs` is the `cargo init` hello-world. Repo
-`wromansky/stewards` (private), `main` only, CI green, auto-delete of
-merged branches on. Memory for this project is in Claude's memory dir
-(`project-stewards`, `feedback-plan-mode-exit-only-on-request`).
+**State (2026-11-12).** Stage 1 is built on `feat/stage-1-core`: schemas,
+workspace, git snapshots, anchors, `route`, `check`, `stamp`, `debt`,
+`status`, `pack`, `next`, each reviewed and fixed, 196 tests. Stacked on it,
+`feat/stage-2-roles` holds the harness table and `guide`, user config and
+memory, `docs`, `init` step 1, and the BAML schemas with `llm.rs`;
+`feat/stage-2b-proof` holds the eval fixture. Nothing is merged to `main`
+but this document. Repo `wromansky/stewards` (public since 2026-11-12), auto-delete of
+merged branches on.
 
-**Next action.** Stage 1 of the Build order on a fresh
-`feat/stage-1-core` off `main`: schemas, workspace, `route`, `check`,
-`stamp`, `status`, `debt`, `pack`, `next`, fixture tests. Four checkpoints,
-one commit each, one PR. The stage 1 module API and the fixture/test list
-above are the spec. Stage 1 verification uses a hand-written, uncommitted
-`.stewards/` for this repo (units in "stewards' own units").
+**Next action.** The stage-1 gate, then the stage-2 chain on
+`feat/stage-2-roles`: `brief`, `submit` for the maintainer, `submit` for the
+other roles, the developer role, `init --draft`, then dogfooding on this
+repo. The task list in the build session is the plan; Build cycle says how
+waves run.
+
+**Deferred, known:** workspace loads every listed repo before applying
+`--repo`, so a broken sibling blocks `--repo good`; the harness table has no
+`parallel` field; an anchor's symlink check runs before the read, not with
+it; rendered docs escape every punctuation character, which is safe but
+ugly raw; `guide --errors` lists only the codes that existed when it was
+written.
 
 **How we work.**
 - Clean room: no text from the adelphi-adlc-plugin repo, ever.
@@ -1259,6 +1361,9 @@ Delegation text per briefed harness, as `guide` prints it:
   brief path> and follow it", context="<task>")`, or a fresh `borg ask`
   session per brief; run inside the repo workspace (`-w` or `borg acp`),
   because `borg ask` defaults to the daemon's cwd.
+
+The delegation paragraphs for the rendered harnesses are written in
+`src/harness.rs`, which owns them.
 
 Command gates: Hermes auto-denies dangerous child commands unless
 `delegation.subagent_auto_approve: true`; Borg has a hardcoded deny list.
@@ -1344,14 +1449,25 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   `Hermes-Bot-Mode` archived). ZeroClaw's official `zeroclaw-plugins` are
   WASM channel tools and `zeroclaw-skills` are prompt skills. Pi's
   `pi-subagents` remains the only plugin that adds file-defined agents.
-- BAML Rust (0.221.0): cold debug build 10.8 s, binary 468 KB. The crate
-  `dlopen`s `libbaml_cffi`, downloaded on first LLM use from
-  `https://github.com/boundaryml/baml/releases/download/<version>/<prefix>baml_cffi-<target-triple>.<ext>`
-  with a `.sha256` beside it, cached under `BAML_CACHE_DIR` (macOS
-  `~/Library/Caches/baml/libs/<version>/`, Linux `~/.cache/baml/libs/`), 46
-  MB for `aarch64-apple-darwin`; `BAML_LIBRARY_PATH` and
-  `BAML_LIBRARY_DISABLE_DOWNLOAD` override. The generated client has
-  `build_request()` and `parse()`. Pure-Rust commands never load it.
+- BAML Rust (spike 2026-11-12, crate and CLI 0.226.3, "BAML v0"; a v1 line
+  exists): crate and CLI versions must match exactly; building the crate
+  needs `protoc`; 136 crates, about 7.5 CPU-minutes cold against 25 s
+  without. The crate `dlopen`s `libbaml_cffi` (51 MB on x86_64 Linux) on the
+  first `parse`, `build_request`, or `call`, and by default downloads it
+  from
+  `https://github.com/boundaryml/baml/releases/download/<version>/libbaml_cffi-<target-triple>.so`
+  with no published checksum, cached under `BAML_CACHE_DIR` or
+  `~/.cache/baml/libs/<version>/`; `BAML_LIBRARY_PATH` and
+  `BAML_LIBRARY_DISABLE_DOWNLOAD=true` override; a missing library panics
+  in generated code. `parse()` is lenient (fuzzy enum match, type coercion,
+  truncated JSON accepted) with one unstructured error string, so stewards
+  does not use it. The generated types derive serde and validate strictly
+  with no native library. The prompt and schema text come only from
+  `build_request`, read out of a provider request body. A client with no
+  `api_key` sends the literal `$OPENAI_API_KEY`. BAML logs the full prompt
+  to stderr unless `BAML_LOG=off`. BAML rejects lowercase enum values, so
+  enums carry aliases and the generator hook adds a serde rename; the hook
+  also rewrites the client's crate path so it can live inside `llm.rs`.
 - tree-sitter crates (2026-10-20): `tree-sitter` 0.27.1 and grammars for
   rust, python, typescript, javascript, go, bash, c, cpp, c-sharp, hcl, yaml
   exist on crates.io; no `tree-sitter-baml`; `tree-sitter-loader` compiles

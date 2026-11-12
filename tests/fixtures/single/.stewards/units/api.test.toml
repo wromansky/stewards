@@ -1,0 +1,10 @@
+unit = "api"
+primary_paths = ["create-item"]
+test_command = "pytest tests/api"
+[[scenario]]
+id = "create-ok"
+interface = "create-item"
+given = "valid body"
+expect = "201 and the item is stored"
+level = "integration"
+command = "pytest tests/api/test_items.py::test_create_ok"

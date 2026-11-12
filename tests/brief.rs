@@ -124,6 +124,7 @@ fn header_parses_back_with_mode_snapshot_and_pack_size() {
     assert_eq!(h.role, Role::Maintainer);
     assert_eq!(h.mode, Mode::Explain);
     assert_eq!(h.snapshot, snapshot);
+    assert_eq!(h.task, "q");
     assert_eq!(h.bytes as u64, pack["bytes"].as_u64().unwrap());
     assert_eq!(h.anchors, pack["anchors"].as_array().unwrap().len());
     assert_eq!(h.anchors, 1);

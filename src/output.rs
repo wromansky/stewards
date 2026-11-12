@@ -48,6 +48,9 @@ pub struct CliError {
     pub code: &'static str,
     pub message: String,
     pub fix: String,
+    /// The answer's field errors from a failed `submit`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<crate::llm::FieldError>,
 }
 
 impl CliError {
@@ -56,6 +59,7 @@ impl CliError {
             code,
             message: message.into(),
             fix: fix.into(),
+            errors: vec![],
         }
     }
 
@@ -80,7 +84,11 @@ struct ErrorPayload<'a> {
 
 impl Human for ErrorPayload<'_> {
     fn render(&self) -> String {
-        format!("error: {}\nfix: {}", self.error.message, self.error.fix)
+        let mut out = format!("error: {}\nfix: {}", self.error.message, self.error.fix);
+        for e in &self.error.errors {
+            out += &format!("\n- {}: {} (example: {})", e.field, e.problem, e.example);
+        }
+        out
     }
 }
 

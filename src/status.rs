@@ -103,15 +103,24 @@ impl Human for StatusReport {
                 self.uninitialized.join(", ")
             ));
         }
+        if let Some(t) = self.telemetry.as_ref().filter(|t| !t.is_null()) {
+            out.push(String::new());
+            out.push(format!("Telemetry: {t}"));
+        }
         out.join("\n")
     }
 }
 
 pub fn run(g: &Global, telemetry: bool) -> Result<ExitCode> {
-    let (_, ws) = here(g)?;
+    let (cwd, ws) = here(g)?;
     let mut report = status(&ws)?;
-    // simplified: telemetry has no source yet, so it is null until stage 2 adds one
-    report.telemetry = telemetry.then_some(serde_json::Value::Null);
+    if telemetry {
+        // Telemetry is per repo; with no current repo (a workspace root) it is null.
+        let repo = ws.current_repo(&cwd).ok();
+        report.telemetry = Some(repo.map_or(serde_json::Value::Null, |r| {
+            crate::telemetry::summary(&r.root)
+        }));
+    }
     emit(&report, g.human);
     Ok(ExitCode::SUCCESS)
 }

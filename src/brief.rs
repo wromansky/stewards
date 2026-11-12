@@ -26,6 +26,7 @@ pub struct Header {
     #[serde(with = "ModeName")]
     pub mode: Mode,
     pub snapshot: String,
+    pub task: String,
     pub bytes: usize,
     pub anchors: usize,
     pub bug: Option<String>,
@@ -173,6 +174,7 @@ fn build(
         role,
         mode,
         snapshot: snapshot.to_string(),
+        task: task.to_string(),
         bytes: pack.bytes,
         anchors: pack.anchors.as_ref().map_or(0, Vec::len),
         bug,

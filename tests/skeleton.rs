@@ -236,7 +236,7 @@ issue = "https://example.invalid/1"
 }
 
 #[test]
-fn every_command_parses_its_flags_and_reaches_its_stub() {
+fn every_command_parses_its_flags() {
     let repo = fixture("single");
     let dir = repo.path().to_str().unwrap();
     let commands: &[&[&str]] = &[
@@ -292,7 +292,7 @@ fn every_command_parses_its_flags_and_reaches_its_stub() {
     for args in commands {
         let out = stewards(Path::new("/"), args);
         let v: Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");
-        assert_eq!(v["error"]["code"], "not_implemented", "{args:?}: {v}");
-        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        // Built commands answer for real (run from `/` they mostly error); the point is that clap accepted the flags.
+        assert_ne!(v["error"]["code"], "usage", "{args:?}: {v}");
     }
 }

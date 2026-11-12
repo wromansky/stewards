@@ -157,13 +157,13 @@ fn a_changed_file_with_a_quoted_name_does_not_stop_next_listing_jobs() {
 }
 
 #[test]
-fn interface_file_edit_gives_maintainer_tester_documenter() {
+fn interface_body_edit_gives_maintainer_tester_documenter() {
     let repo = fixture("single");
     stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join("src/store/db.py"),
-        "_items = []",
-        "_items = [0]",
+        "_items.append(item)",
+        "_items.insert(0, item)",
     );
     let (_, v) = run(repo.path(), &["next"]);
     assert_eq!(
@@ -174,10 +174,106 @@ fn interface_file_edit_gives_maintainer_tester_documenter() {
             ("store", "documenter")
         ])
     );
-    assert_eq!(
-        strings(&v["jobs"][1]["reasons"]),
-        ["interface file changed: src/store/db.py"]
+    // count_items, in the same file, is not named
+    for j in [1, 2] {
+        assert_eq!(
+            strings(&v["jobs"][j]["reasons"]),
+            ["interface changed: src/store/db.py::save_item"]
+        );
+        assert_eq!(strings(&v["jobs"][j]["changed"]), ["src/store/db.py"]);
+    }
+}
+
+/// Stamps both units after `prepare` edits store's `db.py`, then applies `change` to it and
+/// returns store's `(role, reasons)` jobs.
+fn store_jobs_after(prepare: (&str, &str), change: (&str, &str)) -> Vec<(String, Vec<String>)> {
+    let repo = fixture("single");
+    let db = repo.path().join("src/store/db.py");
+    edit(&db, prepare.0, prepare.1);
+    stamp_units(repo.path(), &["api", "store"]);
+    edit(&db, change.0, change.1);
+    let (_, v) = run(repo.path(), &["next", "--no-brief"]);
+    v["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| {
+            let reasons = strings(&j["reasons"]).into_iter().map(|r| r.to_string());
+            (j["role"].as_str().unwrap().to_string(), reasons.collect())
+        })
+        .collect()
+}
+
+fn roles(jobs: &[(String, Vec<String>)]) -> Vec<&str> {
+    jobs.iter().map(|(r, _)| r.as_str()).collect()
+}
+
+const SAVE_ITEM: &str = "interface changed: src/store/db.py::save_item";
+
+#[test]
+fn private_function_edit_in_an_interface_file_gives_only_a_maintainer_job() {
+    let jobs = store_jobs_after(
+        (
+            "_items = []\n",
+            "_items = []\n\n\ndef _reset():\n    _items.clear()\n",
+        ),
+        ("_items.clear()", "del _items[:]"),
     );
+    assert_eq!(roles(&jobs), ["maintainer"]);
+}
+
+#[test]
+fn doc_comment_edit_above_an_interface_gives_tester_and_documenter() {
+    let jobs = store_jobs_after(
+        ("def save_item", "# Saves one item.\ndef save_item"),
+        ("# Saves one item.", "# Saves one item, returns the count."),
+    );
+    assert_eq!(roles(&jobs), ["maintainer", "tester", "documenter"]);
+    assert_eq!(jobs[1].1, [SAVE_ITEM]);
+    assert_eq!(jobs[2].1, [SAVE_ITEM]);
+}
+
+#[test]
+fn pure_deletion_inside_an_interface_gives_tester_and_documenter() {
+    let jobs = store_jobs_after(
+        (
+            "    return len(_items)\n\n\ndef count",
+            "    x = 1\n    return len(_items)\n\n\ndef count",
+        ),
+        ("    x = 1\n", ""),
+    );
+    assert_eq!(roles(&jobs), ["maintainer", "tester", "documenter"]);
+    assert_eq!(jobs[1].1, [SAVE_ITEM]);
+}
+
+#[test]
+fn pure_deletion_outside_every_interface_gives_only_a_maintainer_job() {
+    let jobs = store_jobs_after(("_items = []\n", "_items = []\nx = 1\n"), ("x = 1\n", ""));
+    assert_eq!(roles(&jobs), ["maintainer"]);
+}
+
+#[test]
+fn interface_name_removed_from_its_file_falls_back_to_the_file_trigger() {
+    // no preparation: the replace is a no-op
+    let jobs = store_jobs_after(
+        ("_items = []", "_items = []"),
+        ("def count_items", "def count_all"),
+    );
+    assert_eq!(roles(&jobs), ["maintainer", "tester", "documenter"]);
+    assert_eq!(jobs[1].1, ["interface file changed: src/store/db.py"]);
+}
+
+#[test]
+fn name_first_used_in_an_import_still_triggers_on_its_definition() {
+    let jobs = store_jobs_after(
+        (
+            "_items = []\n",
+            "from x import save_item as _unused\n_items = []\n",
+        ),
+        ("_items.append(item)", "_items.insert(0, item)"),
+    );
+    assert_eq!(roles(&jobs), ["maintainer", "tester", "documenter"]);
+    assert_eq!(jobs[1].1, [SAVE_ITEM]);
 }
 
 #[test]
@@ -187,8 +283,8 @@ fn restamping_keeps_the_pending_tester_and_documenter_jobs() {
     stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join("src/store/db.py"),
-        "_items = []",
-        "_items = [0]",
+        "_items.append(item)",
+        "_items.insert(0, item)",
     );
     stamp_units(repo.path(), &["store"]);
     let (code, v) = run(repo.path(), &["next"]);
@@ -225,8 +321,8 @@ fn tester_mark_after_the_change_suppresses_the_tester_job() {
     stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join("src/store/db.py"),
-        "_items = []",
-        "_items = [0]",
+        "_items.append(item)",
+        "_items.insert(0, item)",
     );
     let tree = snapshot(repo.path());
     set_tester_mark(repo.path(), "store", &tree);
@@ -243,8 +339,8 @@ fn documenter_mark_after_the_change_suppresses_the_documenter_job() {
     stamp_units(repo.path(), &["api", "store"]);
     edit(
         &repo.path().join("src/store/db.py"),
-        "_items = []",
-        "_items = [0]",
+        "_items.append(item)",
+        "_items.insert(0, item)",
     );
     let tree = snapshot(repo.path());
     set_documenter_mark(repo.path(), "store", &tree);
@@ -313,8 +409,8 @@ fn fresh_unit_with_an_older_tester_mark_still_gets_a_tester_job() {
     set_tester_mark(repo.path(), "store", &stamped);
     edit(
         &repo.path().join("src/store/db.py"),
-        "_items = []",
-        "_items = [0]",
+        "_items.append(item)",
+        "_items.insert(0, item)",
     );
     stamp_units(repo.path(), &["store"]);
     let (code, v) = run(repo.path(), &["next"]);

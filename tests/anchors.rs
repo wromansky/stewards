@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use stewards::anchors::{Resolution, resolve, source_window};
+use stewards::anchors::{Resolution, interface_lines, resolve, source_window};
 use stewards::model::Anchor;
 
 fn anchor(path: &str, name: &str) -> Anchor {
@@ -54,6 +54,24 @@ fn a_whole_word_after_a_partial_one_is_found() {
         resolve(t.path(), &anchor("f.txt", "target")),
         Resolution::Found { line: 2 }
     );
+}
+
+#[test]
+fn interface_lines_cover_a_multi_line_signature_body_and_doc_comment() {
+    let text = "use m::f;\n\n/// Doc.\n#[inline]\npub fn f(\n    a: u8,\n) -> u8 {\n    a\n}\n\nfn g() {}\n";
+    // line 1 is the `use`; the definition with its doc and attribute is lines 3-9
+    assert_eq!(interface_lines(text, "f"), [1, 3, 4, 5, 6, 7, 8, 9]);
+}
+
+#[test]
+fn interface_lines_of_a_python_def_stop_at_the_next_def() {
+    let text = "@cache\ndef f(x):\n    y = x\n\n    return y\n\n\ndef g():\n    return 0\n";
+    assert_eq!(interface_lines(text, "f"), [1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn interface_lines_are_empty_without_a_whole_word_occurrence() {
+    assert!(interface_lines("fn ff() {}\n", "f").is_empty());
 }
 
 #[test]

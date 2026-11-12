@@ -160,9 +160,10 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   architect first. To change, `brief <unit> --role developer` writes one
   brief per task of the maintainer's plan (or the unit's step of an open
   architect plan) and the main agent dispatches them. Before reporting done, `next` finds the stale units and
-  writes the jobs: maintainer review for every stale unit; tester when an
-  interface anchor's file or a file under `test_roots` changed since the
-  stamp; documenter when an interface anchor's file changed; architect when
+  writes the jobs: maintainer review for every stale unit; tester when a
+  change since its mark touched an interface's lines or a file under
+  `test_roots`; documenter when a change since its mark touched an
+  interface's lines; architect when
   two or more units changed since their stamps and no plan covers them;
   validator for a bug with no severity. Done means `next` lists no jobs.
   `check` covers review only (stamps, anchors, scenario ids): it is what
@@ -533,10 +534,21 @@ committed, staged, unstaged, and untracked changes are all just distance
 from the stamp. Jobs:
 
 - every stale unit → maintainer review
-- a file changed since the tester's mark is an interface anchor's path, or
-  is owned by the unit and under `test_roots` → tester
-- a file changed since the documenter's mark is an interface anchor's path
-  → documenter
+- a change since the tester's mark touches an interface's lines, or a file
+  owned by the unit and under `test_roots` changed → tester
+- a change since the documenter's mark touches an interface's lines →
+  documenter
+- an interface's lines, in the snapshot's file: a block around every
+  whole-word match of the anchor's name, being the match's line, the lines
+  below while blank, indented deeper, or at the same indent and starting
+  with `)`, `]` or `}` (trailing blanks dropped), and the non-blank lines
+  directly above at the same indent (doc comments, attributes). A hunk of
+  `git diff -U0 <mark> <snapshot>` touches them when a line it adds or
+  changes is one of them, or, for a pure deletion, when it sits inside or
+  next to them. The reason is `interface changed: <anchor>`. When the lines
+  can't be found (name absent, file gone, no hunks for it, mark tree pruned)
+  the file changing is enough: `interface file changed: <path>`. Exact
+  spans come with tree-sitter.
 - tester and documenter jobs do not need the unit to be stale; with no
   mark they measure from the stamp, and a never-stamped unit gets none
   until its first review stamps it (a validator job does not wait)
@@ -1314,9 +1326,8 @@ ran on this repository.
 - Triggers are coarse. A tester and a documenter are due whenever a file
   holding an interface anchor changes, and maintainers record most public
   functions as interfaces, so a small edit in each of eight units cost 33
-  role jobs over two rounds. Candidates: trigger on the changed lines
-  overlapping an interface's own lines; or leave it to the maintainer's
-  `tester_needed` and a matching flag for the documenter.
+  role jobs over two rounds. Changed: they now trigger only when a hunk
+  touches an interface's own lines (see next).
 - The architect job returns every round in which two stamped units
   changed, until plans exist (stage 3).
 - A model learns a length cap only by being rejected; the caps belong in

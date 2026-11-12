@@ -44,7 +44,7 @@ pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards
 pub const FAILED_STOPS: [&str; 3] = ["error", "aborted", "length"];
 
 /// What the summary says about the transcript-derived ritual steps.
-pub const RITUAL_NOTE: &str = "check_green is the runner's own `stewards next --no-brief` after each full session (exit 0). The other five steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, backticks, and lines inside heredocs are misread or missed; `status` and `route` count when only a child ran them; `brief` is a subagent launch whose arguments name `.stewards/briefs/`, or any `submit`.";
+pub const RITUAL_NOTE: &str = "check_green is the runner's own `stewards next --no-brief` after each full session (exit 0), and counts only for a session that changed tracked files (else n/a). On the read-only tasks 4 and 6 route, brief, submit, and check_green are n/a; each run record still shows every step it ran. The other five steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, backticks, and lines inside heredocs are misread or missed; `status` and `route` count when only a child ran them; `brief` is a subagent launch whose arguments name `.stewards/briefs/`, or any `submit`.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -162,6 +162,8 @@ pub struct Run {
     pub model: Option<String>,
     /// Every `provider/model` used anywhere in the session tree, sorted.
     pub models: Vec<String>,
+    /// Every thinking level any session of the tree was set to, sorted.
+    pub thinking_levels: Vec<String>,
     /// The stop reason of the main session's last response.
     pub stop_reason: Option<String>,
     /// Child session files (relative to the tree) whose last response stopped with one of
@@ -212,17 +214,62 @@ pub fn ritual_steps(actions: &[Action]) -> RitualSteps {
 }
 
 /// Each `;`, `&`, `|`, `(`, `)`, or newline separated segment of a command line as words, quotes
-/// trimmed, leading `VAR=value` words skipped.
-fn segments(command: &str) -> impl Iterator<Item = Vec<&str>> {
-    command
-        .split(['\n', ';', '&', '|', '(', ')'])
-        .map(|segment| {
-            segment
-                .split_whitespace()
+/// trimmed, leading `VAR=value` words skipped. A separator or space inside `'...'` or `"..."`, or
+/// after a backslash outside single quotes, does not split.
+fn segments(command: &str) -> Vec<Vec<&str>> {
+    let (mut segments, mut words) = (vec![], vec![]);
+    let (mut start, mut quote, mut escaped) = (None, None, false);
+    for (i, c) in command.char_indices() {
+        // Some(true) ends the segment, Some(false) only the word
+        let split = match (escaped, quote, c) {
+            (true, ..) => {
+                escaped = false;
+                None
+            }
+            (_, Some(q), _) if c == q => {
+                quote = None;
+                None
+            }
+            (_, Some('\''), _) => None,
+            (.., '\\') => {
+                escaped = true;
+                None
+            }
+            (_, Some(_), _) => None,
+            (.., '"' | '\'') => {
+                quote = Some(c);
+                None
+            }
+            (.., '\n' | ';' | '&' | '|' | '(' | ')') => Some(true),
+            _ if c.is_whitespace() => Some(false),
+            _ => None,
+        };
+        match split {
+            None => {
+                start.get_or_insert(i);
+            }
+            Some(segment_end) => {
+                if let Some(s) = start.take() {
+                    words.push(&command[s..i]);
+                }
+                if segment_end {
+                    segments.push(std::mem::take(&mut words));
+                }
+            }
+        }
+    }
+    words.extend(start.map(|s| &command[s..]));
+    segments.push(words);
+    segments
+        .into_iter()
+        .map(|words| {
+            words
+                .into_iter()
                 .map(|w| w.trim_matches(['"', '\'']))
                 .skip_while(|w| w.contains('='))
                 .collect()
         })
+        .collect()
 }
 
 fn program(word: &str) -> &str {
@@ -236,6 +283,7 @@ fn program(word: &str) -> &str {
 /// program is `stewards`, skipping its global flags.
 pub fn stewards_subcommands(command: &str) -> Vec<&str> {
     segments(command)
+        .into_iter()
         .filter_map(|words| {
             let mut words = words.into_iter();
             if program(words.next()?) != "stewards" {
@@ -255,42 +303,72 @@ pub fn stewards_subcommands(command: &str) -> Vec<&str> {
         .collect()
 }
 
+/// `grep`/`rg` options whose value is the next word.
+const GREP_VALUE_FLAGS: [&str; 18] = [
+    "-e",
+    "-f",
+    "-g",
+    "-m",
+    "-t",
+    "-A",
+    "-B",
+    "-C",
+    "--regexp",
+    "--file",
+    "--glob",
+    "--iglob",
+    "--type",
+    "--type-not",
+    "--max-count",
+    "--context",
+    "--after-context",
+    "--before-context",
+];
+
 /// The paths a shell command line reads, recognised simply: in each segment (see `segments`)
 /// whose program is `cat`, `head`, `tail`, `less`, `sed` with `-n`, `grep`, or `rg`, every word
-/// after it that is not a flag, a number, a glob, or a redirection (a lone `>`/`<` operator also
-/// drops the word after it); `head`/`tail` drop the value of `-n`/`-c`; `sed -n` drops its script
-/// and `grep`/`rg` their pattern (the first such word). Directories given to `grep`/`rg` count.
-/// simplified: a path relative to an earlier `cd`, or a line of a heredoc, is misread; upgrade if
-/// `files_opened` disagrees with the transcripts.
+/// after it that is not a flag, an option value, a number, a glob, a word with `$` or starting
+/// with `!`, or a redirection (a lone `>`/`<` operator also drops the word after it). Option
+/// values: `-n`/`-c` of `head`/`tail`, `-e`/`-f` of `sed`, `GREP_VALUE_FLAGS` of `grep`/`rg`.
+/// `sed -n` drops its script and `grep`/`rg` their pattern (the first such word) unless `-e`/`-f`
+/// gave it. Directories given to `grep`/`rg` count.
+/// simplified: a path relative to an earlier `cd`, a line of a heredoc, or a `for` list is
+/// misread; upgrade if `files_opened` disagrees with the transcripts.
 pub fn shell_reads(command: &str) -> Vec<&str> {
     let mut out = vec![];
     for words in segments(command) {
         let Some((first, args)) = words.split_first() else {
             continue;
         };
-        let prog = program(first);
-        let drop_first = match prog {
-            "cat" | "head" | "tail" | "less" => false,
-            "sed" if args.contains(&"-n") => true,
-            "grep" | "rg" => true,
+        let (drop_first, value_flags): (bool, &[&str]) = match program(first) {
+            "cat" | "less" => (false, &[]),
+            "head" | "tail" => (false, &["-n", "-c"]),
+            "sed" if args.contains(&"-n") => (true, &["-e", "-f"]),
+            "grep" | "rg" => (true, &GREP_VALUE_FLAGS),
             _ => continue,
         };
+        let mut pattern_given = false;
         let mut operands = vec![];
         let mut it = args.iter();
         while let Some(&w) = it.next() {
             let operator = w.trim_start_matches(|c: char| c.is_ascii_digit());
-            if (matches!(prog, "head" | "tail") && matches!(w, "-n" | "-c"))
-                || (!operator.is_empty() && operator.chars().all(|c| matches!(c, '<' | '>')))
-            {
+            if value_flags.contains(&w) {
+                pattern_given |= matches!(w, "-e" | "-f" | "--regexp" | "--file");
                 it.next();
-            } else if !(w.starts_with('-')
-                || w.contains(['<', '>', '*', '?'])
+            } else if !operator.is_empty() && operator.chars().all(|c| matches!(c, '<' | '>')) {
+                it.next();
+            } else if !(w.starts_with(['-', '!'])
+                || w.contains(['<', '>', '*', '?', '$'])
                 || w.chars().all(|c| c.is_ascii_digit()))
             {
                 operands.push(w);
             }
         }
-        out.extend(operands.into_iter().skip(usize::from(drop_first)));
+        out.extend(
+            operands
+                .into_iter()
+                .skip(usize::from(drop_first && !pattern_given)),
+        );
     }
     out
 }
@@ -376,6 +454,9 @@ pub struct RunRecord {
     pub thinking: String,
     /// True when the tree used a model other than `model` (flagged, not failed).
     pub model_mismatch: bool,
+    /// True when a session of the tree ran at a thinking level other than `thinking` (flagged,
+    /// not failed).
+    pub thinking_mismatch: bool,
     pub status: Status,
     /// Why `status` is `failed` though the harness exited 0.
     pub failure: Option<String>,
@@ -387,6 +468,9 @@ pub struct RunRecord {
     pub leftovers: Option<Leftovers>,
     /// `full` arms only.
     pub next_check: Option<NextCheck>,
+    /// Whether the session left a tracked file (or the commit) different from how it started;
+    /// `check_green` counts only then.
+    pub changed_tracked_files: bool,
     pub result: Option<Run>,
     /// Why `result` is missing when the transcript could not be parsed.
     pub error: Option<String>,
@@ -432,9 +516,11 @@ pub struct SetupNotes {
     pub units: Option<String>,
     /// Paths the adopted state added outside `.stewards/` and `docs/units/` (`AGENTS.md`, tests).
     pub added_paths: Vec<String>,
-    /// `kind = "bug"` gaps on the adopted cards, as `unit: title`: a bug-task number is suspect
-    /// when its seeded bug is listed.
-    pub bug_gaps: Vec<String>,
+    /// Every gap on the adopted cards, as `unit: kind: title`: a task whose seeded bug or answer
+    /// is listed started known.
+    pub gaps: Vec<String>,
+    /// The flows adoption recorded in `.stewards/repo.toml`, as `name: unit, unit`.
+    pub flows: Vec<String>,
 }
 
 struct Runner<'a> {
@@ -460,11 +546,15 @@ impl Runner<'_> {
         let label = format!("{n:03}-{}", s.label);
         let scratch = self.plan.work.join("s").join(n.to_string());
         let sessions = scratch.join("t");
-        let env = [
+        let mut env = vec![
             ("PATH", s.path.clone()),
-            ("STEWARDS_HOME", scratch.join("h").into_os_string()),
             ("CARGO_INSTALL_ROOT", scratch.join("c").into_os_string()),
         ];
+        // the name alone would tell a bare or block-only session about stewards
+        if s.arm.is_full() {
+            env.push(("STEWARDS_HOME", scratch.join("h").into_os_string()));
+        }
+        let before = tracked_state(&s.dir);
         let session = self.driver.start(
             &s.dir,
             &s.prompt,
@@ -475,6 +565,7 @@ impl Runner<'_> {
         )?;
         let root = s.dir.parent().unwrap_or(&s.dir).to_path_buf();
         let leftovers = kill_leftovers(&root)?;
+        let changed_tracked_files = tracked_state(&s.dir) != before;
         let next_check = if s.arm.is_full() {
             Some(next_check(&self.plan.stewards, &s.dir)?)
         } else {
@@ -536,6 +627,9 @@ impl Runner<'_> {
                 .as_ref()
                 .is_some_and(|r| r.models.iter().any(|m| Some(m) != model.as_ref())),
             model,
+            thinking_mismatch: result
+                .as_ref()
+                .is_some_and(|r| r.thinking_levels.iter().any(|t| *t != self.plan.thinking)),
             thinking: self.plan.thinking.clone(),
             status,
             failure,
@@ -543,6 +637,7 @@ impl Runner<'_> {
             workdir: s.dir,
             leftovers,
             next_check,
+            changed_tracked_files,
             result,
             error,
         };
@@ -661,7 +756,7 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
             );
             return fail(&r, notes, err.into());
         }
-        notes.bug_gaps = bug_gaps(&dir)?;
+        (notes.gaps, notes.flows) = adopted_knowledge(&dir)?;
         if plan.setup_dir.is_none() {
             commit_adopted(&dir)?;
         }
@@ -896,18 +991,34 @@ fn adoption_changes(dir: &Path) -> Result<Vec<String>> {
     Ok(added)
 }
 
-/// The `kind = "bug"` gaps on the cards in `dir`, as `unit: title`.
-fn bug_gaps(dir: &Path) -> Result<Vec<String>> {
-    Ok(crate::model::load_repo(dir)?
+/// Every gap on the cards in `dir`, as `unit: kind: title`, and every flow, as `name: units`.
+pub fn adopted_knowledge(dir: &Path) -> Result<(Vec<String>, Vec<String>)> {
+    let loaded = crate::model::load_repo(dir)?;
+    let gaps = loaded
         .cards
         .values()
         .flat_map(|c| {
-            c.gaps
-                .iter()
-                .filter(|g| g.kind == crate::model::GapKind::Bug)
-                .map(|g| format!("{}: {}", c.unit, g.title))
+            c.gaps.iter().map(|g| {
+                let kind = format!("{:?}", g.kind).to_lowercase();
+                format!("{}: {kind}: {}", c.unit, g.title)
+            })
         })
-        .collect())
+        .collect();
+    let flows = loaded
+        .repo
+        .flows
+        .iter()
+        .map(|f| format!("{}: {}", f.name, f.units.join(", ")))
+        .collect();
+    Ok((gaps, flows))
+}
+
+/// `HEAD` and the diff of the tracked files against it, or `None` when git cannot say.
+fn tracked_state(dir: &Path) -> Option<(String, String)> {
+    Some((
+        git(dir, &["rev-parse", "HEAD"]).ok()?,
+        git(dir, &["diff", "HEAD", "--binary"]).ok()?,
+    ))
 }
 
 /// `stewards next --no-brief` in `dir`: its exit code and job count; writes no briefs.
@@ -1123,7 +1234,7 @@ pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut pi = pi::Pi::find(&path, SESSION_LIMIT)?;
     let work = neutral_work_dir(&std::env::temp_dir());
-    let harness_setup = pi.isolate(&work.join("a"))?;
+    let harness_setup = pi.isolate(&work.join("a"), f.thinking)?;
     let stamp = crate::telemetry::rfc3339(SystemTime::now()).replace(':', "-");
     let plan = Plan {
         tasks,

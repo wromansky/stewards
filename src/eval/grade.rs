@@ -1,11 +1,10 @@
 // Graders: pure functions from run records to per-task verdicts.
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Serialize;
 
-use super::{
-    Arm, Plan, RITUAL_NOTE, RITUAL_STEPS, RitualSteps, Run, RunRecord, RunRole, SetupNotes, Status,
-};
+use super::{Arm, Plan, RITUAL_NOTE, RITUAL_STEPS, Run, RunRecord, RunRole, SetupNotes, Status};
 use crate::output::Human;
 
 /// Medians of `full` over `bare`: main context at most this share, total at most this share.
@@ -32,6 +31,20 @@ impl Verdict {
             Verdict::Fail => "fail",
             Verdict::Incomplete => "incomplete",
         }
+    }
+}
+
+/// The read-only question tasks, where `route`, `brief`, `submit`, and `check_green` are n/a.
+pub const READ_ONLY_TASKS: [u32; 2] = [4, 6];
+
+/// Whether ritual `step` is graded for run `r`: not `route`, `brief`, `submit`, or `check_green`
+/// on `READ_ONLY_TASKS`, and `check_green` only when the session changed tracked files.
+fn ritual_applies(step: &str, r: &RunRecord) -> bool {
+    let read_only = r.task.is_some_and(|t| READ_ONLY_TASKS.contains(&t));
+    match step {
+        "route" | "brief" | "submit" => !read_only,
+        "check_green" => !read_only && r.changed_tracked_files,
+        _ => true,
     }
 }
 
@@ -70,8 +83,9 @@ pub struct ArmStats {
     pub files_opened_tree: Option<f64>,
     pub peak_main_context: Option<f64>,
     pub cost_usd: Option<f64>,
-    /// Each step present in a majority of runs; `None` outside the `full` arms.
-    pub ritual: Option<RitualSteps>,
+    /// Each step present in a majority of the runs it applies to (see `ritual_applies`), `None`
+    /// (n/a) when it applies to none; `None` outside the `full` arms.
+    pub ritual: Option<BTreeMap<&'static str, Option<bool>>>,
 }
 
 pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
@@ -79,7 +93,8 @@ pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
         RITUAL_STEPS
             .iter()
             .map(|&name| {
-                let yes = runs
+                let applies: Vec<_> = runs.iter().filter(|r| ritual_applies(name, r)).collect();
+                let yes = applies
                     .iter()
                     .filter(|r| {
                         r.result
@@ -87,7 +102,10 @@ pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
                             .is_some_and(|x| x.ritual_steps.get(name) == Some(&true))
                     })
                     .count();
-                (name, yes * 2 > runs.len())
+                (
+                    name,
+                    (!applies.is_empty()).then_some(yes * 2 > applies.len()),
+                )
             })
             .collect()
     });
@@ -108,7 +126,8 @@ pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
 #[derive(Debug, Clone, Serialize)]
 pub struct Criterion {
     pub name: &'static str,
-    /// `full` over `bare`, or for `ritual` the number of steps present.
+    /// `full` over `bare`, or for `ritual` the number of applicable steps present (the limit is
+    /// the number applicable).
     pub value: f64,
     pub limit: f64,
     pub ok: bool,
@@ -276,12 +295,13 @@ pub fn grade_task(task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> 
     if let Some(steps) = &f.ritual {
         let missing: Vec<&str> = RITUAL_STEPS
             .into_iter()
-            .filter(|n| steps.get(n) != Some(&true))
+            .filter(|n| steps.get(n) == Some(&Some(false)))
             .collect();
+        let applicable = steps.values().filter(|v| v.is_some()).count();
         criteria.push(Criterion {
             name: "ritual",
-            value: (RITUAL_STEPS.len() - missing.len()) as f64,
-            limit: RITUAL_STEPS.len() as f64,
+            value: (applicable - missing.len()) as f64,
+            limit: applicable as f64,
             ok: missing.is_empty(),
             unmeasured: false,
         });
@@ -353,6 +373,11 @@ pub struct Summary {
     pub ritual_note: &'static str,
     /// Runs whose session tree used a model other than the requested one.
     pub model_mismatches: Vec<String>,
+    /// Runs where a session of the tree ran at a thinking level other than the requested one.
+    pub thinking_mismatches: Vec<String>,
+    /// Report-only: the adoption session's total tokens over the median total of the parsed
+    /// `bare` task runs, so a reader can amortize adoption.
+    pub adoption_in_bare_tasks: Option<f64>,
     pub verdict: Verdict,
     pub grades: Vec<TaskGrade>,
 }
@@ -369,6 +394,18 @@ pub fn summarize(
         .iter()
         .map(|&t| grade_task(t, records, &plan.arms, plan.runs))
         .collect();
+    let adoption = records.iter().find(|r| r.task.is_none()).cloned();
+    let bare_totals: Vec<f64> = records
+        .iter()
+        .filter(|r| r.arm == Arm::Bare && r.role == RunRole::Task)
+        .filter_map(|r| r.result.as_ref())
+        .map(|x| x.total_tokens.sum() as f64)
+        .collect();
+    let adoption_in_bare_tasks = adoption
+        .as_ref()
+        .and_then(|a| a.result.as_ref())
+        .zip(median(&bare_totals).filter(|m| *m > 0.0))
+        .map(|(a, m)| a.total_tokens.sum() as f64 / m);
     Summary {
         results: plan.results.clone(),
         harness: "pi",
@@ -390,7 +427,7 @@ pub fn summarize(
         unknown_cost_sessions: unknown_cost.to_vec(),
         stopped_by_max_cost: stopped,
         setup_dir: plan.setup_dir.clone(),
-        adoption: records.iter().find(|r| r.task.is_none()).cloned(),
+        adoption,
         setup,
         ritual_note: RITUAL_NOTE,
         model_mismatches: records
@@ -401,6 +438,18 @@ pub fn summarize(
                 format!("{}: {}", r.label, models.join(", "))
             })
             .collect(),
+        thinking_mismatches: records
+            .iter()
+            .filter(|r| r.thinking_mismatch)
+            .map(|r| {
+                let levels = r
+                    .result
+                    .as_ref()
+                    .map_or(vec![], |x| x.thinking_levels.clone());
+                format!("{}: {}", r.label, levels.join(", "))
+            })
+            .collect(),
+        adoption_in_bare_tasks,
         verdict: suite_verdict(&grades),
         grades,
     }
@@ -411,22 +460,32 @@ fn num(x: Option<f64>) -> String {
 }
 
 fn usd(x: Option<f64>) -> String {
-    x.map_or("null".into(), |c| format!("{c:.2}"))
+    x.map_or("null".into(), |c| format!("{c:.4}"))
 }
 
 /// The short human table written to `summary.md`.
 pub fn render(s: &Summary) -> String {
+    let warnings = s
+        .grades
+        .iter()
+        .filter(|g| g.verdict == Verdict::Warn)
+        .count();
+    let headline = if s.verdict == Verdict::Pass && warnings > 0 {
+        format!("pass (with warnings: {warnings})")
+    } else {
+        s.verdict.as_str().to_string()
+    };
     let mut out = vec![
-        format!("# eval: {}", s.verdict.as_str()),
+        format!("# eval: {headline}"),
         String::new(),
         format!(
-            "{} sessions, model {}, thinking {}, spent ${:.2}{}{}",
+            "{} sessions, model {}, thinking {}, spent ${:.4}{}{}",
             s.sessions,
             s.model.as_deref().unwrap_or("(harness default)"),
             s.thinking,
             s.spent_usd,
             s.max_cost_usd
-                .map_or(String::new(), |m| format!(" of ${m:.2}")),
+                .map_or(String::new(), |m| format!(" of ${m:.4}")),
             if s.stopped_by_max_cost {
                 "; stopped by --max-cost"
             } else {
@@ -462,16 +521,33 @@ pub fn render(s: &Summary) -> String {
             s.setup.added_paths.join(", ")
         ));
     }
-    if !s.setup.bug_gaps.is_empty() {
+    if let Some(x) = s.adoption_in_bare_tasks {
         out.push(format!(
-            "bug gaps on the adopted cards (a bug task may start already known): {}",
-            s.setup.bug_gaps.join("; ")
+            "adoption total tokens = {x:.1} median bare task totals (report-only)"
+        ));
+    }
+    if !s.setup.gaps.is_empty() {
+        out.push(format!(
+            "gaps on the adopted cards (a task whose bug or answer is listed started known): {}",
+            s.setup.gaps.join("; ")
+        ));
+    }
+    if !s.setup.flows.is_empty() {
+        out.push(format!(
+            "flows adoption recorded: {}",
+            s.setup.flows.join("; ")
         ));
     }
     if !s.model_mismatches.is_empty() {
         out.push(format!(
             "other models used: {}",
             s.model_mismatches.join("; ")
+        ));
+    }
+    if !s.thinking_mismatches.is_empty() {
+        out.push(format!(
+            "other thinking levels used: {}",
+            s.thinking_mismatches.join("; ")
         ));
     }
     out.push(s.ritual_note.to_string());
@@ -485,8 +561,8 @@ pub fn render(s: &Summary) -> String {
     for g in &s.grades {
         for a in &g.arms {
             let ritual = a.ritual.as_ref().map_or("n/a".to_string(), |r| {
-                let n = r.values().filter(|v| **v).count();
-                format!("{n}/{}", RITUAL_STEPS.len())
+                let k = r.values().filter(|v| **v == Some(true)).count();
+                format!("{k}/{}", r.values().filter(|v| v.is_some()).count())
             });
             out.push(format!(
                 "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",

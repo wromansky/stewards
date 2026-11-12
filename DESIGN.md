@@ -925,7 +925,8 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   total_tokens {same}, cache_warming {same}, peak_main_context,
   tool_calls[], files_opened[], files_opened_tree[], shell_commands[],
   ritual_steps{status, route, brief, next, submit, check_green}, cost_usd?,
-  duration_s, models[], stop_reason, failed_children[], truncated_lines}`.
+  duration_s, models[], thinking_levels[], stop_reason, failed_children[],
+  truncated_lines}`.
   Main tokens = the parent session only; total = parent + all children;
   the token criteria compare the sum of the four fields. For Pi the fields
   are summed over assistant-message usage plus `compaction` and
@@ -939,10 +940,16 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `files_opened` (main session) and `files_opened_tree` (every session)
   count distinct paths relative to each session's cwd, from the `read` tool
   plus simply recognised shell reads (`cat`, `head`, `tail`, `less`, `sed
-  -n`, `grep`/`rg` with a path argument; see `shell_reads`).
+  -n`, `grep`/`rg` with a path argument; separators inside quotes do not
+  split, and words with `$`, words starting with `!`, and option values
+  such as `--glob x` or `-A 3` are not paths; see `shell_reads`).
   `check_green` comes from the runner: after each `full` (and
   `full-no-developers`) session it runs `stewards next --no-brief` in the
   run directory and records the exit code and job count; green is exit 0.
+  It counts only when the session changed tracked files (its `HEAD` or the
+  diff of tracked files against it differs from before the session); else
+  it is n/a. On the read-only tasks 4 and 6, `route`, `brief`, `submit`,
+  and `check_green` are n/a; every run record still shows each step.
   The other five ritual steps are best-effort from the transcripts: shell
   commands, in the main session or any child, whose argv starts with
   `stewards <cmd>`; `brief` when a subagent is dispatched with a
@@ -962,6 +969,14 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   and the same parsing; every model used in a session tree is recorded and
   a run where any differs from the requested one (or the main session's) is
   flagged, not failed (the main agent may pass `model` per subagent).
+  Children get the thinking level too: for Pi the eval's settings set
+  pi-subagents' `subagents.defaultThinking` and `maxThinking` to it and an
+  `agentOverrides.<name>.thinking` for each bundled agent (`defaultThinking`
+  does not override an agent's own frontmatter, such as `worker`'s `high`,
+  and `maxThinking` fails a launch above it rather than lowering it). Every
+  session's level is recorded from its `thinking_level_change` records,
+  and a run where any differs from the requested one is flagged, not
+  failed (the main agent may still ask a child for a lower level).
   Sessions run without the user's personal harness setup: for Pi, one agent
   directory per invocation (`PI_CODING_AGENT_DIR`) holds a `settings.json`
   listing only `npm:pi-subagents` (plus the user's `defaultProvider`/
@@ -970,8 +985,9 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   OAuth refreshes instead of rotating the user's token away), and a copied
   `models-store.json`; no global `AGENTS.md`, other extensions, or skills
   beyond pi-subagents'; the summary records it. Each session gets its own
-  `STEWARDS_HOME` and `CARGO_INSTALL_ROOT` (never on `PATH`), and every
-  other harness env prefix is stripped. Runs are sequential, each in a
+  `CARGO_INSTALL_ROOT` (never on `PATH`), each `full` session its own
+  `STEWARDS_HOME` (the other arms none, so the environment names no
+  stewards), and every other harness env prefix is stripped. Runs are sequential, each in a
   fresh copy made by `evals/arms.sh` at `<tmp>/w-<random>/<n>/repo`, a
   path naming no arm, `stewards`, or `eval` (the run record keeps the
   mapping); `bare` and `block-only` run with `stewards` off `PATH` (each
@@ -990,8 +1006,10 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   added file under the test locations `FULL_UNITS_TESTS`
   (`api/test_*.py`, `client/*.test.ts`, `cli/tests/**`, kept beside
   `FULL_UNITS_UNOWNED` in `src/eval/mod.rs`); the summary lists every added
-  path and every `kind = "bug"` gap on the adopted cards (a bug task whose
-  seeded bug is listed started known). The runner checks `stewards next`
+  path, every gap of every kind on the adopted cards, and every flow
+  adoption recorded (a task whose seeded bug or answer is listed started
+  known), plus a report-only line: adoption's total tokens as a multiple
+  of the median `bare` task total. The runner checks `stewards next`
   exits 0 there (else `eval_setup_incomplete`, before any `full` run),
   removes every gitignored file, and commits it; each `full` copy runs
   `git clean -fdX` after the copy. `--setup-dir` reuses an adopted copy; it
@@ -1012,11 +1030,12 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   stops before the next session when the spend so far plus its mean per
   session would pass the ceiling; the first always runs. Results go to
   `evals/results/<timestamp>/` (gitignored): `runs/*.json` (the `Run`, arm,
-  task, role, model, thinking, status, failure, leftovers, `next` check,
+  task, role, model, thinking, model and thinking mismatch flags, status,
+  failure, leftovers, `next` check, whether tracked files changed,
   transcript path), `sessions/` (each session's transcripts, copied there
   after the run), `summary.json`, and `summary.md`, with report-only
   `full`/`bare` ratios of median cost and median peak main context next to
-  each verdict. Each run's work directory is deleted after the run unless
+  each verdict, and costs to 4 decimals. Each run's work directory is deleted after the run unless
   `--keep-work`. pi-subagents also leaves run state outside both, under
   `/tmp/pi-subagents-uid-<uid>/` (`async-subagent-runs/`,
   `async-subagent-launches/`, `async-subagent-results/`,
@@ -1035,10 +1054,12 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `bare` on every count. Docs accuracy: no claim in `docs/units/api.md`
   contradicted by code after task 1. Bug tasks: the tester's repro
   reproduces and the validator's severity equals the seeded one. Task 5: a
-  plan exists and closes. Ritual: all six steps appear in `full` (each in a
-  majority of its runs); a missing step is a warning. The suite
+  plan exists and closes. Ritual: every applicable step of the six appears
+  in `full` (each in a majority of the runs it applies to; shown `k/n` over
+  the applicable steps); a missing step is a warning. The suite
   fails when any task fails, is incomplete when any task is; warnings are
-  listed.
+  listed, and a passing suite with any warning reads `pass (with warnings:
+  N)`, its exit code still 0.
 - **Cadence:** on demand and in CI on release tags; `--max-cost` ceiling.
 
 ## Release and versioning

@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::copy_dir;
-use stewards::eval::grade::{grade_task, median};
+use stewards::eval::grade::{grade_task, median, render, summarize};
 use stewards::eval::pi::{Pi, agent_dir, parse};
 use stewards::eval::{
     ADOPT_PROMPT, Action, Arm, Driver, Plan, RITUAL_STEPS, RitualSteps, Run, RunRecord, RunRole,
-    Session, Status, Tokens, Verdict, execute, kill_leftovers, neutral_work_dir, next_check,
-    path_without_stewards, ritual_steps, shell_reads, stewards_subcommands, without_developers,
-    would_exceed,
+    Session, SetupNotes, Status, Tokens, Verdict, adopted_knowledge, execute, kill_leftovers,
+    neutral_work_dir, next_check, path_without_stewards, ritual_steps, shell_reads,
+    stewards_subcommands, without_developers, would_exceed,
 };
 use stewards::output::CliError;
 use tempfile::TempDir;
@@ -67,6 +67,8 @@ fn pi_sample_counts_child_tokens_in_total_and_not_in_main() {
     assert_eq!(run.shell_commands, ["echo probe"]);
     assert_eq!(run.model.as_deref(), Some("anthropic/claude-haiku-5-5"));
     assert_eq!(run.models, ["anthropic/claude-haiku-5-5"]);
+    // the main session ran at medium, the pi-subagents worker at its own frontmatter's high
+    assert_eq!(run.thinking_levels, ["high", "medium"]);
     assert!((run.cost_usd.unwrap() - (0.00113712 + 0.0009244)).abs() < 1e-6);
     assert_eq!(run.duration_s, 1.5);
     assert_eq!(run.ritual_steps, steps(&[]));
@@ -94,35 +96,65 @@ fn a_fork_copy_of_the_parent_is_counted_once() {
     assert!((after.cost_usd.unwrap() - before.cost_usd.unwrap() - 0.5).abs() < 1e-9);
 }
 
+/// The trimmed real adoption session of the Haiku smoke run: the parent ran `stewards status`,
+/// `stewards init --draft`, launched the briefs, and ran `stewards next`; the two children kept
+/// (the architect and the api documenter) each ran `stewards submit`. Nothing ran `route`.
 #[test]
-fn pi_ritual_sample_shows_the_transcript_steps_across_parent_and_child() {
+fn pi_ritual_sample_shows_the_real_adoption_steps_across_parent_and_children() {
     let run = parse(&main_file(&sample("ritual")), 0.0, false).unwrap();
     // check_green is the runner's own `stewards next`, never read from a transcript
     assert_eq!(
         run.ritual_steps,
-        steps(&["status", "route", "brief", "next", "submit"])
+        steps(&["status", "brief", "next", "submit"])
     );
-    // the cache-warming `usage` record is kept apart; the child's two messages count in total only
     let main = Tokens {
-        input: 80,
-        output: 40,
-        cache_read: 800,
-        cache_write: 160,
+        input: 26,
+        output: 3121,
+        cache_read: 74781,
+        cache_write: 18239,
     };
     assert_eq!(run.main_tokens, main);
+    assert_eq!(run.total_tokens.sum(), 96167 + 100879 + 49497);
+    assert_eq!(run.peak_main_context, 18243);
+    assert!((run.cost_usd.unwrap() - 0.01398651).abs() < 1e-9);
+    assert_eq!(run.cache_warming, Tokens::default());
+    assert_eq!(run.thinking_levels, ["high", "medium"]);
+    assert_eq!(run.models, ["anthropic/claude-haiku-5-5"]);
     assert_eq!(
-        run.cache_warming,
-        Tokens {
-            input: 1,
-            output: 1,
-            cache_read: 50,
-            cache_write: 0
-        }
+        run.tool_calls,
+        ["bash", "subagent", "bash", "subagent", "bash"]
     );
-    assert_eq!(run.total_tokens.sum(), main.sum() + 2 * 45);
-    assert_eq!(run.peak_main_context, 130);
-    assert_eq!(run.files_opened, ["api/items.py"]);
-    assert_eq!(run.shell_commands.len(), 4);
+    assert!(run.files_opened.is_empty(), "{:?}", run.files_opened);
+    // the architect's `for f in ...; do head -60 "$f"` adds no `$f`
+    assert_eq!(
+        run.files_opened_tree,
+        [
+            ".stewards/briefs/architect.md",
+            "cli/src/main.rs",
+            "client/client.ts",
+            "api/items.py",
+            ".stewards/repo.toml",
+            ".stewards/briefs/api-documenter.md",
+        ]
+    );
+    assert!(run.failed_children.is_empty());
+}
+
+/// simplified: the real sample has no `stewards route`, so this hand-made variant appends one bash
+/// call to its parent; replace it with a real transcript once a smoke run routes.
+#[test]
+fn a_route_command_in_a_transcript_is_the_route_step() {
+    let tmp = TempDir::new().unwrap();
+    copy_dir(&sample("ritual"), tmp.path());
+    let parent = main_file(tmp.path());
+    let route = r#"{"type":"message","id":"route001","parentId":null,"timestamp":"2026-11-12T21:00:00.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"cd /work/0/repo && stewards route api/items.py"}}],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":{"total":0}},"stopReason":"stop"}}"#;
+    let text = std::fs::read_to_string(&parent).unwrap() + route + "\n";
+    std::fs::write(&parent, text).unwrap();
+    let run = parse(&parent, 0.0, false).unwrap();
+    assert_eq!(
+        run.ritual_steps,
+        steps(&["status", "route", "brief", "next", "submit"])
+    );
 }
 
 #[test]
@@ -202,6 +234,40 @@ fn shell_reads_finds_the_files_simple_read_commands_name() {
 }
 
 #[test]
+fn shell_reads_skips_quoted_separators_variables_negations_and_option_values() {
+    // the two smoke-run commands the second review found misread
+    assert_eq!(
+        shell_reads(
+            "cd /work/1/repo && git ls-files | head -200 && echo --- && rg -n -i \"create\" --glob '!node_modules' -g '!*.lock' | head -100"
+        ),
+        Vec::<&str>::new()
+    );
+    assert_eq!(
+        shell_reads(
+            r#"cd /work/3/repo && export ITEMS_STORE=$(mktemp -u /tmp/itemsXXXX.json); node --version; python3 api/items.py create "widget"; echo "---"; cat "$ITEMS_STORE"; echo; echo "---"; node client/client.ts create-item "gadget"; echo "exit=$?"; echo "---"; cat "$ITEMS_STORE"; echo; rm -f "$ITEMS_STORE"; echo "--- tests"; grep -n "label\|name" client/client.test.ts api/test_items.py | head -30"#
+        ),
+        ["client/client.test.ts", "api/test_items.py"]
+    );
+    assert_eq!(
+        shell_reads(
+            r#"for f in api/items.py cli/src/main.rs; do echo "=== $f"; head -60 "$f"; done"#
+        ),
+        Vec::<&str>::new()
+    );
+    // an option value is never the path; `-e` gives the pattern, so the first word is a path
+    assert_eq!(
+        shell_reads("grep -A 3 -e create -m 5 api/items.py"),
+        ["api/items.py"]
+    );
+    assert_eq!(shell_reads("rg -t py -C 2 create api"), ["api"]);
+    assert_eq!(
+        shell_reads("grep 'a b; c | d' x.py"),
+        ["x.py"],
+        "a quoted pattern with spaces and separators is one word"
+    );
+}
+
+#[test]
 fn stewards_subcommands_reads_argv_not_text() {
     assert_eq!(
         stewards_subcommands("echo 'run stewards next'"),
@@ -247,6 +313,7 @@ fn run_with(main: u64, total: u64, files: usize, ritual: RitualSteps) -> Run {
         duration_s: 1.0,
         model: None,
         models: vec![],
+        thinking_levels: vec![],
         stop_reason: Some("stop".into()),
         failed_children: vec![],
         truncated_lines: 0,
@@ -263,12 +330,14 @@ fn record(task: u32, arm: Arm, role: RunRole, run: u32, result: Run) -> RunRecor
         model: None,
         thinking: "medium".into(),
         model_mismatch: false,
+        thinking_mismatch: false,
         status: Status::Ok,
         failure: None,
         transcript: None,
         workdir: PathBuf::new(),
         leftovers: None,
         next_check: None,
+        changed_tracked_files: true,
         result: Some(result),
         error: None,
     }
@@ -333,6 +402,115 @@ fn a_missing_ritual_step_is_a_warning() {
     let g = grade_task(1, &records(1, 500, 900, ritual), &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Warn);
     assert_eq!(g.reasons, ["ritual steps missing: submit"]);
+}
+
+#[test]
+fn ritual_steps_that_cannot_apply_are_n_a_and_the_rest_counted() {
+    let ritual = |g: &stewards::eval::TaskGrade| {
+        let c = g.criteria.iter().find(|c| c.name == "ritual").unwrap();
+        (c.value, c.limit)
+    };
+    // task 4 is a read-only question: only status and next apply
+    let g = grade_task(
+        4,
+        &records(4, 500, 900, steps(&["status", "next"])),
+        &ARMS,
+        3,
+    );
+    assert_eq!(g.verdict, Verdict::Pass, "{:?}", g.reasons);
+    assert_eq!(ritual(&g), (2.0, 2.0));
+    let full = g.arms[1].ritual.as_ref().unwrap();
+    for step in ["route", "brief", "submit", "check_green"] {
+        assert_eq!(full[step], None, "{step}");
+    }
+    assert_eq!(full["status"], Some(true));
+
+    // check_green is n/a when no run changed tracked files, counted when one did
+    let mut recs = records(
+        1,
+        500,
+        900,
+        steps(&["status", "route", "brief", "next", "submit"]),
+    );
+    for r in &mut recs {
+        r.changed_tracked_files = false;
+    }
+    let g = grade_task(1, &recs, &ARMS, 3);
+    assert_eq!(g.verdict, Verdict::Pass, "{:?}", g.reasons);
+    assert_eq!(ritual(&g), (5.0, 5.0));
+    recs.iter_mut()
+        .filter(|r| r.arm == Arm::Full && r.run == 1)
+        .for_each(|r| r.changed_tracked_files = true);
+    let g = grade_task(1, &recs, &ARMS, 3);
+    assert_eq!(g.verdict, Verdict::Warn);
+    assert_eq!(ritual(&g), (5.0, 6.0));
+    assert_eq!(g.reasons, ["ritual steps missing: check_green"]);
+    // the per-run record still shows what ran
+    assert!(recs[1].result.as_ref().unwrap().ritual_steps["route"]);
+}
+
+#[test]
+fn summary_md_shows_warnings_in_the_headline_costs_to_4_decimals_and_adoption() {
+    let tmp = TempDir::new().unwrap();
+    let mut p = plan(tmp.path(), 3, None);
+    p.arms = ARMS.to_vec();
+    let mut recs = records(1, 801, 1000, all()); // main_tokens over its limit: a warning
+    recs[1].thinking_mismatch = true;
+    recs[1].result.as_mut().unwrap().thinking_levels = vec!["high".into(), "medium".into()];
+    let mut adoption = record(
+        1,
+        Arm::Full,
+        RunRole::Setup,
+        1,
+        run_with(100, 16000, 0, all()),
+    );
+    adoption.task = None;
+    adoption.label = "001-adopt".into();
+    recs.insert(0, adoption);
+    let setup = SetupNotes {
+        gaps: vec!["cli: gap: panics on an empty name".into()],
+        flows: vec!["create item: cli, client, api".into()],
+        ..SetupNotes::default()
+    };
+    let summary = summarize(&p, &recs, false, &[], setup);
+    assert_eq!(summary.verdict, Verdict::Pass, "the exit code stays a pass");
+    assert_eq!(summary.adoption_in_bare_tasks, Some(16.0));
+    let md = render(&summary);
+    assert!(md.starts_with("# eval: pass (with warnings: 1)\n"), "{md}");
+    assert!(md.contains("| 0.8010 |"), "{md}");
+    assert!(
+        md.contains("adoption total tokens = 16.0 median bare task totals (report-only)"),
+        "{md}"
+    );
+    assert!(md.contains("cli: gap: panics on an empty name"), "{md}");
+    assert!(
+        md.contains("flows adoption recorded: create item: cli, client, api"),
+        "{md}"
+    );
+    assert!(
+        md.contains("other thinking levels used: full-t1-r1: high, medium"),
+        "{md}"
+    );
+    assert!(md.contains("| 6/6 |"), "{md}");
+}
+
+#[test]
+fn adopted_knowledge_lists_gaps_of_every_kind_and_the_flows() {
+    let repo = common::fixture("single");
+    common::append(
+        &repo.path().join(".stewards/units/api.toml"),
+        "\n[[gap]]\nkind = \"bug\"\ntitle = \"pagination skips the last item\"\n",
+    );
+    let (gaps, flows) = adopted_knowledge(repo.path()).unwrap();
+    assert!(
+        gaps.contains(&"api: gap: no pagination on list".to_string()),
+        "{gaps:?}"
+    );
+    assert!(
+        gaps.contains(&"api: bug: pagination skips the last item".to_string()),
+        "{gaps:?}"
+    );
+    assert_eq!(flows, ["create-item: api, store"]);
 }
 
 /// Task 6 records with the full arm's task-6 files opened at `files`, against bare task 4 at `bare4`.
@@ -443,7 +621,12 @@ fn a_missing_pi_binary_is_a_clear_error() {
 fn the_eval_agent_dir_holds_only_auth_the_package_store_and_pi_subagents() {
     let tmp = TempDir::new().unwrap();
     let user = tmp.path().join("user");
-    std::fs::create_dir_all(user.join("npm/node_modules/pi-subagents")).unwrap();
+    std::fs::create_dir_all(user.join("npm/node_modules/pi-subagents/agents")).unwrap();
+    std::fs::write(
+        user.join("npm/node_modules/pi-subagents/agents/worker.md"),
+        "---\nname: worker\nthinking: high\n---\n",
+    )
+    .unwrap();
     std::fs::create_dir_all(user.join("extensions/x")).unwrap();
     std::fs::write(user.join("AGENTS.md"), "personal rules").unwrap();
     std::fs::write(user.join("auth.json"), "{}").unwrap();
@@ -454,7 +637,7 @@ fn the_eval_agent_dir_holds_only_auth_the_package_store_and_pi_subagents() {
     )
     .unwrap();
     let dir = tmp.path().join("a");
-    let note = agent_dir(&user, Path::new("/home/u"), &dir).unwrap();
+    let note = agent_dir(&user, Path::new("/home/u"), &dir, "low").unwrap();
     let settings: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
     assert_eq!(
@@ -463,6 +646,12 @@ fn the_eval_agent_dir_holds_only_auth_the_package_store_and_pi_subagents() {
             "packages": ["npm:pi-subagents"],
             "skills": ["!/home/u/.agents/skills/**"],
             "defaultModel": "m",
+            // every child at the eval's level, the bundled worker's own `high` overridden
+            "subagents": {
+                "defaultThinking": "low",
+                "maxThinking": "low",
+                "agentOverrides": { "worker": { "thinking": "low" } },
+            },
         })
     );
     assert_eq!(
@@ -484,7 +673,7 @@ fn the_eval_agent_dir_holds_only_auth_the_package_store_and_pi_subagents() {
     assert!(note.contains("npm:pi-subagents"), "{note}");
 
     std::fs::remove_dir_all(user.join("npm")).unwrap();
-    let err = agent_dir(&user, Path::new("/home/u"), &tmp.path().join("b"))
+    let err = agent_dir(&user, Path::new("/home/u"), &tmp.path().join("b"), "low")
         .err()
         .unwrap();
     assert_eq!(
@@ -646,11 +835,13 @@ fn a_main_or_child_session_that_stopped_with_an_error_is_a_failed_run() {
 }
 
 /// Copies a recorded sample as each session's transcript, with a fixed status; leaves a detached
-/// process running in the run directory, and on the adoption prompt writes `adopt_writes`.
+/// process running in the run directory, and writes `adopt_writes` on the adoption prompt and
+/// `task_writes` on any other.
 struct Replay {
     sample: PathBuf,
     status: Status,
     adopt_writes: Vec<(&'static str, &'static str)>,
+    task_writes: Vec<(&'static str, &'static str)>,
 }
 
 impl Replay {
@@ -659,6 +850,7 @@ impl Replay {
             sample,
             status,
             adopt_writes: vec![],
+            task_writes: vec![],
         }
     }
 }
@@ -690,10 +882,16 @@ impl Driver for Replay {
                 assert!(!p.contains(word), "{p} names {word}");
             }
         }
-        if prompt == ADOPT_PROMPT {
-            for (path, text) in &self.adopt_writes {
-                std::fs::write(dir.join(path), text)?;
-            }
+        // STEWARDS_HOME is set exactly when stewards is on PATH: the full arms
+        let on_path = std::env::split_paths(&env[0].1).any(|d| d.join("stewards").exists());
+        assert_eq!(env.iter().any(|(k, _)| *k == "STEWARDS_HOME"), on_path);
+        let writes = if prompt == ADOPT_PROMPT {
+            &self.adopt_writes
+        } else {
+            &self.task_writes
+        };
+        for (path, text) in writes {
+            std::fs::write(dir.join(path), text)?;
         }
         std::process::Command::new("sh")
             .args(["-c", "setsid sleep 300 >/dev/null 2>&1 &"])
@@ -813,10 +1011,32 @@ fn a_timed_out_run_is_recorded_not_dropped_and_its_leftover_process_killed() {
     assert_eq!(runs[0]["result"]["main_tokens"]["output"], 743);
     assert_eq!(runs[0]["leftovers"]["killed"], 1);
     assert_eq!(runs[0]["next_check"], serde_json::Value::Null);
+    assert_eq!(runs[0]["changed_tracked_files"], false);
+    // the replayed worker child ran at high, not the requested medium
+    assert_eq!(runs[0]["thinking_mismatch"], true);
+    assert_eq!(
+        summary.thinking_mismatches,
+        ["001-bare-t1-r1: high, medium"]
+    );
     let transcript = PathBuf::from(runs[0]["transcript"].as_str().unwrap());
     assert!(transcript.starts_with(tmp.path().join("results/sessions")));
     assert!(transcript.is_file());
     assert_eq!(summary.grades[0].arms[0].not_ok, 1);
+}
+
+#[test]
+fn only_a_change_to_a_tracked_file_counts_as_changed() {
+    for (writes, changed) in [
+        (vec![("api/new_file.py", "x\n")], false),
+        (vec![("api/items.py", "changed\n")], true),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let mut driver = Replay::new(sample("subagent"), Status::Ok);
+        driver.task_writes = writes;
+        execute(&driver, &plan(tmp.path(), 1, None)).unwrap();
+        let runs = run_files(&tmp.path().join("results"));
+        assert_eq!(runs[0]["changed_tracked_files"], changed);
+    }
 }
 
 #[test]

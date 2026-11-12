@@ -40,12 +40,12 @@ impl Pi {
     /// Builds the eval's Pi agent directory at `dir` from the user's (`PI_CODING_AGENT_DIR`, else
     /// `~/.pi/agent`), so sessions load none of the user's personal setup, and returns what it
     /// holds in plain words. See `agent_dir`.
-    pub fn isolate(&mut self, dir: &Path) -> Result<String> {
+    pub fn isolate(&mut self, dir: &Path, thinking: &str) -> Result<String> {
         let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
         let user = std::env::var_os("PI_CODING_AGENT_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".pi/agent"));
-        let note = agent_dir(&user, &home, dir)?;
+        let note = agent_dir(&user, &home, dir, thinking)?;
         self.agent_dir = Some(dir.to_path_buf());
         Ok(note)
     }
@@ -63,12 +63,16 @@ fn missing(message: String) -> anyhow::Error {
 /// Writes a Pi agent directory at `dir` holding only what a session needs from the user's `user`
 /// directory, and never writes there: `settings.json` listing only the `npm:pi-subagents` package
 /// (with the user's `defaultProvider`/`defaultModel`, if any, and the skills Pi always scans in
-/// `<home>/.agents/skills` excluded); `auth.json` linked, so an OAuth refresh is shared with the
+/// `<home>/.agents/skills` excluded, and every child at `thinking`: pi-subagents'
+/// `subagents.defaultThinking` and `maxThinking` set to it and an `agentOverrides.<name>.thinking`
+/// for each bundled agent, since `defaultThinking` does not override an agent's own frontmatter and
+/// `maxThinking` fails a launch above it instead of lowering it); `auth.json` linked, so an OAuth refresh is shared with the
 /// user's own Pi instead of rotating their token away (Pi locks the linked file); `models-store.json`
 /// copied; `npm/` linked (the installed package store). No `AGENTS.md`, `extensions/`, hooks,
 /// agents, or other packages. Returns that in plain words.
-pub fn agent_dir(user: &Path, home: &Path, dir: &Path) -> Result<String> {
-    if !user.join("npm/node_modules/pi-subagents").is_dir() {
+pub fn agent_dir(user: &Path, home: &Path, dir: &Path, thinking: &str) -> Result<String> {
+    let package = user.join("npm/node_modules/pi-subagents");
+    if !package.is_dir() {
         return Err(missing(format!(
             "pi-subagents is not installed in {}",
             user.display()
@@ -79,9 +83,27 @@ pub fn agent_dir(user: &Path, home: &Path, dir: &Path) -> Result<String> {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
+    let mut overrides = serde_json::Map::new();
+    for e in std::fs::read_dir(package.join("agents"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let p = e.path();
+        if p.extension() == Some(OsStr::new("md"))
+            && let Some(name) = p.file_stem().and_then(OsStr::to_str)
+        {
+            overrides.insert(name.to_string(), json!({ "thinking": thinking }));
+        }
+    }
     let mut settings = json!({
         "packages": ["npm:pi-subagents"],
         "skills": [format!("!{}/.agents/skills/**", home.display())],
+        "subagents": {
+            "defaultThinking": thinking,
+            "maxThinking": thinking,
+            "agentOverrides": overrides,
+        },
     });
     for key in ["defaultProvider", "defaultModel"] {
         if let Some(v) = theirs.get(key) {
@@ -356,7 +378,8 @@ fn last_stop(records: &[&Value]) -> Option<String> {
 /// fork starts as a copy of its parent's records. `cost_usd` sums `usage.cost.total` of all of
 /// them, Pi's own figure from its price table. `files_opened` counts, per session, the paths of
 /// the `read` tool plus the shell reads `shell_reads` recognises, each relative to that session's
-/// own `cwd`. Models come from `model_change` records and assistant messages over the tree.
+/// own `cwd`. Models come from `model_change` records and assistant messages over the tree,
+/// thinking levels from `thinking_level_change` records over the tree.
 pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run> {
     let dir = transcript.parent().unwrap_or(Path::new("."));
     let tops = top_level(dir)?;
@@ -430,6 +453,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
     let mut all = vec![];
     let mut tree_files: Vec<String> = vec![];
     let mut models = BTreeSet::new();
+    let mut thinking_levels = BTreeSet::new();
     let mut failed_children = vec![];
     for (i, (name, recs)) in sessions.enumerate() {
         all.extend(actions(recs));
@@ -446,6 +470,8 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
                     r["provider"].as_str().unwrap_or_default(),
                     r["modelId"].as_str().unwrap_or_default()
                 ));
+            } else if r["type"] == "thinking_level_change" {
+                thinking_levels.insert(r["thinkingLevel"].as_str().unwrap_or_default().to_string());
             } else if m["role"] == "assistant"
                 && let (Some(p), Some(id)) = (m["provider"].as_str(), m["model"].as_str())
             {
@@ -479,6 +505,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         duration_s,
         model,
         models: models.into_iter().collect(),
+        thinking_levels: thinking_levels.into_iter().collect(),
         stop_reason: last_stop(&main),
         failed_children,
         truncated_lines,

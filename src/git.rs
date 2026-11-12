@@ -150,18 +150,41 @@ pub fn diff_file(root: &Path, from: &str, to: &str, path: &str) -> Result<String
     run(root, &args, None)
 }
 
-/// Added lines as `(path, line number in the new file, text)`; a file whose name is C-quoted is skipped.
-pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String, u32, String)>> {
+fn diff_u0(root: &Path, from: &str, to: &str) -> Result<String> {
     let mut args = DIFF.to_vec();
     args.extend([
         "--no-color",
         "--no-ext-diff",
+        "--no-textconv",
         "-U0",
         "--end-of-options",
         from,
         to,
     ]);
-    let text = run(root, &args, None)?;
+    run(root, &args, None)
+}
+
+/// The old and new sides `((a, b), (c, d))` of a `@@ -a,b +c,d @@` header; a missing count is 1.
+fn hunk_sides(header: &str) -> ((u32, u32), (u32, u32)) {
+    let side = |n: usize| {
+        let s = header.split(' ').nth(n).unwrap_or_default();
+        let s = s.trim_start_matches(['-', '+']);
+        let (start, count) = s.split_once(',').unwrap_or((s, "1"));
+        (start.parse().unwrap_or(0), count.parse().unwrap_or(0))
+    };
+    (side(1), side(2))
+}
+
+/// The path of a `+++ b/<path>` line; `None` for a C-quoted name (`+++ "b/..."`) or `/dev/null`.
+fn new_path(line: &str) -> Option<String> {
+    // git appends a tab to the line when the path contains a space.
+    line.strip_prefix("+++ b/")
+        .map(|p| p.trim_end_matches('\t').to_string())
+}
+
+/// Added lines as `(path, line number in the new file, text)`; a file whose name is C-quoted is skipped.
+pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String, u32, String)>> {
+    let text = diff_u0(root, from, to)?;
     let mut added = Vec::new();
     let mut path: Option<String> = None;
     let mut in_hunk = false;
@@ -171,31 +194,49 @@ pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String
             in_hunk = false;
             path = None;
         } else if !in_hunk && l.starts_with("+++ ") {
-            // A C-quoted name (`+++ "b/..."`) does not match `+++ b/`, so its lines are skipped.
-            // git appends a tab to the line when the path contains a space.
-            path = l
-                .strip_prefix("+++ b/")
-                .map(|p| p.trim_end_matches('\t').to_string());
+            path = new_path(l);
         } else if l.starts_with("@@ ") {
             in_hunk = true;
-            // "@@ -a,b +c,d @@"
-            let new = l
-                .split(' ')
-                .nth(2)
-                .unwrap_or_default()
-                .trim_start_matches('+');
-            line = new
-                .split(',')
-                .next()
-                .unwrap_or_default()
-                .parse()
-                .unwrap_or(0);
+            line = hunk_sides(l).1.0;
         } else if in_hunk && let (Some(p), Some(text)) = (&path, l.strip_prefix('+')) {
             added.push((p.clone(), line, text.to_string()));
             line += 1;
         }
     }
     Ok(added)
+}
+
+/// `(path, (old start, old count), (new start, new count))`: a count of 0 means no lines on
+/// that side, placed after line `start`.
+pub type Hunk = (String, (u32, u32), (u32, u32));
+
+/// Each hunk of the change; a deleted file, a file whose name is C-quoted, and a binary file
+/// have none.
+pub fn diff_hunks(root: &Path, from: &str, to: &str) -> Result<Vec<Hunk>> {
+    let text = diff_u0(root, from, to)?;
+    let mut hunks = Vec::new();
+    let mut path: Option<String> = None;
+    let mut in_hunk = false;
+    for l in text.lines() {
+        if l.starts_with("diff --git ") {
+            in_hunk = false;
+            path = None;
+        } else if !in_hunk && l.starts_with("+++ ") {
+            path = new_path(l);
+        } else if l.starts_with("@@ ") {
+            in_hunk = true;
+            if let Some(p) = &path {
+                let (old, new) = hunk_sides(l);
+                hunks.push((p.clone(), old, new));
+            }
+        }
+    }
+    Ok(hunks)
+}
+
+/// The text of blob `sha`, invalid UTF-8 replaced.
+pub fn blob_text(root: &Path, sha: &str) -> Result<String> {
+    run(root, &["cat-file", "blob", "--end-of-options", sha], None)
 }
 
 /// HEAD's commit sha; `None` before the first commit, an error for any other failure.

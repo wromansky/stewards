@@ -160,9 +160,13 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   architect first. To change, `brief <unit> --role developer` writes one
   brief per task of the maintainer's plan (or the unit's step of an open
   architect plan) and the main agent dispatches them. Before reporting done, `next` finds the stale units and
-  writes the jobs: maintainer review for every stale unit; tester when an
-  interface anchor's file or a file under `test_roots` changed since the
-  stamp; documenter when an interface anchor's file changed; architect when
+  writes the jobs: maintainer review for every stale unit; tester when a
+  change since its mark touched an interface's lines or a file under
+  `test_roots`; documenter when a change since its mark touched an
+  interface's lines (a change only in a private helper an interface calls
+  does not count; the maintainer's `tester_needed` covers it; outside the
+  languages the line rule knows, any change to the interface's file
+  counts); architect when
   two or more units changed since their stamps and no plan covers them;
   validator for a bug with no severity. Done means `next` lists no jobs.
   `check` covers review only (stamps, anchors, scenario ids): it is what
@@ -533,10 +537,40 @@ committed, staged, unstaged, and untracked changes are all just distance
 from the stamp. Jobs:
 
 - every stale unit → maintainer review
-- a file changed since the tester's mark is an interface anchor's path, or
-  is owned by the unit and under `test_roots` → tester
-- a file changed since the documenter's mark is an interface anchor's path
-  → documenter
+- a change since the tester's mark touches an interface's lines, or a file
+  owned by the unit and under `test_roots` changed → tester
+- a change since the documenter's mark touches an interface's lines →
+  documenter
+- an interface's lines in a file: a block around every whole-word match of
+  the anchor's name, and of its last segment when the name holds `::` or
+  `.`. Down, the block runs from the match's line until a line whose
+  previous line is blank, whose indent is at most the match line's (a tab
+  is 8 columns), and before which every `(`, `[`, `{` opened since the
+  match line is closed. Such a line that is a comment (it starts with `#`,
+  `//`, `/*`, `*` or `--`) ends the block only if the next line that is
+  neither blank nor a comment would too, or the file ends first: a column-0
+  comment inside a Python or Ruby body stays in, the next item's doc
+  comment ends the block. Trailing blanks are dropped. Up, it takes the
+  non-blank lines directly above, then, if the nearest non-blank line above
+  their blank lines starts with `/`, `*`, `#` or `@` (a detached doc
+  comment or attribute), those blanks and the run above them, once. Items
+  not parted by a blank line merge into one block. The rule applies only
+  to files in the languages it was written for (extensions `rs py ts tsx
+  js jsx mjs cjs go java kt c h cc cpp hpp cs rb php swift scala sh`).
+- a hunk of `git diff -U0 <mark> <snapshot>` touches an interface when its
+  new-side range or the line just before or after it is one of the
+  interface's lines in the snapshot's file, or its old-side range or a
+  neighbour is one of them in the file at the mark. The reason is
+  `interface changed: <anchor>`. When the lines can't be found (a file in
+  another language such as Markdown, YAML or TOML, name absent, file gone,
+  no hunks for it, mark tree pruned, a blob unreadable, as for a file added
+  since the mark) the file changing is enough:
+  `interface file changed: <path>`. A change only in a private helper set
+  apart from every match by blank lines touches no interface, even when an
+  interface calls it; the maintainer's `tester_needed` covers that. The
+  block can still end early: a blank line then a column-0 line inside a
+  Python triple-quoted string, or a lone `}` at column 0 inside a Rust raw
+  string then a blank line. Exact spans come with tree-sitter.
 - tester and documenter jobs do not need the unit to be stale; with no
   mark they measure from the stamp, and a never-stamped unit gets none
   until its first review stamps it (a validator job does not wait)
@@ -1276,7 +1310,7 @@ Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
 > stewards brief api --role developer                                     # the finding is the task; lane: api/store.py
 [Agent] developer: "api developer 1: 1 file; check pass"
 > stewards next
-{ jobs: [ { unit: api, role: maintainer, ... } ], check: { failures: [api stale] } }   # api/store.py is on neither mark's paths: no tester, no documenter
+{ jobs: [ { unit: api, role: maintainer, ... } ], check: { failures: [api stale] } }   # api/store.py touches no interface's lines and no test file: no tester, no documenter
 [Agent] maintainer: "approve; stamped 8b1e044"
 > stewards next
 { jobs: [], check: { failures: [], warnings: [] } }   exit 0
@@ -1284,8 +1318,8 @@ Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
 
 The main agent never reads a brief, a card, or source; every brief path is one line;
 the finding goes back to a developer, not to the main agent; the second
-round is the maintainer alone because the fix touched neither mark's
-paths; done is a `next` with no jobs.
+round is the maintainer alone because the fix touched no interface's
+lines and no test file; done is a `next` with no jobs.
 
 ## Handoff (for a new session)
 
@@ -1318,9 +1352,8 @@ ran on this repository.
 - Triggers are coarse. A tester and a documenter are due whenever a file
   holding an interface anchor changes, and maintainers record most public
   functions as interfaces, so a small edit in each of eight units cost 33
-  role jobs over two rounds. Candidates: trigger on the changed lines
-  overlapping an interface's own lines; or leave it to the maintainer's
-  `tester_needed` and a matching flag for the documenter.
+  role jobs over two rounds. Changed: they now trigger only when a hunk
+  touches an interface's own lines (see next).
 - The architect job returns every round in which two stamped units
   changed, until plans exist (stage 3).
 - A model learns a length cap only by being rejected; the caps belong in

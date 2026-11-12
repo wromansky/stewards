@@ -1,12 +1,18 @@
 Answer in JSON using this schema:
 {
   check: {
+    // max 300 chars
     command: string,
     pass: bool,
+    // max 2000 chars
     output: string,
   } or null,
+  // max 2000 chars
   summary: string,
+  // max 2000 chars
   blocked_on: string or null,
+  // max 200 items, each max 300 chars
   pulled_anchors: string[],
+  // max 2000 chars
   notes: string,
 }

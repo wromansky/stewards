@@ -189,6 +189,7 @@ pub fn render(header: &Header, pack: &Pack, memory: &[&Entry], root: &Path) -> S
     out += &format!(
         "\n{schema}\n\nWrite your answer to {answer}. Run {submit}. If it reports an error, \
          fix the file and run it again; after the third failure reply with the errors verbatim. \
+         A field over its stated cap is rejected: stay under it, do not aim at the limit. \
          Reply to your caller with exactly what submit prints, nothing else.\n\n{role_line}\n",
         answer = code(&answer.display().to_string()),
         submit = code(&submit),

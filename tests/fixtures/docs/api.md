@@ -18,17 +18,17 @@ _Not written yet._
 
 | id | contract | anchor |
 |---|---|---|
-| create\-item | POST \/items\; 201 with body\; 422 on invalid | [src\/api\/items\.py\:\:create\_item](../../src/api/items.py#L6) |
+| create-item | POST /items; 201 with body; 422 on invalid | [src/api/items.py\:\:create\_item](../../src/api/items.py#L6) |
 
 ## Scenarios
 
 | id | interface | given | expect | level |
 |---|---|---|---|---|
-| create\-ok | create\-item | valid body | 201 and the item is stored | integration |
+| create-ok | create-item | valid body | 201 and the item is stored | integration |
 
 ## Flows
 
-- create\-item: api → store
+- create-item: api → store
 
 ## Gaps
 

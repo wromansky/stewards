@@ -129,12 +129,29 @@ pub fn pages(loaded: &Loaded, unit: Option<&str>) -> anyhow::Result<Vec<(String,
         .collect())
 }
 
-/// Card and repo.toml text outside fenced blocks: one line, every ASCII punctuation
-/// character backslash-escaped (CommonMark), so it renders as plain text.
+/// Card and repo.toml text outside fenced blocks: one line, so it renders as plain
+/// text. Backslash-escapes only what could start markup in the middle of a line:
+/// `\ ` * _ [ ] < > | & ~ # ! : @`, plus the dot of every case-insensitive `www.`.
+/// Colon and at-sign are in the set because GitHub autolinks a bare `https://x` and
+/// `a@b.c` without any brackets; `www.` is autolinked too, so its dot is escaped.
+/// Everything else (comma, period, hyphen, parentheses, slash, ...) is written as is.
+/// The text always follows a tool-written prefix, so line-start block syntax cannot occur.
 fn esc(s: &str) -> String {
+    let chars: Vec<char> = s
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .collect();
     let mut out = String::new();
-    for c in s.split_whitespace().collect::<Vec<_>>().join(" ").chars() {
-        if c.is_ascii_punctuation() {
+    for (i, &c) in chars.iter().enumerate() {
+        let www_dot = c == '.'
+            && i >= 3
+            && chars[i - 3..i]
+                .iter()
+                .collect::<String>()
+                .eq_ignore_ascii_case("www");
+        if www_dot || "\\`*_[]<>|&~#!:@".contains(c) {
             out.push('\\');
         }
         out.push(c);

@@ -54,8 +54,8 @@ fn dead_anchor_renders_without_a_link_and_succeeds() {
     let out = stewards(tmp.path(), &["docs", "store"]);
     assert!(out.status.success());
     let page = read(tmp.path(), "docs/units/store.md");
-    assert!(page.contains(r"| src\/store\/gone\.py\:\:save\_item |"));
-    assert!(page.contains(r"[src\/store\/db\.py\:\:count\_items](../../src/store/db.py#L"));
+    assert!(page.contains(r"| src/store/gone.py\:\:save\_item |"));
+    assert!(page.contains(r"[src/store/db.py\:\:count\_items](../../src/store/db.py#L"));
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn empty_docs_path_is_rejected() {
     rejects_docs_path("");
 }
 
-/// Unescaped `|` characters on a line; every punctuation character in card text is backslash-escaped.
+/// Unescaped `|` characters on a line; an escaped one follows a backslash.
 fn separators(line: &str) -> usize {
     let mut chars = line.chars();
     let mut n = 0;
@@ -181,20 +181,17 @@ fn hostile_card_text_renders_as_plain_text_in_table_cells() {
     );
     run(tmp.path(), &["docs", "store"]);
     let page = read(tmp.path(), "docs/units/store.md");
-    let row = page
-        .lines()
-        .find(|l| l.starts_with("| save\\-item"))
-        .unwrap();
-    assert!(row.contains(r"a\|b \\\| \`x\` \<b\>hi\<\/b\> \[l\]\(javascript\:alert\(1\)\)"));
-    assert!(!page.contains("<b>") && !page.contains("](javascript"));
+    let row = page.lines().find(|l| l.starts_with("| save-item")).unwrap();
+    assert!(row.contains(r"a\|b \\\| \`x\` \<b\>hi\</b\> \[l\](javascript\:alert(1))"));
+    assert!(!page.contains("<b>") && !page.contains("[l](javascript"));
     let dead = page
         .lines()
-        .find(|l| l.starts_with("| count\\-items"))
+        .find(|l| l.starts_with("| count-items"))
         .unwrap();
-    assert!(dead.contains(r"| src\/store\/d\`b\.py\:\:count\_items |"));
+    assert!(dead.contains(r"| src/store/d\`b.py\:\:count\_items |"));
     for line in page
         .lines()
-        .filter(|l| l.starts_with("| save\\-item") || l.starts_with("| count\\-items"))
+        .filter(|l| l.starts_with("| save-item") || l.starts_with("| count-items"))
     {
         assert_eq!(separators(line), 4, "{line}");
     }
@@ -252,4 +249,57 @@ fn anchor_link_at_depth_one_goes_up_one_directory() {
 fn anchor_link_at_depth_three_goes_up_three_directories() {
     let page = anchor_link_with_docs_path("a/b/c");
     assert!(page.contains("(../../../src/api/items.py#L6)"));
+}
+
+/// Writes `contract` into the `create-item` interface and returns its row in api.md.
+fn contract_row(contract: &str) -> String {
+    let tmp = fixture("single");
+    edit(
+        tmp.path(),
+        ".stewards/units/api.toml",
+        "contract = \"POST /items; 201 with body; 422 on invalid\"",
+        &format!("contract = '{contract}'"),
+    );
+    run(tmp.path(), &["docs", "api"]);
+    let page = read(tmp.path(), "docs/units/api.md");
+    page.lines()
+        .find(|l| l.starts_with("| create-item |"))
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn dangerous_contract_text_is_escaped_and_keeps_the_table_shape() {
+    let cases = [
+        ("a|b", r"a\|b"),
+        (r"a\|b", r"a\\\|b"),
+        ("`x`", r"\`x\`"),
+        ("<b>", r"\<b\>"),
+        ("[x](javascript:alert(1))", r"\[x\](javascript\:alert(1))"),
+        ("![i](http://e/x.png)", r"\!\[i\](http\://e/x.png)"),
+        ("*bold*", r"\*bold\*"),
+        ("_em_", r"\_em\_"),
+        ("~~s~~", r"\~\~s\~\~"),
+        ("&amp;", r"\&amp;"),
+        ("https://evil.example/x", r"https\://evil.example/x"),
+        ("www.evil.example", r"www\.evil.example"),
+        ("WWW.evil.example", r"WWW\.evil.example"),
+        ("a@evil.example", r"a\@evil.example"),
+        ("# heading", r"\# heading"),
+    ];
+    for (input, escaped) in cases {
+        let row = contract_row(input);
+        assert!(row.contains(&format!("| {escaped} |")), "{input}: {row}");
+        assert_eq!(separators(&row), 4, "{input}: {row}");
+    }
+}
+
+#[test]
+fn ordinary_prose_has_no_backslash() {
+    let row = contract_row(
+        "Tree sha of the working tree (tracked, modified, untracked-not-ignored); works with no commits.",
+    );
+    assert!(row.contains("| Tree sha of the working tree (tracked, modified, untracked-not-ignored); works with no commits. |"));
+    let contract_cell = row.split(" | ").nth(1).unwrap();
+    assert!(!contract_cell.contains('\\'), "{row}");
 }

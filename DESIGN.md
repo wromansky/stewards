@@ -597,7 +597,8 @@ route; group per unit.
   so it is never in a lane, a fingerprint, or a patch anchor. Card text printed on one line has its
   control characters replaced; purpose and prose in a rendered pack sit in
   fences longer than any backtick run they contain; rendered docs escape
-  card text and refuse a `docs_path` at or outside the repo root.
+  only the characters that could start markup, a link or an autolink in card
+  text, and refuse a `docs_path` at or outside the repo root.
 - **Execution.** Only commands whose argv starts with the whole argv of a
   `commands.*` entry from `repo.toml` ever run (`pytest` does not allow
   `pytest-x`): repro, plan step checks, scenario commands, test and

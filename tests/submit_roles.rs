@@ -5,7 +5,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{append, edit, fixture, run, stamp_units, stewards};
+use common::{append, edit, fixture, run, stamp_units};
 use serde_json::{Value, json};
 use stewards::model::{GapKind, TestCard, UnitCard, load_repo};
 
@@ -548,18 +548,6 @@ fn no_role_changes_fingerprint_or_tree() {
         assert_eq!(now.fingerprint, stamp.fingerprint, "{role}");
         assert_eq!(now.tree, stamp.tree, "{role}");
     }
-}
-
-#[test]
-fn developer_submit_is_still_not_implemented() {
-    let dir = fixture("single");
-    let out = stewards(
-        dir.path(),
-        &["submit", "api", "--role", "developer", "--file", "x.json"],
-    );
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(out.status.code(), Some(2));
-    assert_eq!(v["error"]["code"], "not_implemented");
 }
 
 /// An allowed prefix followed by shell syntax: a separator, `&&`, a pipe, backticks, `$(...)`,

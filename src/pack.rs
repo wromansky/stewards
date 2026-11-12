@@ -9,10 +9,11 @@ use serde::Serialize;
 use crate::anchors::{self, Resolution};
 use crate::check::{in_snapshot, one_line, stale_files};
 use crate::git;
+use crate::llm::types::Task;
 use crate::model::{
     Anchor, CommandEntry, Decision, Doc, Flow, Gap, GapKind, Interface, Role, Scenario,
 };
-use crate::output::{CliError, Global, Human, emit, not_implemented};
+use crate::output::{CliError, Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, here};
 
@@ -119,7 +120,8 @@ fn window(
     }
 }
 
-/// The pack for `unit` in `role`; `--diff` hunks run from the stamped tree to `snapshot`.
+/// The pack for `unit` in `role`; `--diff` hunks run from the stamped tree to `snapshot`. The
+/// developer's pack needs its task, so it comes from `developer`.
 pub fn pack(
     repo: &Repo,
     unit: Option<&str>,
@@ -127,6 +129,38 @@ pub fn pack(
     task: &str,
     diff: bool,
     snapshot: &str,
+) -> Result<Pack> {
+    assemble(repo, unit, role, task, diff, snapshot, None)
+}
+
+/// The developer's pack for task `n` of `unit`'s task list.
+pub fn developer(
+    repo: &Repo,
+    unit: &str,
+    task: &str,
+    n: usize,
+    dev: &Task,
+    snapshot: &str,
+) -> Result<Pack> {
+    assemble(
+        repo,
+        Some(unit),
+        Role::Developer,
+        task,
+        false,
+        snapshot,
+        Some((n, dev)),
+    )
+}
+
+fn assemble(
+    repo: &Repo,
+    unit: Option<&str>,
+    role: Role,
+    task: &str,
+    diff: bool,
+    snapshot: &str,
+    dev: Option<(usize, &Task)>,
 ) -> Result<Pack> {
     match (role, unit) {
         (Role::Architect, Some(u)) => bail!(usage(
@@ -227,8 +261,20 @@ pub fn pack(
 
     let mut anchor_specs = match role {
         Role::Developer => {
-            not_implemented("pack --role developer")?;
-            unreachable!("not_implemented always errs")
+            let Some((n, t)) = dev else {
+                bail!(usage(
+                    "the developer pack is built by `brief`, from the unit's task list".into(),
+                    &format!("stewards brief {name} --role developer"),
+                ));
+            };
+            p.purpose = Some(def.purpose.clone());
+            p.gaps = Some(card.map_or(vec![], |c| c.gaps.clone()));
+            p.flows = Some(flows);
+            p.dev_task = Some(
+                serde_json::json!({"n": n, "title": t.title, "change": t.change,
+                                                 "files": t.files, "check": t.check}),
+            );
+            Some(card.map_or(vec![], |c| c.anchors.clone()))
         }
         Role::Maintainer => {
             p.purpose = Some(def.purpose.clone());
@@ -341,6 +387,12 @@ pub fn pack(
                 .collect(),
         );
     }
+    // a developer sees source only in its lane
+    if let (Some((_, t)), Some(list)) = (dev, &mut p.anchors) {
+        for a in list.iter_mut().filter(|a| !t.files.contains(&a.path)) {
+            a.source = None;
+        }
+    }
     p.fit(budget);
     Ok(p)
 }
@@ -400,6 +452,26 @@ impl Pack {
         };
         if let Some(purpose) = &self.purpose {
             section("Purpose", fenced("", purpose));
+        }
+        if let Some(t) = &self.dev_task {
+            let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+            let files = t["files"]
+                .as_array()
+                .map_or(vec![], |f| f.iter().map(text).collect());
+            let check = t["check"].as_str().map(|c| vec![c.to_string()]);
+            section(
+                "Developer task",
+                format!(
+                    "{}\n### Change\n\n{}\n### Lane\n\n{}\n### Check\n\n{}",
+                    table(
+                        &["n", "title"],
+                        vec![vec![t["n"].to_string(), text(&t["title"])]]
+                    ),
+                    fenced("", &text(&t["change"])),
+                    paths_table(&files),
+                    table(&["command"], check.into_iter().collect())
+                ),
+            );
         }
         if let Some(list) = &self.interface {
             let rows = list

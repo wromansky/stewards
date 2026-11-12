@@ -16,7 +16,7 @@ use crate::harness;
 use crate::llm::types::{self, CardPatch, Verdict};
 use crate::llm::{self, Answer, FieldError, Mode};
 use crate::model::{self, CommandEntry, Commands, GapKind, Loaded, Role, TestCard, UnitCard};
-use crate::output::{CliError, Global, Human, emit, not_implemented};
+use crate::output::{CliError, Global, Human, emit};
 use crate::route::Router;
 use crate::telemetry;
 use crate::workspace::{Repo, discover, safe_path};
@@ -64,8 +64,17 @@ struct Submitted {
     unit_proposals: Vec<types::UnitProposal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
+    #[serde(flatten)]
+    developer: Option<DeveloperReport>,
     #[serde(skip)]
     pulled_anchors: Vec<String>,
+}
+
+/// What a developer submit computed from git, beside the summary.
+#[derive(Serialize)]
+struct DeveloperReport {
+    out_of_lane: Vec<String>,
+    blocked_on: Option<String>,
 }
 
 impl Human for Submitted {
@@ -98,7 +107,7 @@ pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<Ex
         Role::Documenter => documenter,
         Role::Validator => validator,
         Role::Architect => architect,
-        Role::Developer => return not_implemented("submit --role developer"),
+        Role::Developer => developer,
     };
     let cwd = std::env::current_dir()?.canonicalize()?;
     let ws = discover(&cwd, g.repo.as_deref())?;
@@ -127,9 +136,17 @@ pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<Ex
             "one of the listed units",
         ));
     }
-    let brief_rel = brief::rel_path(unit, role);
+    // a developer's task number is in its answer file's name
+    let n = match unit.filter(|_| role == Role::Developer) {
+        Some(u) => Some(task_number(u, file)?),
+        None => None,
+    };
+    let brief_rel = match (unit, n) {
+        (Some(u), Some(n)) => format!(".stewards/briefs/{u}-developer-{n}.md"),
+        _ => brief::rel_path(unit, role),
+    };
     let header = brief::read_header(&repo.root.join(&brief_rel))?;
-    check_header(&repo.root, unit, role, &header, &brief_rel)?;
+    check_header(&repo.root, unit, role, n, &header, &brief_rel)?;
     let text = read_answer(file)?;
     // Every file the job may write, read before the repo is loaded again for the job, so a
     // write by another submit after this read is caught before this one writes.
@@ -163,6 +180,7 @@ pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<Ex
         anchors: header.anchors,
         pulled_anchors: std::mem::take(&mut out.pulled_anchors),
         harness: harness::detect().map(|h| h.name),
+        out_of_lane: out.developer.as_ref().map(|d| d.out_of_lane.len()),
         timestamp: telemetry::rfc3339(SystemTime::now()),
     };
     if let Err(e) = telemetry::append(repo, &record) {
@@ -172,14 +190,54 @@ pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<Ex
     Ok(ExitCode::SUCCESS)
 }
 
-/// `no_brief` unless the header names this unit and role and a full snapshot tree id: a
-/// hand-edited header must not stamp another unit, or stamp a commit or a ref.
-fn check_header(root: &Path, unit: Option<&str>, role: Role, h: &Header, rel: &str) -> Result<()> {
+/// The `n` of a developer answer file named `<unit>-developer-<n>.answer.json`; `usage` for any
+/// other name.
+fn task_number(unit: &str, file: &Path) -> Result<usize> {
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let n = name
+        .strip_prefix(&format!("{unit}-developer-"))
+        .and_then(|r| r.strip_suffix(".answer.json"))
+        .and_then(|d| {
+            d.parse::<usize>()
+                .ok()
+                .filter(|n| *n > 0 && n.to_string() == d)
+        });
+    n.ok_or_else(|| {
+        CliError::new(
+            "usage",
+            format!(
+                "{}: a developer answer file is named `{unit}-developer-<n>.answer.json`, n the task number",
+                file.display()
+            ),
+            "write the answer to the path the developer brief names",
+        )
+        .into()
+    })
+}
+
+/// `no_brief` unless the header names this unit, role, and developer task number and a full
+/// snapshot tree id: a hand-edited header must not stamp another unit, or stamp a commit or a ref.
+fn check_header(
+    root: &Path,
+    unit: Option<&str>,
+    role: Role,
+    n: Option<usize>,
+    h: &Header,
+    rel: &str,
+) -> Result<()> {
     let hex = matches!(h.snapshot.len(), 40 | 64)
         && h.snapshot
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    if h.unit.as_deref() != unit || h.role != role || !hex || !git::is_tree(root, &h.snapshot) {
+    if h.unit.as_deref() != unit
+        || h.role != role
+        || h.n != n
+        || !hex
+        || !git::is_tree(root, &h.snapshot)
+    {
         let (job, brief) = match unit {
             Some(u) => (format!("{u} {}", role.as_str()), format!("{u} ")),
             None => (role.as_str().to_string(), String::new()),
@@ -258,54 +316,98 @@ fn maintainer(
     let snapshot = git::snapshot(root)?;
     let entries = git::ls_tree(root, &snapshot)?;
     let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+    let rung = |f: &types::Finding| {
+        let rung = serde_json::to_value(&f.rung).expect("a rung serializes");
+        rung.as_str().unwrap_or_default().to_string()
+    };
     let mut problems = vec![];
-    let (patch, pulled, notes, tester_needed) = match &answer {
+    // `tasks` is the developers' task list to write; None removes it.
+    let (patch, pulled, notes, tester_needed, tasks) = match &answer {
         Answer::MaintainerReview(a) => {
-            if a.verdict == Verdict::Approve && !a.findings.is_empty() {
+            let empty = a.findings.is_empty();
+            if (a.verdict == Verdict::Approve) != empty {
+                let (problem, example) = if empty {
+                    (
+                        "changes with no findings; a changes verdict needs at least one finding"
+                            .to_string(),
+                        "\"approve\"",
+                    )
+                } else {
+                    (
+                        format!(
+                            "approve with {}; an approval has no findings",
+                            count(a.findings.len(), "finding")
+                        ),
+                        "\"changes\"",
+                    )
+                };
                 problems.push((
                     "answer_parse_failed",
                     FieldError {
                         field: "verdict".into(),
-                        problem: format!(
-                            "approve with {}; an approval has no findings",
-                            count(a.findings.len(), "finding")
-                        ),
-                        example: "\"changes\"".into(),
+                        problem,
+                        example: example.into(),
                     },
                 ));
             }
             check_list(&mut problems, "findings", a.findings.len());
             for (i, f) in a.findings.iter().enumerate() {
                 let p = &mut problems;
-                check_text(p, &format!("findings[{i}].file"), &f.file, LINE_CAP, true);
+                let file = format!("findings[{i}].file");
+                check_text(p, &file, &f.file, LINE_CAP, true);
+                check_owned(p, &file, &f.file, root, unit, &router);
                 check_text(p, &format!("findings[{i}].cut"), &f.cut, PROSE_CAP, false);
                 let field = format!("findings[{i}].replace_with");
                 check_text(p, &field, &f.replace_with, PROSE_CAP, false);
             }
-            (&a.card_patch, &a.pulled_anchors, &a.notes, a.tester_needed)
+            // The findings are the one fix task: its lane is the files they name.
+            let fix = (a.verdict == Verdict::Changes).then(|| {
+                let mut files: Vec<String> = vec![];
+                for f in &a.findings {
+                    if !files.contains(&f.file) {
+                        files.push(f.file.clone());
+                    }
+                }
+                let lines: Vec<String> = a
+                    .findings
+                    .iter()
+                    .map(|f| {
+                        one_line(&format!(
+                            "{}:{} {}: cut {}; replace with {}",
+                            f.file,
+                            f.line,
+                            rung(f),
+                            f.cut,
+                            f.replace_with
+                        ))
+                    })
+                    .collect();
+                types::Task {
+                    title: "fix review findings".into(),
+                    change: lines.join("\n"),
+                    files,
+                    check: None,
+                }
+            });
+            if let Some(t) = &fix {
+                check_text(&mut problems, "findings", &t.change, PROSE_CAP, false);
+            }
+            let tasks = fix.map(|t| vec![t]);
+            (
+                &a.card_patch,
+                &a.pulled_anchors,
+                &a.notes,
+                a.tester_needed,
+                tasks,
+            )
         }
         Answer::MaintainerExplain(a) => {
             let p = &mut problems;
             check_text(p, "explanation", &a.explanation, EXPLANATION_CAP, false);
-            check_list(p, "tasks", a.tasks.len());
-            for (i, t) in a.tasks.iter().enumerate() {
-                check_text(p, &format!("tasks[{i}].title"), &t.title, ID_CAP, true);
-                check_text(
-                    p,
-                    &format!("tasks[{i}].change"),
-                    &t.change,
-                    PROSE_CAP,
-                    false,
-                );
-                check_list(p, &format!("tasks[{i}].files"), t.files.len());
-                for (j, f) in t.files.iter().enumerate() {
-                    check_text(p, &format!("tasks[{i}].files[{j}]"), f, LINE_CAP, true);
-                }
-                if let Some(c) = &t.check {
-                    check_text(p, &format!("tasks[{i}].check"), c, LINE_CAP, true);
-                }
-            }
-            (&a.card_patch, &a.pulled_anchors, &a.notes, false)
+            let commands = &loaded.repo.commands;
+            check_tasks(p, &a.tasks, root, unit, &router, commands);
+            let tasks = (!a.tasks.is_empty()).then(|| a.tasks.clone());
+            (&a.card_patch, &a.pulled_anchors, &a.notes, false, tasks)
         }
         _ => unreachable!("a maintainer answer parses to a maintainer variant"),
     };
@@ -432,15 +534,7 @@ fn maintainer(
             let list: Vec<String> = a
                 .findings
                 .iter()
-                .map(|f| {
-                    let rung = serde_json::to_value(&f.rung).expect("a rung serializes");
-                    format!(
-                        "{} {}:{}",
-                        rung.as_str().unwrap_or_default(),
-                        f.file,
-                        f.line
-                    )
-                })
+                .map(|f| format!("{} {}:{}", rung(f), f.file, f.line))
                 .collect();
             let mut findings = count(list.len(), "finding");
             if !list.is_empty() {
@@ -454,20 +548,32 @@ fn maintainer(
         }
         Answer::MaintainerExplain(a) => {
             out.explanation = Some(a.explanation.chars().take(EXPLANATION_SHOWN).collect());
-            let tasks = count(a.tasks.len(), "task");
-            format!("{unit} maintainer: explained; {card_line}; {tasks}")
+            let mut summary = format!(
+                "{unit} maintainer: explained; {card_line}; {}",
+                count(a.tasks.len(), "task")
+            );
+            if !a.tasks.is_empty() {
+                brief::check_root(root)?;
+                summary += &format!(
+                    "; next: stewards -C {} brief {unit} --role developer",
+                    brief::shell_quote(root)
+                );
+            }
+            summary
         }
         _ => unreachable!("a maintainer answer parses to a maintainer variant"),
     };
 
-    // The writes, last: the card, the tester brief, then the retired job's brief. A link at any
-    // of their paths is refused here, before the first of them.
+    // The writes, last: the card, the task list, the tester brief, then the retired job's brief.
+    // A link at any of their paths is refused here, before the first of them.
     let card_rel = format!(".stewards/units/{unit}.toml");
+    let tasks_rel = tasks_rel(unit);
     let tester_rel = brief::rel_path(Some(unit), Role::Tester);
     let tester_answer = format!(".stewards/briefs/{unit}-tester.answer.json");
     let brief_rel = brief::rel_path(Some(unit), Role::Maintainer);
     let planned = [
         (card_text.is_some(), &card_rel),
+        (true, &tasks_rel),
         (tester_needed, &tester_rel),
         (tester_needed, &tester_answer),
         (true, &brief_rel),
@@ -484,6 +590,12 @@ fn maintainer(
             .map_err(|e| after_writes(e, &written))?;
         written.push(&card_rel);
     }
+    match &tasks {
+        Some(t) => repo.write(&tasks_rel, serde_json::to_string_pretty(t)?.as_bytes()),
+        None => repo.remove(&tasks_rel),
+    }
+    .map_err(|e| after_writes(e, &written))?;
+    written.push(&tasks_rel);
     if let Some(text) = &tester_text {
         let path = brief::write_text(repo, Some(unit), Role::Tester, text)
             .map_err(|e| after_writes(e, &written))?;
@@ -494,6 +606,77 @@ fn maintainer(
     repo.remove(&brief_rel)
         .map_err(|e| after_writes(e, &written))?;
     Ok(out)
+}
+
+/// Writes nothing but telemetry and retires the brief: the lane report is computed from git.
+fn developer(
+    repo: &Repo,
+    unit: &str,
+    header: &Header,
+    text: &str,
+    before: &Before,
+) -> Result<Submitted> {
+    let Answer::Developer(a) = parse_answer(Role::Developer, header.mode, text)? else {
+        unreachable!("a developer answer parses to the developer variant")
+    };
+    let mut p = vec![];
+    check_text(&mut p, "summary", &a.summary, PROSE_CAP, false);
+    if let Some(b) = &a.blocked_on {
+        check_text(&mut p, "blocked_on", b, PROSE_CAP, false);
+    }
+    if let Some(c) = &a.check {
+        check_text(&mut p, "check.command", &c.command, LINE_CAP, true);
+        check_text(&mut p, "check.output", &c.output, PROSE_CAP, false);
+    }
+    check_common(&mut p, &a.pulled_anchors, &a.notes);
+    if !p.is_empty() {
+        return Err(rejected(p));
+    }
+
+    let root = &repo.root;
+    let loaded = repo.loaded()?;
+    let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+    let lanes = read_tasks(repo, unit)?;
+    let lane = header.lane.as_deref().unwrap_or_default();
+    let changed: Vec<String> = git::diff_names(root, &header.snapshot, &git::snapshot(root)?)?
+        .into_iter()
+        .filter(|f| router.owner(f) == Some(unit))
+        .collect();
+    let k = changed.iter().filter(|f| lane.contains(f)).count();
+    let out_of_lane: Vec<String> = changed
+        .into_iter()
+        .filter(|f| !lanes.iter().any(|t| t.files.contains(f)))
+        .collect();
+    let n = header.n.unwrap_or_default();
+    let summary = match &a.blocked_on {
+        Some(b) => {
+            let b: String = one_line(b).chars().take(LINE_CAP).collect();
+            format!("{unit} developer {n}: blocked: {b}")
+        }
+        None => {
+            let check = match &a.check {
+                None => "no check",
+                Some(c) if c.pass => "check pass",
+                Some(_) => "check fail",
+            };
+            let mut s = format!("{unit} developer {n}: {}; {check}", count(k, "file"));
+            if !out_of_lane.is_empty() {
+                s += &format!("; out of lane: {}", one_line(&out_of_lane.join(", ")));
+            }
+            s
+        }
+    };
+    let brief_rel = format!(".stewards/briefs/{unit}-developer-{n}.md");
+    write_and_retire(repo, before, &[], &brief_rel)?;
+    Ok(Submitted {
+        summary,
+        developer: Some(DeveloperReport {
+            out_of_lane,
+            blocked_on: a.blocked_on,
+        }),
+        pulled_anchors: a.pulled_anchors,
+        ..Default::default()
+    })
 }
 
 fn tester(
@@ -1137,6 +1320,144 @@ fn check_common(out: &mut Problems, pulled: &[String], notes: &str) {
         check_text(out, &format!("pulled_anchors[{i}]"), a, LINE_CAP, true);
     }
     check_text(out, "notes", notes, PROSE_CAP, false);
+}
+
+/// The tool-owned task list a maintainer submit writes for the unit's developers.
+fn tasks_rel(unit: &str) -> String {
+    format!(".stewards/briefs/{unit}-tasks.json")
+}
+
+/// The unit's task list, strictly parsed and checked again against the repo as it is now: the
+/// file sits where subagents can write, so what the maintainer submit validated is not trusted.
+pub(crate) fn read_tasks(repo: &Repo, unit: &str) -> Result<Vec<types::Task>> {
+    let rel = tasks_rel(unit);
+    let path = safe_path(&repo.root, &rel, false)?;
+    let no_tasks = |message: String| -> anyhow::Error {
+        CliError::new(
+            "no_tasks",
+            message,
+            format!(
+                "brief the maintainer again with `stewards brief {unit} --role maintainer --task <the change>` and submit its answer with tasks"
+            ),
+        )
+        .into()
+    };
+    let unusable = |why: &str| no_tasks(format!("{rel} is not a usable task list: {why}"));
+    match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(no_tasks(format!("unit `{unit}` has no task list ({rel})")));
+        }
+        Ok(m) if m.is_file() => {}
+        _ => return Err(unusable("not a regular file")),
+    }
+    let text = std::fs::read_to_string(&path).map_err(|_| unusable("cannot read it"))?;
+    // strict: a re-serialization that differs from the file means an unknown or missing field
+    let tasks = serde_json::from_str::<Vec<types::Task>>(&text)
+        .ok()
+        .filter(|t| {
+            !t.is_empty()
+                && serde_json::from_str::<serde_json::Value>(&text).ok()
+                    == serde_json::to_value(t).ok()
+        })
+        .ok_or_else(|| unusable("not a non-empty JSON list of tasks"))?;
+    let loaded = repo.loaded()?;
+    let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+    let mut p = vec![];
+    check_tasks(
+        &mut p,
+        &tasks,
+        &repo.root,
+        unit,
+        &router,
+        &loaded.repo.commands,
+    );
+    match p.first() {
+        Some((_, e)) => Err(unusable(&format!("{} fails its check", e.field))),
+        None => Ok(tasks),
+    }
+}
+
+/// Checks a task list for `unit`: caps and characters, at least one file per task, each file
+/// plain and owned by `unit`, no file in two lanes, and each check an allowed command.
+fn check_tasks(
+    out: &mut Problems,
+    tasks: &[types::Task],
+    root: &Path,
+    unit: &str,
+    router: &Router,
+    commands: &Commands,
+) {
+    check_list(out, "tasks", tasks.len());
+    let mut lanes = std::collections::HashMap::new();
+    for (i, t) in tasks.iter().enumerate() {
+        let f = format!("tasks[{i}]");
+        check_text(out, &format!("{f}.title"), &t.title, ID_CAP, true);
+        check_text(out, &format!("{f}.change"), &t.change, PROSE_CAP, false);
+        if t.files.is_empty() {
+            out.push((
+                "answer_parse_failed",
+                FieldError {
+                    field: format!("{f}.files"),
+                    problem: "no files; a task names at least one file it may write".into(),
+                    example: "[\"src/api.rs\"]".into(),
+                },
+            ));
+        }
+        check_list(out, &format!("{f}.files"), t.files.len());
+        for (j, file) in t.files.iter().enumerate() {
+            let field = format!("{f}.files[{j}]");
+            check_text(out, &field, file, LINE_CAP, true);
+            check_owned(out, &field, file, root, unit, router);
+            let first = *lanes.entry(file.as_str()).or_insert(i);
+            if first != i {
+                out.push((
+                    "answer_parse_failed",
+                    FieldError {
+                        field,
+                        problem: format!(
+                            "`{file}` is also in the lane of tasks[{first}]; no two lanes share a file"
+                        ),
+                        example: "\"src/api.rs\" in one task only".into(),
+                    },
+                ));
+            }
+        }
+        if let Some(c) = &t.check {
+            check_text(out, &format!("{f}.check"), c, LINE_CAP, true);
+            check_command(out, &format!("{f}.check"), c, commands);
+        }
+    }
+}
+
+/// Rejects a lane file that is not a plain repo-relative path or that `unit` does not own; a
+/// file that does not exist yet is fine, since a task may create it.
+fn check_owned(
+    out: &mut Problems,
+    field: &str,
+    file: &str,
+    root: &Path,
+    unit: &str,
+    router: &Router,
+) {
+    let problem = if file.contains('\\') || safe_path(root, file, false).is_err() {
+        "not a plain repo-relative path: no `..`, `.`, empty part, leading `/`, backslash, or \
+         symlink"
+            .to_string()
+    } else {
+        match router.owner(file) {
+            Some(owner) if owner == unit => return,
+            Some(owner) => format!("`{file}` is owned by unit `{owner}`, not `{unit}`"),
+            None => format!("no unit owns `{file}`"),
+        }
+    };
+    out.push((
+        "answer_parse_failed",
+        FieldError {
+            field: field.to_string(),
+            problem,
+            example: "\"src/api.rs\"".into(),
+        },
+    ));
 }
 
 /// `command_not_allowed` unless `cmd` has no `SHELL_CHARS` and its leading words are all the

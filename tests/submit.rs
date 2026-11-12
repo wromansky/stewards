@@ -57,8 +57,15 @@ fn explain_job(dir: &Path, home: &Path) {
     assert_eq!(run(dir, home, &args).0, 0);
 }
 
+/// A review answer; `changes` carries one finding on a file api owns, since it needs one.
 fn review(verdict: &str) -> Value {
-    json!({"verdict": verdict, "findings": [], "card_patch": null, "tester_needed": false,
+    let findings = if verdict == "changes" {
+        json!([{"file": "src/api/items.py", "line": 4, "rung": "one_line", "cut": "x",
+                "replace_with": "y"}])
+    } else {
+        json!([])
+    };
+    json!({"verdict": verdict, "findings": findings, "card_patch": null, "tester_needed": false,
            "pulled_anchors": [], "notes": ""})
 }
 
@@ -158,6 +165,13 @@ fn approve_with_a_finding_is_rejected_and_writes_nothing() {
     let mut a = review("approve");
     a["findings"] = json!([{"file": "src/api/items.py", "line": 4, "rung": "one_line",
                             "cut": "x", "replace_with": "y"}]);
+    rejected(&a, "answer_parse_failed", "verdict");
+}
+
+#[test]
+fn changes_with_no_findings_is_rejected_and_writes_nothing() {
+    let mut a = review("changes");
+    a["findings"] = json!([]);
     rejected(&a, "answer_parse_failed", "verdict");
 }
 

@@ -284,18 +284,6 @@ fn validator_brief_without_an_unjudged_bug_is_usage() {
 }
 
 #[test]
-fn developer_brief_is_not_implemented() {
-    let (dir, home) = setup();
-    let (code, v) = run(
-        dir.path(),
-        home.path(),
-        &["brief", "api", "--role", "developer"],
-    );
-    assert_eq!(code, 2);
-    assert_eq!(v["error"]["code"], "not_implemented");
-}
-
-#[test]
 fn next_writes_briefs_and_fills_brief_path() {
     let (dir, home) = setup();
     stamp(dir.path(), home.path(), "api");

@@ -119,10 +119,13 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   any changed file the unit owns that is in no current task's lane, as
   `out of lane` in the summary. It is a report, not a rejection: the write
   has happened, and the maintainer's review sees it as untraced.
-- **Fix loop:** a review's findings are the next task. `brief <unit> --role
-  developer` reads the maintainer's latest answer: an explain answer's
-  `tasks`, or a review's `findings` as one task whose lane is the files the
-  findings name. A developer that reports `blocked_on` sends the main agent
+- **Fix loop:** a review's findings are the next task. An answer file stays
+  writable after it is validated, so the tool does not read it again: at
+  the maintainer's `submit` it writes the accepted task list to its own
+  file, `.stewards/briefs/<unit>-tasks.json` (an explain answer's `tasks`,
+  or a review's `findings` as one task whose lane is the files the findings
+  name; an approval removes it), and `brief <unit> --role developer`
+  re-validates that file every time it reads it. A developer that reports `blocked_on` sends the main agent
   back to the maintainer with that message as the task.
 - **Tests, two writers in turn:** a developer writes the check for its task
   inside its lane; the tester writes scenario tests for the contract and
@@ -138,8 +141,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Stamp:** only a maintainer review `submit` with `verdict: approve`
   stamps, and it stamps the brief's snapshot, not the tree at submit time,
   so anything written since (a parallel tester's tests, an applied finding)
-  is still stale and gets its own review. `approve` means no findings;
-  `submit` rejects an approval that carries any. Explain jobs, `changes`
+  is still stale and gets its own review. `approve` means no findings and
+  `changes` means at least one; `submit` rejects either verdict otherwise. Explain jobs, `changes`
   verdicts, and the other roles never stamp. `stamp <unit>` is the human
   override.
 - **Role marks:** the tester's and documenter's submits each record the
@@ -657,6 +660,7 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `direct_call_failed` | the model call failed (fixed text, never the prompt or key) | rerun with `BAML_LOG=info` |
 | `unsafe_path` | a path the tool reads or writes in a repo is not plain names, or passes through a symlink | remove the symlink at `<path>`; stewards never writes through links |
 | `card_changed` | a file `submit` was about to write changed since it was loaded (another submit finished first) | run the same submit again |
+| `no_tasks` | `brief --role developer` with no usable task list for the unit | brief the maintainer again with the change as `--task` |
 | `not_implemented` | a command or flag not built yet | use a release that has it |
 | `internal` | any other failure | report a bug |
 

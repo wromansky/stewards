@@ -10,9 +10,10 @@ use crate::git;
 use crate::guide;
 use crate::llm::{self, Mode};
 use crate::model::Role;
-use crate::output::{CliError, Global, Human, emit, not_implemented};
+use crate::output::{CliError, Global, Human, emit};
 use crate::pack::{self, Pack};
 use crate::route::Router;
+use crate::submit;
 use crate::user::{self, Entry};
 use crate::workspace::{Repo, discover};
 
@@ -31,6 +32,11 @@ pub struct Header {
     pub bytes: usize,
     pub anchors: usize,
     pub bug: Option<String>,
+    /// A developer job's task number and lane; other roles omit them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lane: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -177,10 +183,11 @@ pub fn render(header: &Header, pack: &Pack, memory: &[&Entry], root: &Path) -> S
             .collect();
         out += &format!("\nMemory:\n<<<DATA\n{}\nDATA>>>\n", data(&lines.join("\n")));
     }
-    let answer = root.join(format!(
-        ".stewards/briefs/{}.answer.json",
-        stem(unit, header.role)
-    ));
+    let stem = match header.n {
+        Some(n) => format!("{}-{n}", stem(unit, header.role)),
+        None => stem(unit, header.role),
+    };
+    let answer = root.join(format!(".stewards/briefs/{stem}.answer.json"));
     let file = shell_quote(&answer);
     let root = shell_quote(root);
     let submit = match unit {
@@ -210,7 +217,6 @@ pub fn build(
     check_root(&repo.root)?;
     let diff = mode == Mode::Review || role == Role::Tester;
     let pack = pack::pack(repo, unit, role, task, diff, snapshot)?;
-    let loaded = repo.loaded()?;
     // the pack holds a validator's first unjudged bug
     if role == Role::Validator && pack.bug.is_none() {
         bail!(CliError::new(
@@ -222,6 +228,19 @@ pub fn build(
             "record one with `stewards validate --report <file>`",
         ));
     }
+    frame(repo, &pack, mode, snapshot, None)
+}
+
+/// The brief around `pack`; `job` is a developer's task number and lane.
+fn frame(
+    repo: &Repo,
+    pack: &Pack,
+    mode: Mode,
+    snapshot: &str,
+    job: Option<(usize, &[String])>,
+) -> Result<String> {
+    let (unit, role) = (pack.unit.as_deref(), pack.role);
+    let loaded = repo.loaded()?;
     let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
     let mut languages: Vec<String> = git::ls_tree(&repo.root, snapshot)?
         .iter()
@@ -243,12 +262,14 @@ pub fn build(
         role,
         mode,
         snapshot: snapshot.to_string(),
-        task: task.to_string(),
+        task: pack.task.clone(),
         bytes: pack.bytes,
         anchors: pack.anchors.as_ref().map_or(0, Vec::len),
         bug: pack.bug.as_ref().map(|g| g.title.clone()),
+        n: job.map(|(n, _)| n),
+        lane: job.map(|(_, lane)| lane.to_vec()),
     };
-    Ok(render(&header, &pack, &memory, &repo.root))
+    Ok(render(&header, pack, &memory, &repo.root))
 }
 
 /// Writes the brief `text` built for the job to its path, removing a stale answer; returns the
@@ -289,6 +310,104 @@ impl Human for Written {
     }
 }
 
+#[derive(Serialize)]
+struct Jobs {
+    jobs: Vec<Job>,
+}
+
+#[derive(Serialize)]
+struct Job {
+    task: usize,
+    title: String,
+    brief_path: PathBuf,
+}
+
+impl Human for Jobs {
+    fn render(&self) -> String {
+        let lines: Vec<String> = self
+            .jobs
+            .iter()
+            .map(|j| {
+                format!(
+                    "Wrote `{}` (task {}: {}).",
+                    j.brief_path.display(),
+                    j.task,
+                    one_line(&j.title)
+                )
+            })
+            .collect();
+        lines.join("\n")
+    }
+}
+
+/// Writes `<unit>-developer-<n>.md` for each task of the unit's task list, and removes the briefs
+/// and answers of tasks past its end.
+fn developer(
+    g: &Global,
+    repo: &Repo,
+    unit: Option<&str>,
+    task: &str,
+    snapshot: &str,
+    stdout: bool,
+) -> Result<ExitCode> {
+    check_root(&repo.root)?;
+    let Some(unit) = unit else {
+        bail!(CliError::new(
+            "usage",
+            "brief --role developer needs a unit",
+            "stewards brief <unit> --role developer",
+        ));
+    };
+    // a known unit before its name makes a path
+    repo.loaded()?.unit(unit)?;
+    let tasks = submit::read_tasks(repo, unit)?;
+    let mut texts = vec![];
+    for (i, t) in tasks.iter().enumerate() {
+        let pack = pack::developer(repo, unit, task, i + 1, t, snapshot)?;
+        texts.push(frame(
+            repo,
+            &pack,
+            Mode::Review,
+            snapshot,
+            Some((i + 1, &t.files)),
+        )?);
+    }
+    if stdout {
+        print!("{}", texts.concat());
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut jobs = vec![];
+    for ((i, t), text) in tasks.iter().enumerate().zip(&texts) {
+        let stem = format!(".stewards/briefs/{unit}-developer-{}", i + 1);
+        repo.write(&format!("{stem}.md"), text.as_bytes())?;
+        repo.remove(&format!("{stem}.answer.json"))?;
+        jobs.push(Job {
+            task: i + 1,
+            title: t.title.clone(),
+            brief_path: repo.root.join(format!("{stem}.md")),
+        });
+    }
+    let prefix = format!("{unit}-developer-");
+    let past_end = |name: &str| {
+        name.strip_prefix(&prefix)
+            .and_then(|r| {
+                r.strip_suffix(".md")
+                    .or_else(|| r.strip_suffix(".answer.json"))
+            })
+            .and_then(|n| n.parse::<usize>().ok())
+            .is_some_and(|n| n > tasks.len())
+    };
+    let names: Vec<String> = std::fs::read_dir(repo.root.join(".stewards/briefs"))?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|name| past_end(name))
+        .collect();
+    for name in names {
+        repo.remove(&format!(".stewards/briefs/{name}"))?;
+    }
+    emit(&Jobs { jobs }, g.human);
+    Ok(ExitCode::SUCCESS)
+}
+
 pub fn run(
     g: &Global,
     unit: Option<&str>,
@@ -296,9 +415,6 @@ pub fn run(
     task: Option<&str>,
     stdout: bool,
 ) -> anyhow::Result<ExitCode> {
-    if role == Role::Developer {
-        return not_implemented("brief --role developer");
-    }
     let cwd = std::env::current_dir()?.canonicalize()?;
     let ws = discover(&cwd, g.repo.as_deref())?;
     let repo = ws.current_repo(&cwd)?;
@@ -307,6 +423,9 @@ pub fn run(
         Some(t) => t.to_string(),
         None => git::task_text(&repo.root)?,
     };
+    if role == Role::Developer {
+        return developer(g, repo, unit, &task, &snapshot, stdout);
+    }
     // The maintainer's `brief` is an explain job; every other role has one mode.
     let mode = if role == Role::Maintainer {
         Mode::Explain

@@ -177,7 +177,7 @@ const fn e(code: &'static str, when: &'static str, fix: &'static str) -> ErrorRo
     ErrorRow { code, when, fix }
 }
 
-static ERRORS: [ErrorRow; 28] = [
+static ERRORS: [ErrorRow; 29] = [
     e(
         "not_a_git_repo",
         "no `.git` above cwd",
@@ -307,6 +307,11 @@ static ERRORS: [ErrorRow; 28] = [
         "card_changed",
         "a file `submit` was about to write changed since it was loaded (another submit finished first)",
         "run the same submit again",
+    ),
+    e(
+        "no_tasks",
+        "`brief --role developer` with no usable task list for the unit",
+        "brief the maintainer again with the change as `--task`",
     ),
     e(
         "not_implemented",

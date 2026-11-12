@@ -201,11 +201,12 @@ fn architect_pack_has_every_unit_flows_decisions_and_no_source() {
 }
 
 #[test]
-fn developer_pack_is_not_implemented() {
+fn developer_pack_is_a_usage_error_naming_brief() {
     let repo = fixture("single");
     let (code, v) = run(repo.path(), &["pack", "api", "--role", "developer"]);
     assert_eq!(code, 2);
-    assert_eq!(v["error"]["code"], "not_implemented");
+    assert_eq!(v["error"]["code"], "usage");
+    assert_eq!(v["error"]["fix"], "stewards brief api --role developer");
 }
 
 #[test]

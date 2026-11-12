@@ -20,6 +20,9 @@ pub struct Record {
     pub anchors: usize,
     pub pulled_anchors: Vec<String>,
     pub harness: Option<&'static str>,
+    /// A developer submit's count of changed files in no lane; other roles omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub out_of_lane: Option<usize>,
     /// RFC 3339 UTC; its first seven characters name the file.
     pub timestamp: String,
 }

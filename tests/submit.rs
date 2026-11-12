@@ -174,7 +174,7 @@ fn changes_does_not_stamp_and_names_the_developer_brief() {
         v["summary"],
         format!(
             "api maintainer: changes; 1 finding (one_line src/api/items.py:4); card unchanged; \
-             next: stewards -C {} brief api --role developer",
+             next: stewards -C '{}' brief api --role developer",
             dir.path().canonicalize().unwrap().display()
         )
     );
@@ -724,6 +724,54 @@ fn reported_errors_are_one_line_and_capped() {
             assert!(text.chars().count() <= 200, "{text}");
             assert!(!text.chars().any(char::is_control), "{text:?}");
         }
+    }
+}
+
+#[test]
+fn reported_errors_stop_at_twenty_and_count_the_rest() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let mut a = review("changes");
+    for i in 0..25 {
+        a[format!("extra{i}").as_str()] = json!(1);
+    }
+    let (code, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!(code, 2, "{v}");
+    let errors = v["error"]["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 21, "{v}");
+    assert_eq!(errors[20]["problem"], "and 5 more");
+    for e in errors {
+        assert!(e["example"].as_str().unwrap().chars().count() <= 300, "{e}");
+    }
+}
+
+#[test]
+fn reported_errors_show_no_invisible_character() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let mut a = review("changes");
+    a["k\u{200B}\u{E0041}\u{FE0F}"] = json!(1);
+    let (code, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!(code, 2, "{v}");
+    for e in v["error"]["errors"].as_array().unwrap() {
+        let text = format!("{}{}", e["field"], e["problem"]);
+        assert!(!text.chars().any(stewards::check::invisible), "{text:?}");
+    }
+}
+
+#[test]
+fn every_invisible_kind_in_a_note_is_rejected() {
+    for c in [
+        '\u{00AD}',
+        '\u{061C}',
+        '\u{2064}',
+        '\u{206F}',
+        '\u{FE0F}',
+        '\u{E0041}',
+    ] {
+        let mut a = review("changes");
+        a["notes"] = json!(format!("ok{c}"));
+        rejected(&a, "answer_parse_failed", "notes");
     }
 }
 

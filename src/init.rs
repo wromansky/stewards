@@ -431,6 +431,15 @@ pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
             .into());
         }
     }
+    // a link at any path written below is refused before the first write, so no rerun is blocked
+    for rel in [
+        ".stewards/units.toml",
+        ".stewards/repo.toml",
+        ".gitignore",
+        "AGENTS.md",
+    ] {
+        workspace::safe_path(&repo.root, rel, false)?;
+    }
 
     let tracked = git::ls_files(&root)?;
     let files: Vec<&str> = tracked

@@ -445,6 +445,42 @@ fn architect_flow_naming_an_unknown_unit_is_rejected() {
 }
 
 #[test]
+fn architect_on_an_inline_flow_array_is_invalid_toml_and_writes_nothing() {
+    let dir = fixture("single");
+    let d = dir.path();
+    edit(
+        &d.join(REPO_TOML),
+        "[[flow]]\nname = \"create-item\"\nunits = [\"api\", \"store\"]\n\
+         entry = \"src/api/items.py::create_item\"\ncheck = \"pytest tests -k create_item\"\n",
+        "",
+    );
+    edit(
+        &d.join(REPO_TOML),
+        "schema = 1\n",
+        "schema = 1\nflow = [{ name = \"create-item\", units = [\"api\"], \
+         entry = \"src/api/items.py::create_item\" }]\n",
+    );
+    job(d, "architect");
+    let before = fs::read(d.join(REPO_TOML)).unwrap();
+    let flows = json!([{"name": "list-items", "units": ["api"],
+                        "entry": "src/api/items.py::list_items"}]);
+    let a = architect(flows, json!([]), json!([]), Value::Null);
+    let (code, v) = submit(d, "architect", &a);
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (2, &"invalid_toml".into()),
+        "{v}"
+    );
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("repo.toml") && message.contains("[[flow]]"),
+        "{message}"
+    );
+    assert_eq!(fs::read(d.join(REPO_TOML)).unwrap(), before);
+    assert!(d.join(".stewards/briefs/architect.md").is_file());
+}
+
+#[test]
 fn architect_unit_proposals_are_printed_and_not_applied() {
     let dir = fixture("single");
     let d = dir.path();

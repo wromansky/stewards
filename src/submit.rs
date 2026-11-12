@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::anchors::{Resolution, resolve};
 use crate::brief::{self, Header};
-use crate::check::{self, in_snapshot, one_line};
+use crate::check::{self, in_snapshot, invisible, one_line};
 use crate::docs;
 use crate::git;
 use crate::harness;
@@ -36,6 +36,10 @@ const ANSWER_BYTES: u64 = 256 * 1024;
 const LIST_CAP: usize = 200;
 /// How much of an error's field and problem is reported.
 const ERROR_SHOWN: usize = 200;
+/// How much of an error's example is reported.
+const EXAMPLE_SHOWN: usize = 300;
+/// Errors reported in full; the rest are counted in one last entry.
+const ERRORS_SHOWN: usize = 20;
 
 /// Each field error with the error code its kind of problem maps to.
 type Problems = Vec<(&'static str, FieldError)>;
@@ -407,9 +411,10 @@ fn maintainer(repo: &Repo, unit: &str, header: &Header, text: &str) -> Result<Su
             if !list.is_empty() {
                 findings += &format!(" ({})", list.join(", "));
             }
+            brief::check_root(root)?;
             format!(
                 "{unit} maintainer: changes; {findings}; {card_line}; next: stewards -C {} brief {unit} --role developer",
-                root.display()
+                brief::shell_quote(root)
             )
         }
         Answer::MaintainerExplain(a) => {
@@ -891,7 +896,14 @@ fn upsert<'a>(
         .or_insert(toml_edit::Item::ArrayOfTables(Default::default()))
         .as_array_of_tables_mut()
         .ok_or_else(|| {
-            anyhow::anyhow!("repo.toml: `{array}` is not a list of [[{array}]] tables")
+            CliError::new(
+                "invalid_toml",
+                format!(
+                    ".stewards/repo.toml: `{array}` is not a list of [[{array}]] tables; flows \
+                     and decisions must be written as [[flow]] and [[decision]] tables"
+                ),
+                format!("rewrite `{array}` in .stewards/repo.toml as [[{array}]] tables"),
+            )
         })?;
     let at = list
         .iter()
@@ -962,16 +974,31 @@ fn rejected(problems: Problems) -> anyhow::Error {
         format!("the answer has {}", count(problems.len(), "problem")),
         fix,
     );
-    // field and problem may quote the answer: one line, capped
-    let shown = |s: &str| one_line(s).chars().take(ERROR_SHOWN).collect::<String>();
+    // field and problem may quote the answer: one line, no invisible characters, capped
+    let shown = |s: &str| {
+        one_line(s)
+            .replace(invisible, " ")
+            .chars()
+            .take(ERROR_SHOWN)
+            .collect::<String>()
+    };
+    let more = problems.len().saturating_sub(ERRORS_SHOWN);
     err.errors = problems
         .into_iter()
+        .take(ERRORS_SHOWN)
         .map(|(_, e)| FieldError {
             field: shown(&e.field),
             problem: shown(&e.problem),
-            example: e.example,
+            example: e.example.chars().take(EXAMPLE_SHOWN).collect(),
         })
         .collect();
+    if more > 0 {
+        err.errors.push(FieldError {
+            field: String::new(),
+            problem: format!("and {more} more"),
+            example: String::new(),
+        });
+    }
     err.into()
 }
 
@@ -1026,12 +1053,6 @@ fn check_command(out: &mut Problems, field: &str, cmd: &str, commands: &Commands
             },
         ));
     }
-}
-
-/// Characters that hide text or reorder it on screen.
-fn invisible(c: char) -> bool {
-    matches!(c, '\u{2028}' | '\u{2029}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
-        | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
 }
 
 /// Caps `value` at `cap` characters and rejects data markers, invisible and direction

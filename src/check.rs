@@ -25,6 +25,13 @@ pub fn one_line(s: &str) -> String {
     )
 }
 
+/// Invisible and direction-changing format characters: they hide text or reorder it on screen.
+pub fn invisible(c: char) -> bool {
+    matches!(c, '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+        | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}'
+        | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{E0000}'..='\u{E007F}')
+}
+
 /// True when the unit has no `[reviewed]`, or its fingerprint differs from `current`.
 pub fn is_stale(reviewed: Option<&Reviewed>, current: &str) -> bool {
     reviewed.is_none_or(|r| r.fingerprint != current)

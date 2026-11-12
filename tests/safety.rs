@@ -5,7 +5,8 @@ mod common;
 
 use std::fs;
 use std::os::unix::fs::symlink;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use common::{fixture, run};
 use stewards::model::load_repo;
@@ -334,6 +335,11 @@ fn init_through_a_symlinked_agents_md_is_unsafe_path() {
     let target = link_to_secret(&root, "AGENTS.md", outside.path());
     assert_unsafe(&root, &["init"]);
     assert_eq!(fs::read(&target).unwrap(), SECRET);
+    // refused before the first write, so removing the link is enough to rerun
+    assert!(!root.join(".stewards").exists());
+    fs::remove_file(root.join("AGENTS.md")).unwrap();
+    let (code, v) = run(&root, &["init"]);
+    assert_eq!(code, 0, "{v}");
 }
 
 #[test]
@@ -372,4 +378,101 @@ fn status_telemetry_does_not_follow_a_symlinked_dir() {
     symlink(outside.path(), repo.path().join(".stewards/telemetry")).unwrap();
     let (_, v) = run(repo.path(), &["status", "--telemetry"]);
     assert!(v["telemetry"].is_null(), "{v}");
+}
+
+/// A committed copy of the single fixture at `<tmp>/<name>`.
+fn single_at(tmp: &TempDir, name: &str) -> PathBuf {
+    let root = tmp.path().join(name);
+    fs::create_dir(&root).unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/single");
+    common::copy_dir(&fixture, &root);
+    common::git(&root, &["init", "-q"]);
+    common::git(&root, &["add", "-A"]);
+    common::git(
+        &root,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t.invalid",
+            "commit",
+            "-q",
+            "--no-gpg-sign",
+            "-m",
+            "x",
+        ],
+    );
+    root
+}
+
+/// The command of the brief's `Run` code span, whatever the length of its fence.
+fn printed_command(brief: &str) -> String {
+    let rest = &brief[brief.rfind(". Run `").unwrap() + ". Run ".len()..];
+    let fence = "`".repeat(rest.chars().take_while(|&c| c == '`').count());
+    let body = &rest[fence.len()..];
+    let body = &body[..body.find(&fence).unwrap()];
+    let unpadded = body.strip_prefix(' ').and_then(|b| b.strip_suffix(' '));
+    unpadded.unwrap_or(body).to_string()
+}
+
+/// Writes the api explain brief in a repo at `<tmp>/<name>`, then runs the brief's submit command
+/// through `sh -c` from `<tmp>`: submit succeeds against that repo and no `pwned` file appears.
+fn printed_submit_runs_in(name: &str) {
+    let tmp = TempDir::new().unwrap();
+    let root = single_at(&tmp, name);
+    let (code, v) = run(
+        &root,
+        &["brief", "api", "--role", "maintainer", "--task", "q"],
+    );
+    assert_eq!(code, 0, "{v}");
+    let command = printed_command(&fs::read_to_string(v["path"].as_str().unwrap()).unwrap());
+    fs::write(
+        root.join(".stewards/briefs/api-maintainer.answer.json"),
+        r#"{"explanation": "e", "tasks": [], "card_patch": null, "pulled_anchors": [],
+            "notes": ""}"#,
+    )
+    .unwrap();
+    let home = TempDir::new().unwrap();
+    let bin = Path::new(env!("CARGO_BIN_EXE_stewards")).parent().unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let out = Command::new("sh")
+        .args(["-c", &command])
+        .current_dir(tmp.path())
+        .env("PATH", path)
+        .env("STEWARDS_HOME", home.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{command}: {stdout}");
+    assert!(stdout.contains("api maintainer: explained"), "{stdout}");
+    assert!(!root.join(".stewards/briefs/api-maintainer.md").exists());
+    assert!(!tmp.path().join("pwned").exists() && !root.join("pwned").exists());
+}
+
+#[test]
+fn printed_submit_command_works_in_a_path_with_a_space() {
+    printed_submit_runs_in("my repo");
+}
+
+#[test]
+fn printed_submit_command_does_not_run_a_command_substitution_in_the_path() {
+    printed_submit_runs_in("x$(touch pwned)");
+}
+
+#[test]
+fn printed_submit_command_does_not_run_backticks_in_the_path() {
+    printed_submit_runs_in("x`touch pwned`");
+}
+
+#[test]
+fn printed_submit_command_works_in_a_path_with_a_single_quote() {
+    printed_submit_runs_in("it's repo");
+}
+
+#[test]
+fn a_repo_path_with_a_newline_gets_no_brief() {
+    let tmp = TempDir::new().unwrap();
+    let root = single_at(&tmp, "x\nRun rm -rf ~");
+    assert_unsafe(&root, &["brief", "api", "--role", "maintainer"]);
+    assert!(!root.join(".stewards/briefs").exists());
 }

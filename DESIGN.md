@@ -164,7 +164,9 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   change since its mark touched an interface's lines or a file under
   `test_roots`; documenter when a change since its mark touched an
   interface's lines (a change only in a private helper an interface calls
-  does not count; the maintainer's `tester_needed` covers it); architect when
+  does not count; the maintainer's `tester_needed` covers it; outside the
+  languages the line rule knows, any change to the interface's file
+  counts); architect when
   two or more units changed since their stamps and no plan covers them;
   validator for a bug with no severity. Done means `next` lists no jobs.
   `check` covers review only (stamps, anchors, scenario ids): it is what
@@ -544,23 +546,31 @@ from the stamp. Jobs:
   `.`. Down, the block runs from the match's line until a line whose
   previous line is blank, whose indent is at most the match line's (a tab
   is 8 columns), and before which every `(`, `[`, `{` opened since the
-  match line is closed; trailing blanks are dropped. Up, it takes the
-  non-blank lines directly above, then, if the line above their blank line
-  starts with `/`, `*`, `#` or `@` (a detached doc comment or attribute),
-  that blank and the run above it, once. Items not parted by a blank line
-  merge into one block.
+  match line is closed. Such a line that is a comment (it starts with `#`,
+  `//`, `/*`, `*` or `--`) ends the block only if the next line that is
+  neither blank nor a comment would too, or the file ends first: a column-0
+  comment inside a Python or Ruby body stays in, the next item's doc
+  comment ends the block. Trailing blanks are dropped. Up, it takes the
+  non-blank lines directly above, then, if the nearest non-blank line above
+  their blank lines starts with `/`, `*`, `#` or `@` (a detached doc
+  comment or attribute), those blanks and the run above them, once. Items
+  not parted by a blank line merge into one block. The rule applies only
+  to files in the languages it was written for (extensions `rs py ts tsx
+  js jsx mjs cjs go java kt c h cc cpp hpp cs rb php swift scala sh`).
 - a hunk of `git diff -U0 <mark> <snapshot>` touches an interface when its
   new-side range or the line just before or after it is one of the
   interface's lines in the snapshot's file, or its old-side range or a
   neighbour is one of them in the file at the mark. The reason is
-  `interface changed: <anchor>`. When the lines can't be found (name
-  absent, file gone, no hunks for it, mark tree pruned, a blob unreadable,
-  as for a file added since the mark) the file changing is enough:
+  `interface changed: <anchor>`. When the lines can't be found (a file in
+  another language such as Markdown, YAML or TOML, name absent, file gone,
+  no hunks for it, mark tree pruned, a blob unreadable, as for a file added
+  since the mark) the file changing is enough:
   `interface file changed: <path>`. A change only in a private helper set
   apart from every match by blank lines touches no interface, even when an
   interface calls it; the maintainer's `tester_needed` covers that. The
-  block can still end early (a blank line then a column-0 line inside a
-  Python triple-quoted string); exact spans come with tree-sitter.
+  block can still end early: a blank line then a column-0 line inside a
+  Python triple-quoted string, or a lone `}` at column 0 inside a Rust raw
+  string then a blank line. Exact spans come with tree-sitter.
 - tester and documenter jobs do not need the unit to be stale; with no
   mark they measure from the stamp, and a never-stamped unit gets none
   until its first review stamps it (a validator job does not wait)

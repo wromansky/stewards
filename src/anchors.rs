@@ -60,12 +60,14 @@ fn occurrences<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = usize> 
 /// A qualified name (`a::b`, `a.b`) also matches its last segment. A block starts at an
 /// occurrence's line and runs down until a line whose previous line is blank, whose indent
 /// (a tab is 8 columns) is at most the occurrence line's, and before which the brackets opened
-/// since the occurrence line are all closed; trailing blanks are dropped. Above, it takes the
-/// contiguous non-blank lines, then, when the line above their one blank line opens with `/`,
-/// `*`, `#` or `@` (a detached doc comment or attribute), that blank and the run above it.
-// simplified: text blocks around every whole-word occurrence; a block can still end early, as
-// at a blank line then a column-0 line inside a Python triple-quoted string. Exact spans come
-// with tree-sitter.
+/// since the occurrence line are all closed; such a line that is a comment ends the block only
+/// when the next line that is neither blank nor a comment would too (or there is none).
+/// Trailing blanks are dropped. Above, it takes the contiguous non-blank lines, then, when the
+/// nearest non-blank line above their blank lines opens with `/`, `*`, `#` or `@` (a detached
+/// doc comment or attribute), those blanks and the run above them, once.
+// simplified: text blocks around every whole-word occurrence; a block can still end early, at a
+// blank line then a column-0 line inside a Python triple-quoted string, or after a lone `}` at
+// column 0 inside a Rust raw string then a blank line. Exact spans come with tree-sitter.
 pub fn interface_lines(text: &str, name: &str) -> Vec<u32> {
     let lines: Vec<&str> = text.lines().collect();
     let blank = |i: usize| lines[i].trim().is_empty();
@@ -91,6 +93,12 @@ pub fn interface_lines(text: &str, name: &str) -> Vec<u32> {
     if last != name {
         names.push(last);
     }
+    let comment = |i: usize| {
+        let l = lines[i].trim_start();
+        ["#", "//", "/*", "*", "--"]
+            .iter()
+            .any(|m| l.starts_with(m))
+    };
     let mut out = Vec::new();
     for at in names.into_iter().flat_map(|n| occurrences(text, n)) {
         let k = text[..at].matches('\n').count();
@@ -99,7 +107,13 @@ pub fn interface_lines(text: &str, name: &str) -> Vec<u32> {
         let mut end = k;
         for j in k + 1..lines.len() {
             if !blank(j) && blank(j - 1) && indent(j) <= ind && open <= 0 {
-                break;
+                // a comment at the item's indent may sit inside its body (Python, Ruby)
+                let code = (j + 1..lines.len()).find(|&n| !blank(n) && !comment(n));
+                let ends =
+                    |n: usize| indent(n) <= ind && open + (j..n).map(depth).sum::<i64>() <= 0;
+                if !comment(j) || code.is_none_or(ends) {
+                    break;
+                }
             }
             open += depth(j);
             end = j;
@@ -114,12 +128,10 @@ pub fn interface_lines(text: &str, name: &str) -> Vec<u32> {
             i
         };
         let mut start = run_above(k);
-        if start >= 2
-            && lines[start - 2]
-                .trim_start()
-                .starts_with(['/', '*', '#', '@'])
+        if let Some(i) = (0..start).rev().find(|&i| !blank(i))
+            && lines[i].trim_start().starts_with(['/', '*', '#', '@'])
         {
-            start = run_above(start - 2);
+            start = run_above(i);
         }
         out.extend(start as u32 + 1..=end as u32 + 1);
     }

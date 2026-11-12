@@ -94,10 +94,15 @@ fn interface_lines_of_a_qualified_name_take_its_last_segment_too() {
 }
 
 #[test]
-fn interface_lines_cross_one_blank_line_up_once_and_only_to_a_comment_or_attribute() {
-    let text = "/// a\n\n/// b\n\n#[x]\nfn f() {}\n";
-    assert_eq!(interface_lines(text, "f"), [3, 4, 5, 6]);
+fn interface_lines_cross_blank_lines_up_once_and_only_to_a_comment_or_attribute() {
+    let text = "/// a\n\n/// b\n\n\n#[x]\nfn f() {}\n";
+    assert_eq!(interface_lines(text, "f"), [3, 4, 5, 6, 7]);
     assert_eq!(interface_lines("fn g() {}\n\nfn f() {}\n", "f"), [3]);
+}
+
+#[test]
+fn interface_lines_end_at_a_comment_at_end_of_file() {
+    assert_eq!(interface_lines("def f():\n    x\n\n# end\n", "f"), [1, 2]);
 }
 
 #[test]

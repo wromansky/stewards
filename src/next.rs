@@ -255,11 +255,18 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
     })
 }
 
+/// Extensions of the languages `anchors::interface_lines`'s block rule was written for.
+const BLOCK_LANGUAGES: &[&str] = &[
+    "rs", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "java", "kt", "c", "h", "cc", "cpp",
+    "hpp", "cs", "rb", "php", "swift", "scala", "sh",
+];
+
 /// `(reasons, files)` for the interfaces a change since `mark` touched, in card order: a hunk
 /// (`mark` -> `snapshot`) whose range or the line just before or after it, on the old side or
 /// the new, is one of the interface's lines in that side's file. `changed` is the files changed
-/// since `mark`. An interface whose lines can't be found (no mark tree, file gone or without
-/// hunks, name absent, a blob unreadable) counts when its file changed.
+/// since `mark`. An interface whose lines can't be found (a file not in `BLOCK_LANGUAGES`, no
+/// mark tree, file gone or without hunks, name absent, a blob unreadable) counts when its file
+/// changed.
 fn interfaces_touched(
     root: &Path,
     snapshot: &str,
@@ -287,7 +294,8 @@ fn interfaces_touched(
         let file_hunks: Vec<_> = hunks.iter().filter(|(p, ..)| *p == a.path).collect();
         // (old, new) lines; `None` when they can't be found
         let sides = || {
-            if file_hunks.is_empty() {
+            let ext = Path::new(&a.path).extension()?.to_str()?;
+            if file_hunks.is_empty() || !BLOCK_LANGUAGES.contains(&ext) {
                 return None;
             }
             let (_, sha) = entries.iter().find(|(p, _)| *p == a.path)?;

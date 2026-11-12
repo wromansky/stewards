@@ -293,6 +293,70 @@ fn output_format_names_every_field() {
     }
 }
 
+/// The cap the schema text states on the comment line above `field`, as a number.
+fn stated_cap(schema: &str, field: &str) -> usize {
+    let lines: Vec<&str> = schema.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(&format!("{field}:")))
+        .unwrap_or_else(|| panic!("no field {field}"));
+    let note = lines[at - 1].split("max ").nth(1);
+    let note = note.unwrap_or_else(|| panic!("{field} states no cap"));
+    note.split(' ').next().unwrap().parse().unwrap()
+}
+
+#[test]
+fn every_role_schema_states_the_caps_submit_enforces() {
+    use stewards::submit::{
+        EXPLANATION_CAP, ID_CAP, LINE_CAP, LIST_CAP, PROSE_CAP, TASK_CHANGE_CAP,
+    };
+    let all = [
+        ID_CAP,
+        LINE_CAP,
+        PROSE_CAP,
+        TASK_CHANGE_CAP,
+        EXPLANATION_CAP,
+        LIST_CAP,
+    ];
+    // (role, mode, a capped field of that role's answer, the cap submit enforces on it)
+    let cases = [
+        (Role::Maintainer, Mode::Review, "contract", LINE_CAP),
+        (Role::Maintainer, Mode::Review, "findings", LIST_CAP),
+        (
+            Role::Maintainer,
+            Mode::Explain,
+            "explanation",
+            EXPLANATION_CAP,
+        ),
+        (Role::Maintainer, Mode::Explain, "change", TASK_CHANGE_CAP),
+        (Role::Developer, Mode::Review, "summary", PROSE_CAP),
+        (Role::Tester, Mode::Review, "given", LINE_CAP),
+        (Role::Tester, Mode::Review, "level", ID_CAP),
+        (Role::Documenter, Mode::Review, "how_to_change", PROSE_CAP),
+        (Role::Validator, Mode::Review, "reason", PROSE_CAP),
+        (Role::Architect, Mode::Review, "entry", LINE_CAP),
+    ];
+    for (role, mode, field, cap) in cases {
+        assert_eq!(
+            stated_cap(output_format(role, mode), field),
+            cap,
+            "{role:?} {field}"
+        );
+    }
+    // whatever else a schema states is one of the enforced caps
+    for (role, mode) in SHAPES {
+        for line in output_format(role, mode)
+            .lines()
+            .filter(|l| l.contains("max "))
+        {
+            for part in line.split("max ").skip(1) {
+                let n: usize = part.split(' ').next().unwrap().parse().unwrap();
+                assert!(all.contains(&n), "{role:?} {mode:?}: {line}");
+            }
+        }
+    }
+}
+
 fn collapse(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }

@@ -12,52 +12,64 @@ Rung
 Answer in JSON using this schema:
 {
   verdict: 'approve' or 'changes',
+  // max 200 items; all cut and replace_with together max 20000 chars
   findings: [
     {
+      // max 300 chars
       file: string,
       line: int,
       rung: Rung,
+      // max 2000 chars
       cut: string,
+      // max 2000 chars
       replace_with: string,
     }
   ],
   card_patch: {
-    // entries to add or update, by id; the rest of the card is kept
+    // entries to add or update, by id; the rest of the card is kept; max 200 items
     interface: [
       {
+        // max 120 chars
         id: string,
-        // path::Name, the bare identifier with no keyword
+        // path::Name, the bare identifier with no keyword; max 300 chars
         anchor: string,
+        // max 300 chars
         contract: string,
       }
     ] or null,
-    // entries to add, by path and name; the rest of the card is kept
+    // entries to add, by path and name; the rest of the card is kept; max 200 items
     anchors: [
       {
+        // max 300 chars
         path: string,
-        // the bare identifier with no keyword
+        // the bare identifier with no keyword; max 300 chars
         name: string,
       }
     ] or null,
-    // entries to add or update, by title; the rest of the card is kept
+    // entries to add or update, by title; the rest of the card is kept; max 200 items
     gaps: [
       {
         kind: 'gap' or 'future' or 'bug',
+        // max 120 chars
         title: string,
-        // path::Name, the bare identifier with no keyword
+        // path::Name, the bare identifier with no keyword; max 300 chars
         anchor: string or null,
+        // max 2000 chars
         note: string,
+        // max 300 chars
         repro: string or null,
       }
     ] or null,
-    // ids of interface entries to remove
+    // ids of interface entries to remove; max 200 items, each max 120 chars
     remove_interface: string[] or null,
-    // path::name of anchors to remove
+    // path::name of anchors to remove; max 200 items, each max 300 chars
     remove_anchors: string[] or null,
-    // titles of gaps to remove
+    // titles of gaps to remove; max 200 items, each max 120 chars
     remove_gaps: string[] or null,
   } or null,
   tester_needed: bool,
+  // max 200 items, each max 300 chars
   pulled_anchors: string[],
+  // max 2000 chars
   notes: string,
 }

@@ -1,39 +1,59 @@
 Answer in JSON using this schema:
 {
   plan: {
+    // max 120 chars
     title: string,
+    // max 200 items
     steps: [
       {
+        // max 120 chars
         unit: string,
+        // max 2000 chars
         change: string,
+        // max 200 items, each max 120 chars
         interfaces: string[],
+        // max 300 chars
         check: string,
       }
     ],
   } or null,
+  // max 200 items
   flows: [
     {
+      // max 120 chars
       name: string,
+      // max 200 items, each max 120 chars
       units: string[],
-      // path::Name, the bare identifier with no keyword
+      // path::Name, the bare identifier with no keyword; max 300 chars
       entry: string,
+      // max 300 chars
       check: string or null,
     }
   ],
+  // max 200 items
   decisions: [
     {
+      // max 120 chars
       title: string,
+      // max 2000 chars
       why: string,
     }
   ],
+  // max 200 items
   unit_proposals: [
     {
+      // max 120 chars
       name: string,
+      // max 300 chars
       purpose: string,
+      // max 200 items, each max 300 chars
       paths: string[],
     }
   ],
+  // max 4000 chars
   explanation: string,
+  // max 200 items, each max 300 chars
   pulled_anchors: string[],
+  // max 2000 chars
   notes: string,
 }

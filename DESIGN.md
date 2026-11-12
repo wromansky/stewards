@@ -137,7 +137,9 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   the answer `<same>.answer.json`; a new job overwrites both, so nothing
   accumulates. The brief's first line is a tool-owned header recording the
   mode, the snapshot it was packed from, the pack's bytes and anchor count,
-  and the bug title for a validator job; `submit` reads it.
+  and the bug title for a validator job; `submit` reads it. A successful
+  `submit` removes the answer with the brief when `--file` is that
+  `.answer.json` path; a failed one leaves both for a retry.
 - **Stamp:** only a maintainer review `submit` with `verdict: approve`
   stamps, and it stamps the brief's snapshot, not the tree at submit time,
   so anything written since (a parallel tester's tests, an applied finding)
@@ -422,7 +424,8 @@ roles?`), `~/.stewards/grammars/<lang>/{lib.so|.dylib, tags.scm}`.
 Anchor grammar: `path` is the text before the first `::`, `name` is the rest
 (Rust names contain `::`). A text match is an occurrence of `name` whose
 neighbouring chars are not `[A-Za-z0-9_]`; case-sensitive; hand-rolled char
-check, no regex crate.
+check, no regex crate. `name` is the bare identifier (`dispatch`, `Router::owner`), never
+a keyword phrase such as `fn dispatch`: `submit` rejects a name with whitespace.
 
 Snapshot: copy `.git/index` to a temporary file, then `git add -A` and `git
 write-tree` with `GIT_INDEX_FILE` pointing at it. The tree covers modified

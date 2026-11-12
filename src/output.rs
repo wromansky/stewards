@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use serde::Serialize;
 
 /// Global flags every command receives; `-C` is applied by main before dispatch.
@@ -24,10 +26,12 @@ struct Envelope<'a, T> {
     payload: &'a T,
 }
 
-/// Prints `v` as enveloped JSON, or its markdown rendering with --human.
+/// Prints `v` as enveloped JSON, or its markdown rendering with --human. Never panics on a
+/// failed write: a closed pipe (`stewards check | head`) is dropped quietly so the command
+/// still exits with its own code; any other write error is reported on stderr.
 pub fn emit<T: Serialize + Human>(v: &T, human: bool) {
-    if human {
-        println!("{}", v.render());
+    let text = if human {
+        v.render()
     } else {
         let envelope = Envelope {
             stewards: Meta {
@@ -36,10 +40,13 @@ pub fn emit<T: Serialize + Human>(v: &T, human: bool) {
             },
             payload: v,
         };
-        println!(
-            "{}",
-            serde_json::to_string(&envelope).expect("payload serializes")
-        );
+        serde_json::to_string(&envelope).expect("payload serializes")
+    };
+    let mut out = std::io::stdout().lock();
+    if let Err(e) = writeln!(out, "{text}").and_then(|()| out.flush())
+        && e.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        let _ = writeln!(std::io::stderr(), "stewards: writing output: {e}");
     }
 }
 

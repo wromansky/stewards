@@ -36,19 +36,19 @@ class Finding {
 
 class Interface {
   id string
-  anchor string
+  anchor string @description("path::Name, the bare identifier with no keyword")
   contract string
 }
 
 class Anchor {
   path string
-  name string
+  name string @description("the bare identifier with no keyword")
 }
 
 class Gap {
   kind GapKind
   title string
-  anchor string?
+  anchor string? @description("path::Name, the bare identifier with no keyword")
   note string
   repro string?
 }
@@ -165,7 +165,7 @@ class Plan {
 class Flow {
   name string
   units string[]
-  entry string
+  entry string @description("path::Name, the bare identifier with no keyword")
   check string?
 }
 

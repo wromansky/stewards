@@ -334,6 +334,11 @@ fn a_developer_submit_leaves_the_card_stamp_and_task_list_unchanged() {
             .join(".stewards/briefs/api-developer-1.md")
             .exists()
     );
+    assert!(
+        !dir.path()
+            .join(".stewards/briefs/api-developer-1.answer.json")
+            .exists()
+    );
 }
 
 #[test]

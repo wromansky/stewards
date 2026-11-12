@@ -15,6 +15,7 @@ Answer in JSON using this schema:
     {
       name: string,
       units: string[],
+      // path::Name, the bare identifier with no keyword
       entry: string,
       check: string or null,
     }

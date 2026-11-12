@@ -305,3 +305,31 @@ fn every_command_parses_its_flags() {
         assert_ne!(v["error"]["code"], "usage", "{args:?}: {v}");
     }
 }
+
+#[test]
+fn output_into_a_pipe_closed_early_does_not_panic() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let repo = fixture("single");
+    let home = tempfile::TempDir::new().unwrap();
+    // ~120 KB of output: more than a pipe buffer, so the write meets the closed pipe.
+    let paths: Vec<String> = (0..3000).map(|n| format!("src/api/f{n}.py")).collect();
+    for human in [false, true] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_stewards"))
+            .arg("route")
+            .args(&paths)
+            .args(human.then_some("--human"))
+            .current_dir(repo.path())
+            .env("STEWARDS_HOME", home.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut byte = [0u8; 1];
+        child.stdout.take().unwrap().read_exact(&mut byte).unwrap();
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        assert_eq!(out.status.code(), Some(0), "{stderr}");
+    }
+}

@@ -891,6 +891,7 @@ fn documenter_writes_only_its_units_page_and_the_index() {
     assert_eq!(
         lines,
         [
+            " D .stewards/briefs/api-documenter.answer.json",
             " D .stewards/briefs/api-documenter.md",
             " M .stewards/units/api.toml",
             "?? docs/units/README.md",
@@ -937,6 +938,22 @@ fn architect_flow_entry_outside_the_snapshot_is_dead() {
         "architect",
         &a,
         "answer_dead_anchor",
+        "flows[0].entry",
+        REPO_TOML,
+    );
+}
+
+#[test]
+fn architect_flow_entry_with_a_keyword_is_rejected() {
+    let dir = fixture("single");
+    let flows =
+        json!([{"name": "f", "units": ["api"], "entry": "src/api/items.py::def create_item"}]);
+    let a = architect(flows, json!([]), json!([]), Value::Null);
+    submit_rejected(
+        dir.path(),
+        "architect",
+        &a,
+        "answer_parse_failed",
         "flows[0].entry",
         REPO_TOML,
     );

@@ -13,8 +13,17 @@ use crate::output::{Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, here};
 
-/// Unowned files named in the one `unowned` finding.
-const UNOWNED_LISTED: usize = 10;
+/// Files or interface ids named in one `unowned` or `uncovered_interface` finding.
+const LISTED: usize = 10;
+
+/// The first `LISTED` of `items` joined by commas, then ` (+N more)` for the rest.
+fn listed(items: &[&str]) -> String {
+    let more = match items.len().saturating_sub(LISTED) {
+        0 => String::new(),
+        n => format!(" (+{n} more)"),
+    };
+    format!("{}{more}", items[..items.len().min(LISTED)].join(", "))
+}
 
 /// Card or `--task` text printed on one line: control characters, newlines included, and the
 /// Unicode line and paragraph separators become spaces.
@@ -263,15 +272,24 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
                     ));
                 }
             }
-            for i in interfaces {
-                if !scenarios.iter().any(|s| s.interface == i.id) {
-                    report.warnings.push(finding(
-                        "uncovered_interface",
-                        None,
-                        Some(&i.anchor),
-                        format!("{name}: no scenario covers interface `{}`", i.id),
-                    ));
-                }
+            // One finding per unit, not per interface: every check and next output carries it.
+            let uncovered: Vec<&str> = interfaces
+                .iter()
+                .filter(|i| !scenarios.iter().any(|s| s.interface == i.id))
+                .map(|i| i.id.as_str())
+                .collect();
+            if !uncovered.is_empty() {
+                report.warnings.push(finding(
+                    "uncovered_interface",
+                    None,
+                    None,
+                    format!(
+                        "{name}: {} of {} interfaces have no scenario: {}",
+                        uncovered.len(),
+                        interfaces.len(),
+                        listed(&uncovered)
+                    ),
+                ));
             }
         }
 
@@ -295,24 +313,16 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
             .collect();
         unowned.sort();
         if !unowned.is_empty() {
-            let more = match unowned.len().saturating_sub(UNOWNED_LISTED) {
-                0 => String::new(),
-                n => format!(" (+{n} more)"),
-            };
-            let listed: Vec<_> = unowned
-                .iter()
-                .take(UNOWNED_LISTED)
-                .map(|p| p.as_str())
-                .collect();
+            let paths: Vec<&str> = unowned.iter().map(|p| p.as_str()).collect();
             report.warnings.push(Finding {
                 kind: "unowned",
                 unit: None,
                 path: None,
                 anchor: None,
                 message: format!(
-                    "{} tracked file(s) have no owner: {}{more}",
+                    "{} tracked file(s) have no owner: {}",
                     unowned.len(),
-                    listed.join(", ")
+                    listed(&paths)
                 ),
             });
         }

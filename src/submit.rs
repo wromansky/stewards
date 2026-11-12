@@ -164,6 +164,16 @@ pub(crate) fn submit_file(
     let header = brief::read_header(&repo.root.join(&brief_rel))?;
     check_header(&repo.root, unit, role, n, &header, &brief_rel)?;
     let text = read_answer(file)?;
+    // The job's own answer, the path the brief names: removed with the brief once the submit
+    // succeeds. An answer given from anywhere else, or through a link, is the caller's.
+    let answer_rel = format!(
+        "{}.answer.json",
+        brief_rel.strip_suffix(".md").expect("a brief is .md")
+    );
+    let own_answer = [file, &repo.root.join(&answer_rel)]
+        .iter()
+        .all(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()))
+        && file.canonicalize().ok() == repo.root.join(&answer_rel).canonicalize().ok();
     // Every file the job may write, read before the repo is loaded again for the job, so a
     // write by another submit after this read is caught before this one writes.
     let mut files = vec![".stewards/repo.toml".to_string()];
@@ -190,6 +200,9 @@ pub(crate) fn submit_file(
         loaded: Some(model::load_repo(&repo.root)?),
     };
     let mut out = submit(repo, unit.unwrap_or_default(), &header, &text, &before)?;
+    if own_answer {
+        repo.remove(&answer_rel)?;
+    }
     let record = telemetry::Record {
         unit: unit.map(String::from),
         role: role.as_str(),
@@ -1047,10 +1060,14 @@ fn architect(
             }
         }
         check_text(&mut p, &format!("{f}.entry"), &flow.entry, LINE_CAP, true);
-        let alive = model::Anchor::parse(&flow.entry).is_ok_and(|e| {
+        let entry = model::Anchor::parse(&flow.entry).ok();
+        let spaced = entry
+            .as_ref()
+            .is_some_and(|e| spaced_name(&mut p, &format!("{f}.entry"), &e.name));
+        let alive = entry.is_some_and(|e| {
             in_snapshot(&entries, &e.path) && matches!(resolve(root, &e), Resolution::Found { .. })
         });
-        if !alive {
+        if !spaced && !alive {
             p.push((
                 "answer_dead_anchor",
                 FieldError {
@@ -1697,6 +1714,26 @@ fn check_doc_markdown(out: &mut Problems, field: &str, value: &str) {
     }
 }
 
+/// `answer_parse_failed` for `field` when the anchor `name` holds whitespace (`fn dispatch`,
+/// `pub struct Pack`): a name is the bare identifier, which survives a change of keyword or
+/// visibility. True when it does.
+fn spaced_name(out: &mut Problems, field: &str, name: &str) -> bool {
+    let spaced = name.contains(char::is_whitespace);
+    if spaced {
+        out.push((
+            "answer_parse_failed",
+            FieldError {
+                field: field.to_string(),
+                problem: "an anchor name is the bare identifier, without keywords such as fn \
+                          or struct"
+                    .into(),
+                example: "src/api.rs::create_item, not src/api.rs::fn create_item".into(),
+            },
+        ));
+    }
+    spaced
+}
+
 /// Checks the patch's fields and lists; an anchor `alive` rejects is `answer_dead_anchor`.
 fn check_patch(
     out: &mut Problems,
@@ -1707,6 +1744,12 @@ fn check_patch(
         return;
     };
     let dead = |out: &mut Problems, field: String, anchor: Option<model::Anchor>| {
+        if anchor
+            .as_ref()
+            .is_some_and(|a| spaced_name(out, &field, &a.name))
+        {
+            return;
+        }
         if !anchor.is_some_and(|a| alive(&a)) {
             out.push((
                 "answer_dead_anchor",
@@ -1746,6 +1789,9 @@ fn check_patch(
         let f = format!("card_patch.anchors[{i}]");
         check_text(out, &format!("{f}.path"), &a.path, LINE_CAP, true);
         check_text(out, &format!("{f}.name"), &a.name, LINE_CAP, true);
+        if spaced_name(out, &format!("{f}.name"), &a.name) {
+            continue;
+        }
         let anchor = model::Anchor {
             path: a.path.clone(),
             name: a.name.clone(),

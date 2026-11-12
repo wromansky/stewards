@@ -122,6 +122,10 @@ fn rejected(answer: &Value, code: &str, field: &str) {
         dir.path().join(BRIEF).is_file(),
         "a failed submit keeps the brief"
     );
+    assert!(
+        dir.path().join(ANSWER).is_file(),
+        "a failed submit keeps the answer for a retry"
+    );
 }
 
 #[test]
@@ -293,6 +297,25 @@ fn dead_anchor_is_rejected_and_writes_nothing() {
     let mut a = review("changes");
     a["card_patch"] = json!({"anchors": [{"path": "src/api/items.py", "name": "nope"}]});
     rejected(&a, "answer_dead_anchor", "card_patch.anchors[0]");
+}
+
+#[test]
+fn anchor_name_with_a_keyword_is_rejected_naming_each_field() {
+    let mut a = review("changes");
+    // each resolves as text today, but names a keyword, not the bare identifier
+    a["card_patch"] = json!({
+        "interface": [{"id": "create-item", "anchor": "src/api/items.py::def create_item",
+                       "contract": "c"}],
+        "anchors": [{"path": "src/api/items.py", "name": "def list_items"}],
+        "gaps": [{"kind": "gap", "title": "t", "note": "",
+                  "anchor": "src/api/items.py::def list_items"}]});
+    for field in [
+        "card_patch.interface[0].anchor",
+        "card_patch.anchors[0].name",
+        "card_patch.gaps[0].anchor",
+    ] {
+        rejected(&a, "answer_parse_failed", field);
+    }
 }
 
 #[test]
@@ -626,10 +649,35 @@ fn a_second_submit_after_success_is_no_brief() {
     review_job(dir.path(), home.path());
     assert_eq!(submit(dir.path(), home.path(), &review("changes")).0, 0);
     assert!(!dir.path().join(BRIEF).exists());
-    assert!(dir.path().join(ANSWER).is_file(), "the answer is kept");
-    let args = ["submit", "api", "--role", "maintainer", "--file", ANSWER];
-    let (code, v) = run(dir.path(), home.path(), &args);
+    assert!(
+        !dir.path().join(ANSWER).exists(),
+        "the job's own answer is retired with the brief"
+    );
+    let (code, v) = submit(dir.path(), home.path(), &review("changes"));
     assert_eq!((code, &v["error"]["code"]), (2, &json!("no_brief")), "{v}");
+}
+
+#[test]
+fn an_answer_file_from_outside_the_briefs_dir_is_kept() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let elsewhere = dir.path().join("answer.json");
+    fs::write(&elsewhere, review("changes").to_string()).unwrap();
+    let args = [
+        "submit",
+        "api",
+        "--role",
+        "maintainer",
+        "--file",
+        "answer.json",
+    ];
+    let (code, v) = run(dir.path(), home.path(), &args);
+    assert_eq!(code, 0, "{v}");
+    assert!(!dir.path().join(BRIEF).exists());
+    assert!(
+        elsewhere.is_file(),
+        "an answer given from elsewhere is the caller's"
+    );
 }
 
 #[test]

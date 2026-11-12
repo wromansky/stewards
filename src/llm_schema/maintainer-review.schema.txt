@@ -25,6 +25,7 @@ Answer in JSON using this schema:
     interface: [
       {
         id: string,
+        // path::Name, the bare identifier with no keyword
         anchor: string,
         contract: string,
       }
@@ -32,6 +33,7 @@ Answer in JSON using this schema:
     anchors: [
       {
         path: string,
+        // the bare identifier with no keyword
         name: string,
       }
     ] or null,
@@ -39,6 +41,7 @@ Answer in JSON using this schema:
       {
         kind: 'gap' or 'future' or 'bug',
         title: string,
+        // path::Name, the bare identifier with no keyword
         anchor: string or null,
         note: string,
         repro: string or null,

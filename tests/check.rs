@@ -138,7 +138,33 @@ fn interface_no_scenario_references_warns_uncovered() {
     let w = &v["warnings"][0];
     assert_eq!(w["kind"], "uncovered_interface");
     assert_eq!(w["unit"], "store");
-    assert!(w["message"].as_str().unwrap().contains("count-items"));
+    assert!(w["anchor"].is_null());
+    assert_eq!(
+        w["message"],
+        "store: 1 of 2 interfaces have no scenario: count-items"
+    );
+}
+
+#[test]
+fn uncovered_interfaces_are_one_finding_per_unit_listing_ten_ids() {
+    let repo = fixture("single");
+    let extra: String = (1..=10)
+        .map(|n| format!("[[interface]]\nid = \"extra-{n}\"\nanchor = \"src/store/db.py::save_item\"\ncontract = \"c\"\n"))
+        .collect();
+    common::append(&repo.path().join(".stewards/units/store.toml"), &extra);
+    let (_, v) = run(repo.path(), &["check"]);
+    let uncovered: Vec<_> = v["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["kind"] == "uncovered_interface")
+        .collect();
+    assert_eq!(uncovered.len(), 1, "{v}");
+    assert_eq!(
+        uncovered[0]["message"],
+        "store: 11 of 12 interfaces have no scenario: count-items, extra-1, extra-2, \
+         extra-3, extra-4, extra-5, extra-6, extra-7, extra-8, extra-9 (+1 more)"
+    );
 }
 
 #[test]

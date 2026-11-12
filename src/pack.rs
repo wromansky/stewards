@@ -117,13 +117,7 @@ pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool)
             "stewards pack <unit> --role <role>",
         )),
     }
-    let loaded = repo.loaded.as_ref().ok_or_else(|| {
-        CliError::new(
-            "no_stewards_dir",
-            format!("no .stewards/ in {}", repo.root.display()),
-            "stewards init",
-        )
-    })?;
+    let loaded = repo.loaded()?;
     let root = &repo.root;
     let b = &loaded.repo.budgets;
     let budget = match role {
@@ -581,27 +575,7 @@ pub fn run(
 ) -> Result<ExitCode> {
     let cwd = std::env::current_dir()?.canonicalize()?;
     let ws = discover(&cwd, g.repo.as_deref())?;
-    // As for `stamp`: the repo around the current directory, else the only one.
-    let repo = ws
-        .repos
-        .iter()
-        .find(|r| {
-            r.root
-                .canonicalize()
-                .is_ok_and(|root| cwd.starts_with(root))
-        })
-        .or(if ws.repos.len() == 1 {
-            ws.repos.first()
-        } else {
-            None
-        })
-        .ok_or_else(|| {
-            CliError::new(
-                "not_in_repo",
-                "the current directory is not inside a repo",
-                "run inside a repo or pass --repo <name>",
-            )
-        })?;
+    let repo = ws.current_repo(&cwd)?;
     let task = match task {
         Some(t) => t.to_string(),
         None => git::task_text(&repo.root)?,

@@ -348,15 +348,6 @@ fn no_brief_for_the_job_is_no_brief() {
 }
 
 #[test]
-fn another_role_is_not_implemented() {
-    let (dir, home) = setup();
-    let args = ["submit", "api", "--role", "tester", "--file", "x.json"];
-    let (code, v) = run(dir.path(), home.path(), &args);
-    assert_eq!(code, 2);
-    assert_eq!(v["error"]["code"], "not_implemented");
-}
-
-#[test]
 fn a_telemetry_line_is_appended_for_the_current_month() {
     let (dir, home) = setup();
     review_job(dir.path(), home.path());

@@ -56,6 +56,20 @@ pub fn run(g: &Global, unit: Option<&str>) -> anyhow::Result<ExitCode> {
         )
     })?;
 
+    let mut wrote = Vec::new();
+    for (rel, text) in pages(loaded, unit)? {
+        if std::fs::read_to_string(repo.root.join(&rel)).is_ok_and(|old| old == text) {
+            continue;
+        }
+        repo.write(&rel, text.as_bytes())?;
+        wrote.push(rel);
+    }
+    emit(&DocsReport { wrote }, g.human);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The page of `unit` (of every unit when `None`) and the index, as repo-relative path and text.
+pub fn pages(loaded: &Loaded, unit: Option<&str>) -> anyhow::Result<Vec<(String, String)>> {
     let docs_path = Path::new(&loaded.repo.docs_path);
     let depth = docs_path
         .components()
@@ -100,24 +114,19 @@ pub fn run(g: &Global, unit: Option<&str>) -> anyhow::Result<ExitCode> {
         .map(|u| (format!("{}.md", u.name), unit_page(loaded, u, &up)))
         .collect();
     pages.push(("README.md".into(), index_page(loaded)));
-
-    let mut wrote = Vec::new();
-    for (name, text) in pages {
-        let rel = docs_path
-            .join(&name)
-            .components()
-            .filter(|c| matches!(c, Component::Normal(_)))
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
-        if std::fs::read_to_string(repo.root.join(&rel)).is_ok_and(|old| old == text) {
-            continue;
-        }
-        repo.write(&rel, text.as_bytes())?;
-        wrote.push(rel);
-    }
-    emit(&DocsReport { wrote }, g.human);
-    Ok(ExitCode::SUCCESS)
+    Ok(pages
+        .into_iter()
+        .map(|(name, text)| {
+            let rel = docs_path
+                .join(&name)
+                .components()
+                .filter(|c| matches!(c, Component::Normal(_)))
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            (rel, text)
+        })
+        .collect())
 }
 
 /// Card and repo.toml text outside fenced blocks: one line, every ASCII punctuation

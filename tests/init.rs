@@ -294,3 +294,90 @@ fn draft_hooks_and_ci_are_not_implemented() {
     }
     assert!(!dir.join(".stewards").exists());
 }
+
+#[test]
+fn a_file_belongs_to_the_nearest_manifest_root() {
+    let mut initial = s(&["Cargo.toml", "tools/Cargo.toml"]);
+    let dirs = ["core", "util", "tools/src/x", "tools/src/y"];
+    for d in dirs {
+        initial.extend(files_in(d, 3));
+    }
+    let (_tmp, dir) = build(&initial, &solo_rounds(&dirs));
+    assert_eq!(
+        units(&init(&dir)),
+        [
+            unit("core", &["core/**"]),
+            unit("util", &["util/**"]),
+            unit("x", &["tools/src/x/**"]),
+            unit("y", &["tools/src/y/**"]),
+        ]
+    );
+}
+
+#[test]
+fn vendored_dirs_are_ignored_but_a_file_named_build_is_kept() {
+    let mut initial = s(&[
+        "pyproject.toml",
+        "src/a/build",
+        "vendor/lib/package.json",
+        "node_modules/m/pyproject.toml",
+    ]);
+    initial.extend(files_in("src/a", 2));
+    initial.extend(files_in("src/b", 3));
+    let (_tmp, dir) = build(&initial, &solo_rounds(&["src/a", "src/b"]));
+    assert_eq!(
+        units(&init(&dir)),
+        [unit("a", &["src/a/**"]), unit("b", &["src/b/**"])]
+    );
+}
+
+#[test]
+fn a_chain_of_co_changes_merges_all_three_dirs() {
+    let mut initial = s(&["pyproject.toml"]);
+    for d in ["src/a", "src/b", "src/c", "src/d"] {
+        initial.extend(files_in(d, 3));
+    }
+    let mut rounds = vec![
+        s(&["src/a/f0.py", "src/b/f0.py"]),
+        s(&["src/b/f0.py", "src/c/f0.py"]),
+    ];
+    rounds.extend(solo_rounds(&["src/d"]));
+    let (_tmp, dir) = build(&initial, &rounds);
+    assert_eq!(
+        units(&init(&dir)),
+        [
+            unit("a", &["src/a/**", "src/b/**", "src/c/**"]),
+            unit("d", &["src/d/**"])
+        ]
+    );
+}
+
+#[test]
+fn a_root_with_one_candidate_becomes_one_unit() {
+    let mut initial = s(&["pyproject.toml"]);
+    initial.extend(files_in("src/a", 3));
+    let (_tmp, dir) = build(&initial, &[]);
+    assert_eq!(units(&init(&dir)), [unit("proj", &["**"])]);
+}
+
+#[test]
+fn a_root_of_only_generated_dirs_does_not_own_them() {
+    let mut initial = s(&[
+        "pyproject.toml",
+        "main.py",
+        "src/gen/x.py",
+        "src/gen/a_pb2.py",
+        "src/gen/b_pb2.py",
+        "src/gen/c_pb2.py",
+    ]);
+    initial.extend(files_in("tests/gen", 5));
+    let (_tmp, dir) = build(&initial, &[]);
+    let v = init(&dir);
+    assert_eq!(
+        units(&v),
+        [unit("proj", &["main.py", "pyproject.toml", "tests/**"])]
+    );
+    let unowned = v["unowned"].as_array().unwrap();
+    assert!(unowned.contains(&"src/gen/a_pb2.py".into()));
+    assert!(unowned.contains(&"src/gen/x.py".into()));
+}

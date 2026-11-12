@@ -54,8 +54,8 @@ fn dead_anchor_renders_without_a_link_and_succeeds() {
     let out = stewards(tmp.path(), &["docs", "store"]);
     assert!(out.status.success());
     let page = read(tmp.path(), "docs/units/store.md");
-    assert!(page.contains("| `src/store/gone.py::save_item` |"));
-    assert!(page.contains("[`src/store/db.py::count_items`](../../src/store/db.py#L"));
+    assert!(page.contains(r"| src\/store\/gone\.py\:\:save\_item |"));
+    assert!(page.contains(r"[src\/store\/db\.py\:\:count\_items](../../src/store/db.py#L"));
 }
 
 #[test]
@@ -103,4 +103,153 @@ fn nothing_outside_docs_path_changes() {
     run(tmp.path(), &["docs"]);
     let status = git(tmp.path(), &["status", "--porcelain"]);
     assert_eq!(status.trim(), "?? docs/");
+}
+
+fn edit(dir: &Path, rel: &str, from: &str, to: &str) {
+    let path = dir.join(rel);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains(from), "{rel} has no `{from}`");
+    std::fs::write(path, text.replace(from, to)).unwrap();
+}
+
+fn rejects_docs_path(value: &str) {
+    let tmp = fixture("single");
+    edit(
+        tmp.path(),
+        ".stewards/repo.toml",
+        r#"docs_path = "docs/units""#,
+        &format!("docs_path = {value:?}"),
+    );
+    git(tmp.path(), &["commit", "-qam", "docs_path"]);
+    let out = stewards(tmp.path(), &["docs"]);
+    assert_eq!(out.status.code(), Some(2));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["code"], "invalid_toml");
+    assert_eq!(git(tmp.path(), &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn docs_path_with_parent_dir_is_rejected() {
+    rejects_docs_path("../x");
+}
+
+#[test]
+fn absolute_docs_path_is_rejected() {
+    rejects_docs_path("/stewards-docs-test");
+}
+
+#[test]
+fn dot_docs_path_is_rejected() {
+    rejects_docs_path(".");
+}
+
+#[test]
+fn empty_docs_path_is_rejected() {
+    rejects_docs_path("");
+}
+
+/// Unescaped `|` characters on a line; every punctuation character in card text is backslash-escaped.
+fn separators(line: &str) -> usize {
+    let mut chars = line.chars();
+    let mut n = 0;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '|' => n += 1,
+            _ => {}
+        }
+    }
+    n
+}
+
+#[test]
+fn hostile_card_text_renders_as_plain_text_in_table_cells() {
+    let tmp = fixture("single");
+    edit(
+        tmp.path(),
+        ".stewards/units/store.toml",
+        "contract = \"stores an item and returns its id\"",
+        r#"contract = 'a|b \| `x` <b>hi</b> [l](javascript:alert(1))'"#,
+    );
+    edit(
+        tmp.path(),
+        ".stewards/units/store.toml",
+        "src/store/db.py::count_items",
+        "src/store/d`b.py::count_items",
+    );
+    run(tmp.path(), &["docs", "store"]);
+    let page = read(tmp.path(), "docs/units/store.md");
+    let row = page
+        .lines()
+        .find(|l| l.starts_with("| save\\-item"))
+        .unwrap();
+    assert!(row.contains(r"a\|b \\\| \`x\` \<b\>hi\<\/b\> \[l\]\(javascript\:alert\(1\)\)"));
+    assert!(!page.contains("<b>") && !page.contains("](javascript"));
+    let dead = page
+        .lines()
+        .find(|l| l.starts_with("| count\\-items"))
+        .unwrap();
+    assert!(dead.contains(r"| src\/store\/d\`b\.py\:\:count\_items |"));
+    for line in page
+        .lines()
+        .filter(|l| l.starts_with("| save\\-item") || l.starts_with("| count\\-items"))
+    {
+        assert_eq!(separators(line), 4, "{line}");
+    }
+}
+
+#[test]
+fn hostile_flow_name_is_escaped() {
+    let tmp = fixture("single");
+    edit(
+        tmp.path(),
+        ".stewards/repo.toml",
+        "name = \"create-item\"",
+        "name = \"x*y_[z]<i>\"",
+    );
+    run(tmp.path(), &["docs"]);
+    let index = read(tmp.path(), "docs/units/README.md");
+    assert!(index.contains(r"- x\*y\_\[z\]\<i\>: "));
+    let page = read(tmp.path(), "docs/units/api.md");
+    assert!(page.contains(r"- x\*y\_\[z\]\<i\>: "));
+}
+
+#[test]
+fn hostile_html_in_prose_is_neutralised() {
+    let tmp = fixture("single");
+    edit(
+        tmp.path(),
+        ".stewards/units/api.toml",
+        r#"overview = """The HTTP surface for items.""""#,
+        r#"overview = """Use **this** <script>x</script> &amp; that.""""#,
+    );
+    run(tmp.path(), &["docs", "api"]);
+    let page = read(tmp.path(), "docs/units/api.md");
+    assert!(page.contains("Use **this** &lt;script>x&lt;/script> &amp;amp; that."));
+}
+
+fn anchor_link_with_docs_path(docs_path: &str) -> String {
+    let tmp = fixture("single");
+    edit(
+        tmp.path(),
+        ".stewards/repo.toml",
+        r#"docs_path = "docs/units""#,
+        &format!("docs_path = {docs_path:?}"),
+    );
+    run(tmp.path(), &["docs", "api"]);
+    read(tmp.path(), &format!("{docs_path}/api.md"))
+}
+
+#[test]
+fn anchor_link_at_depth_one_goes_up_one_directory() {
+    let page = anchor_link_with_docs_path("docs");
+    assert!(page.contains("(../src/api/items.py#L6)"));
+}
+
+#[test]
+fn anchor_link_at_depth_three_goes_up_three_directories() {
+    let page = anchor_link_with_docs_path("a/b/c");
+    assert!(page.contains("(../../../src/api/items.py#L6)"));
 }

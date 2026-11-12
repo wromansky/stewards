@@ -9,8 +9,8 @@
 
 ## Flows
 
-- create-item: [api](api.md) → [store](store.md)
+- create\-item: [api](api.md) → [store](store.md)
 
 ## Decisions
 
-- store has no HTTP knowledge: api translates requests; store only persists
+- store has no HTTP knowledge: api translates requests\; store only persists

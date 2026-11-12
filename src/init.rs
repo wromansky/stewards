@@ -106,8 +106,9 @@ struct Candidate {
     files: usize,
 }
 
-/// `files` are the repo-relative paths of one root.
-fn candidates(root: &str, files: &[&str]) -> Vec<Candidate> {
+/// The candidates of one root and the repo-relative dirs skipped as mostly generated.
+/// `files` are the repo-relative paths of the root.
+fn candidates(root: &str, files: &[&str]) -> (Vec<Candidate>, Vec<String>) {
     let rel: Vec<&str> = files
         .iter()
         .map(|f| f.strip_prefix(root).unwrap_or(f).trim_start_matches('/'))
@@ -128,28 +129,58 @@ fn candidates(root: &str, files: &[&str]) -> Vec<Candidate> {
         }
     }
     let count = |dir: &str| rel.iter().filter(|r| under(r, dir)).count();
-    dirs.into_iter()
-        .filter_map(|dir| {
-            let base = dir.rsplit('/').next().unwrap_or(&dir).to_string();
-            let mut own = vec![dir.clone()];
-            own.extend(
-                TEST_DIRS
-                    .iter()
-                    .map(|t| format!("{t}/{base}"))
-                    .filter(|t| count(t) > 0),
-            );
-            let generated = rel
+    let mut kept = Vec::new();
+    let mut skipped = Vec::new();
+    for dir in dirs {
+        let base = dir.rsplit('/').next().unwrap_or(&dir).to_string();
+        let mut own = vec![dir.clone()];
+        own.extend(
+            TEST_DIRS
                 .iter()
-                .filter(|r| own.iter().any(|d| under(r, d)) && is_generated(r))
-                .count();
-            let total: usize = own.iter().map(|d| count(d)).sum();
-            (generated as f64 <= GENERATED_SHARE * total as f64).then(|| Candidate {
-                base,
-                dirs: own.iter().map(|d| join(root, d)).collect(),
-                files: total,
-            })
-        })
-        .collect()
+                .map(|t| format!("{t}/{base}"))
+                .filter(|t| count(t) > 0),
+        );
+        // judged on the dir's own files; mirrored tests would dilute the share
+        let generated = rel
+            .iter()
+            .filter(|r| under(r, &dir) && is_generated(r))
+            .count();
+        if generated as f64 > GENERATED_SHARE * count(&dir) as f64 {
+            skipped.push(join(root, &dir));
+            continue;
+        }
+        kept.push(Candidate {
+            base,
+            dirs: own.iter().map(|d| join(root, d)).collect(),
+            files: own.iter().map(|d| count(d)).sum(),
+        });
+    }
+    (kept, skipped)
+}
+
+/// Globs for the files not under a skipped dir; one `dir/**` for each untouched subtree.
+fn globs_outside(prefix: &str, files: &[&str], skipped: &[String]) -> Vec<String> {
+    let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for f in files {
+        let rest = f.strip_prefix(prefix).unwrap_or(f).trim_start_matches('/');
+        let (head, _) = rest.split_once('/').unwrap_or((rest, ""));
+        children.entry(head).or_default().push(f);
+    }
+    let mut out = Vec::new();
+    for (name, below) in children {
+        let path = join(prefix, name);
+        if skipped.contains(&path) {
+            continue;
+        }
+        if below == [path.as_str()] {
+            out.push(path);
+        } else if skipped.iter().any(|s| under(s, &path)) {
+            out.extend(globs_outside(&path, &below, skipped));
+        } else {
+            out.push(format!("{path}/**"));
+        }
+    }
+    out
 }
 
 /// Groups of candidate indices after the co-change merges, ordered by their first member.
@@ -222,7 +253,7 @@ fn root_units(
     commits: &[Vec<String>],
     taken: &mut HashSet<String>,
 ) -> Vec<Proposed> {
-    let cands = candidates(root, files);
+    let (cands, skipped) = candidates(root, files);
     let touched: Vec<BTreeSet<usize>> = commits
         .iter()
         .map(|commit| {
@@ -238,9 +269,17 @@ fn root_units(
         .collect();
     let mut groups = merge_groups(&cands, &touched);
     if groups.len() < 2 {
+        let paths = if skipped.is_empty() {
+            vec![join(root, "**")]
+        } else {
+            globs_outside(root, files, &skipped)
+        };
+        if paths.is_empty() {
+            return vec![];
+        }
         return vec![Proposed {
             name: unique_name(root_name, root_name, taken),
-            paths: vec![join(root, "**")],
+            paths,
         }];
     }
     let size = |g: &[usize]| g.iter().map(|&i| cands[i].files).sum::<usize>();
@@ -403,7 +442,10 @@ pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
     let files: Vec<&str> = tracked
         .iter()
         .map(String::as_str)
-        .filter(|f| !f.split('/').any(|c| SKIP_DIRS.contains(&c)))
+        .filter(|f| {
+            f.rsplit_once('/')
+                .is_none_or(|(dir, _)| !dir.split('/').any(|c| SKIP_DIRS.contains(&c)))
+        })
         .collect();
     let mut roots = BTreeSet::new();
     let mut test_commands: Vec<String> = Vec::new();

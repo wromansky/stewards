@@ -1,0 +1,16 @@
+--- a/client/client.ts
++++ b/client/client.ts
+@@ -34,10 +34,12 @@
+   const maxAttempts = 2;
+   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+     const res = spawnSync("python3", [apiScript, ...args], { encoding: "utf8" });
+-    console.error(`retrying api call (attempt ${attempt + 1} of ${maxAttempts})`);
+     if (res.status === 0) {
+       return { stdout: res.stdout as string, status: 0 };
+     }
++    if (attempt < maxAttempts - 1) {
++      console.error(`retrying api call (attempt ${attempt + 1} of ${maxAttempts})`);
++    }
+   }
+   return { stdout: "", status: 1 };
+ }

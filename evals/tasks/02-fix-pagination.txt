@@ -1,0 +1,6 @@
+List pagination is dropping the last item. With three items and a page size
+of two, the second page comes back empty even though one item remains, and
+the reported total still says three.
+
+Fix the pagination so every item is returned across the pages, and add a
+regression test that would have caught this.

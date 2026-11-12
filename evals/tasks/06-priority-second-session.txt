@@ -1,0 +1,5 @@
+I added a `priority` field to items in an earlier session.
+
+Now: how does priority flow through the system when an item is created, and
+what would I need to change to make priority required (reject an item that
+has no priority)?

@@ -1,0 +1,11 @@
+--- a/api/items.py
++++ b/api/items.py
+@@ -47,7 +47,7 @@
+ 
+ def list_items(page=1, page_size=10):
+     start = (page - 1) * page_size
+-    end = min(start + page_size, len(_ITEMS) - 1)
++    end = min(start + page_size, len(_ITEMS))
+     return {
+         "items": _ITEMS[start:end],
+         "page": page,

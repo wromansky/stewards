@@ -1,0 +1,14 @@
+--- a/cli/src/main.rs
++++ b/cli/src/main.rs
+@@ -37,7 +37,10 @@
+ 
+     match sub.as_str() {
+         "create" => {
+-            let name = args.next().unwrap();
++            let Some(name) = args.next() else {
++                usage();
++                exit(2);
++            };
+             exit(run_api(vec!["create".to_string(), name]));
+         }
+         "list" => {

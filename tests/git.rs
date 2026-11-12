@@ -368,6 +368,9 @@ fn snapshot_sees_a_same_size_edit_made_in_the_same_second_as_the_last_add() {
     let tree = git::snapshot(p).unwrap();
     let entries = git::ls_tree(p, &tree).unwrap();
     assert_eq!(run_git(p, &["cat-file", "-p", &entries[0].1]), "two\n");
+}
+
+#[test]
 fn recent_commit_files_lists_files_per_commit_newest_first() {
     let r = repo();
     let p = r.path();

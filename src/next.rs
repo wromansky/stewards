@@ -1,16 +1,17 @@
 // The `next` command: which review jobs are due before reporting done.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
 use serde::Serialize;
 
+use crate::anchors;
 use crate::brief;
 use crate::check::{CheckReport, changed_since, check_at, one_line, stale_files};
 use crate::debt::{DebtItem, is_debt_line};
 use crate::git;
 use crate::llm::Mode;
-use crate::model::{Anchor, GapKind, Role};
+use crate::model::{Anchor, GapKind, Interface, Role};
 use crate::output::{Global, Human, emit, not_implemented};
 use crate::route::Router;
 use crate::workspace::{Workspace, here};
@@ -153,22 +154,21 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
                 });
             }
 
-            let anchor_paths: Vec<String> = card
-                .map_or(&[][..], |c| &c.interface)
-                .iter()
-                .filter_map(|i| Anchor::parse(&i.anchor).ok().map(|a| a.path))
-                .collect();
+            let interfaces = card.map_or(&[][..], |c| &c.interface);
+            let touched = |mark: Option<&String>| {
+                let changed = since(mark)?;
+                let mark = mark.map(String::as_str);
+                let touched =
+                    interfaces_touched(root, &snapshot, &entries, interfaces, mark, &changed)?;
+                anyhow::Ok((touched, changed))
+            };
             let tester_mark = reviewed.and_then(|r| r.tester.as_ref()).or(stamp);
-            let (mut reasons, mut changed) = (vec![], vec![]);
-            for p in since(tester_mark)? {
-                if anchor_paths.contains(&p) {
-                    reasons.push(format!("interface file changed: {p}"));
-                } else if owns(&p) && under_test_root(&p) {
+            let ((mut reasons, mut changed), since_mark) = touched(tester_mark)?;
+            for p in since_mark {
+                if owns(&p) && under_test_root(&p) && !changed.contains(&p) {
                     reasons.push(format!("test file changed: {p}"));
-                } else {
-                    continue;
+                    changed.push(p);
                 }
-                changed.push(p);
             }
             // a never-stamped unit's first review comes first: a mark needs a `[reviewed]` block
             if reviewed.is_some() && !changed.is_empty() {
@@ -176,14 +176,7 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
             }
 
             let documenter_mark = reviewed.and_then(|r| r.documenter.as_ref()).or(stamp);
-            let changed: Vec<String> = since(documenter_mark)?
-                .into_iter()
-                .filter(|p| anchor_paths.contains(p))
-                .collect();
-            let mut reasons: Vec<String> = changed
-                .iter()
-                .map(|p| format!("interface file changed: {p}"))
-                .collect();
+            let ((mut reasons, changed), _) = touched(documenter_mark)?;
             // a card a first review drafted has an interface to document
             let no_docs = card.is_some_and(|c| {
                 !c.interface.is_empty()
@@ -260,6 +253,81 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
         flow_checks: vec![],
         check: check_at(ws, None, &snapshots)?,
     })
+}
+
+/// Extensions of the languages `anchors::interface_lines`'s block rule was written for.
+const BLOCK_LANGUAGES: &[&str] = &[
+    "rs", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "java", "kt", "c", "h", "cc", "cpp",
+    "hpp", "cs", "rb", "php", "swift", "scala", "sh",
+];
+
+/// `(reasons, files)` for the interfaces a change since `mark` touched, in card order: a hunk
+/// (`mark` -> `snapshot`) whose range or the line just before or after it, on the old side or
+/// the new, is one of the interface's lines in that side's file. `changed` is the files changed
+/// since `mark`. An interface whose lines can't be found (a file not in `BLOCK_LANGUAGES`, no
+/// mark tree, file gone or without hunks, name absent, a blob unreadable) counts when its file
+/// changed.
+fn interfaces_touched(
+    root: &Path,
+    snapshot: &str,
+    entries: &[(String, String)],
+    interfaces: &[Interface],
+    mark: Option<&str>,
+    changed: &[String],
+) -> Result<(Vec<String>, Vec<String>)> {
+    // an anchor that does not parse names no file to watch
+    let watched: Vec<(&Interface, Anchor)> = interfaces
+        .iter()
+        .filter_map(|i| Some((i, Anchor::parse(&i.anchor).ok()?)))
+        .filter(|(_, a)| changed.contains(&a.path))
+        .collect();
+    let (mut reasons, mut files) = (Vec::new(), Vec::new());
+    if watched.is_empty() {
+        return Ok((reasons, files));
+    }
+    let mark = mark.filter(|t| git::has_object(root, t));
+    let hunks = match mark {
+        Some(t) => git::diff_hunks(root, t, snapshot)?,
+        None => vec![],
+    };
+    for (i, a) in watched {
+        let file_hunks: Vec<_> = hunks.iter().filter(|(p, ..)| *p == a.path).collect();
+        // (old, new) lines; `None` when they can't be found
+        let sides = || {
+            let ext = Path::new(&a.path).extension()?.to_str()?;
+            if file_hunks.is_empty() || !BLOCK_LANGUAGES.contains(&ext) {
+                return None;
+            }
+            let (_, sha) = entries.iter().find(|(p, _)| *p == a.path)?;
+            let new = anchors::interface_lines(&git::blob_text(root, sha).ok()?, &a.name);
+            let old = git::blob_text(root, &format!("{}:{}", mark?, a.path)).ok()?;
+            let old = anchors::interface_lines(&old, &a.name);
+            (!new.is_empty()).then_some((old, new))
+        };
+        // a side's range `(start, count)` plus the line just before and after it
+        let hit = |lines: &[u32], (start, count): (u32, u32)| {
+            let first = if count == 0 { start + 1 } else { start };
+            (first.saturating_sub(1)..=first + count).any(|l| lines.binary_search(&l).is_ok())
+        };
+        let reason = match sides() {
+            None => format!("interface file changed: {}", a.path),
+            Some((old, new))
+                if file_hunks
+                    .iter()
+                    .any(|(_, o, n)| hit(&old, *o) || hit(&new, *n)) =>
+            {
+                format!("interface changed: {}", i.anchor)
+            }
+            Some(_) => continue,
+        };
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+        if !files.contains(&a.path) {
+            files.push(a.path);
+        }
+    }
+    Ok((reasons, files))
 }
 
 impl Human for NextReport {

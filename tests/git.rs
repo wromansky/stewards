@@ -216,6 +216,41 @@ fn diff_added_lines_gives_new_file_line_numbers() {
 }
 
 #[test]
+fn diff_hunks_gives_both_sides_with_count_zero_for_an_empty_side() {
+    let r = repo();
+    let p = r.path();
+    write(p, "a.txt", "1\n2\n3\n4\n5\n");
+    write(p, "gone.txt", "x\n");
+    let from = git::snapshot(p).unwrap();
+    write(p, "a.txt", "1\nTWO\n2b\n3\n5\n6\n");
+    write(p, "b.txt", "++ plus\nlast\n");
+    std::fs::remove_file(p.join("gone.txt")).unwrap();
+    let to = git::snapshot(p).unwrap();
+    let got = git::diff_hunks(p, &from, &to).unwrap();
+    // `4` deleted after new line 4; `6` added after old line 5; the deleted file has no hunks
+    let want: Vec<git::Hunk> = [
+        ("a.txt", (2, 1), (2, 2)),
+        ("a.txt", (4, 1), (4, 0)),
+        ("a.txt", (5, 0), (6, 1)),
+        ("b.txt", (0, 0), (1, 2)),
+    ]
+    .iter()
+    .map(|(f, o, n)| (f.to_string(), *o, *n))
+    .collect();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn blob_text_reads_a_snapshot_file() {
+    let r = repo();
+    let p = r.path();
+    write(p, "a.txt", "hello\n");
+    let tree = git::snapshot(p).unwrap();
+    let sha = &git::ls_tree(p, &tree).unwrap()[0].1;
+    assert_eq!(git::blob_text(p, sha).unwrap(), "hello\n");
+}
+
+#[test]
 fn task_text_is_branch_then_last_commit_subject() {
     let r = repo();
     let p = r.path();

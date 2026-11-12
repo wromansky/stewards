@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use stewards::anchors::{Resolution, resolve, source_window};
+use stewards::anchors::{Resolution, interface_lines, resolve, source_window};
 use stewards::model::Anchor;
 
 fn anchor(path: &str, name: &str) -> Anchor {
@@ -54,6 +54,60 @@ fn a_whole_word_after_a_partial_one_is_found() {
         resolve(t.path(), &anchor("f.txt", "target")),
         Resolution::Found { line: 2 }
     );
+}
+
+#[test]
+fn interface_lines_cover_a_multi_line_signature_body_and_doc_comment() {
+    let text = "use m::f;\n\n/// Doc.\n#[inline]\npub fn f(\n    a: u8,\n) -> u8 {\n    a\n}\n\nfn g() {}\n";
+    // line 1 is the `use`; the definition with its doc and attribute is lines 3-9
+    assert_eq!(interface_lines(text, "f"), [1, 3, 4, 5, 6, 7, 8, 9]);
+}
+
+#[test]
+fn interface_lines_of_a_python_def_stop_at_the_next_def() {
+    let text = "@cache\ndef f(x):\n    y = x\n\n    return y\n\n\ndef g():\n    return 0\n";
+    assert_eq!(interface_lines(text, "f"), [1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn interface_lines_keep_a_braced_body_across_a_blank_then_column_zero_line() {
+    let text = "pub fn f() {\n    let s = r\"\nx\n\ncol0\n\";\n}\n\nfn g() {}\n";
+    // the `{` opened on line 1 is still open at line 5, so the block runs to its `}`
+    assert_eq!(interface_lines(text, "f"), [1, 2, 3, 4, 5, 6, 7]);
+}
+
+#[test]
+fn interface_lines_of_a_use_inside_a_body_stop_at_the_next_item() {
+    let text = "fn caller() {\n    f();\n}\n\nfn other() {}\n";
+    // the brackets since the use close below zero; `fn other` is outside
+    assert_eq!(interface_lines(text, "f"), [1, 2, 3]);
+}
+
+#[test]
+fn interface_lines_of_a_qualified_name_take_its_last_segment_too() {
+    let text = "pub enum EnvRule {\n    /// Doc.\n    Unverified,\n}\n\nfn r() {\n    EnvRule::Unverified\n}\n";
+    assert_eq!(
+        interface_lines(text, "EnvRule::Unverified"),
+        [1, 2, 3, 4, 6, 7, 8]
+    );
+    assert_eq!(interface_lines("x.y\n\nfn y() {}\n", "x.y"), [1, 3]);
+}
+
+#[test]
+fn interface_lines_cross_blank_lines_up_once_and_only_to_a_comment_or_attribute() {
+    let text = "/// a\n\n/// b\n\n\n#[x]\nfn f() {}\n";
+    assert_eq!(interface_lines(text, "f"), [3, 4, 5, 6, 7]);
+    assert_eq!(interface_lines("fn g() {}\n\nfn f() {}\n", "f"), [3]);
+}
+
+#[test]
+fn interface_lines_end_at_a_comment_at_end_of_file() {
+    assert_eq!(interface_lines("def f():\n    x\n\n# end\n", "f"), [1, 2]);
+}
+
+#[test]
+fn interface_lines_are_empty_without_a_whole_word_occurrence() {
+    assert!(interface_lines("fn ff() {}\n", "f").is_empty());
 }
 
 #[test]

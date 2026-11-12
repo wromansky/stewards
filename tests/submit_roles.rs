@@ -348,7 +348,11 @@ fn documenter_writes_the_doc_renders_the_page_and_sets_its_mark() {
     let dir = fixture("single");
     let d = dir.path();
     stamp_units(d, &["api"]);
-    edit(&d.join("src/api/items.py"), "router = []", "router = [1]");
+    edit(
+        &d.join("src/api/items.py"),
+        "return 422, None",
+        "return 422, {}",
+    );
     assert!(api_jobs(d).contains(&"documenter".to_string()));
     let v = submit_ok(d, "documenter", &documenter("Serves items over HTTP."));
     assert_eq!(

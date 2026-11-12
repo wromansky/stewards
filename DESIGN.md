@@ -146,7 +146,10 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   snapshot they finished at, beside the stamp. Their jobs are due by what
   changed since their own mark, not since the stamp, so a fix round that
   does not touch their paths does not run them again, and a tester's own
-  new tests do not call the tester back. With no mark, the stamp is used.
+  new tests do not call the tester back. With no mark, the stamp is used;
+  when a new stamp replaces it, a role with no mark takes the old stamp as
+  its mark, so a pending tester or documenter job survives the maintainer's
+  approval.
 - **Triggers:** before changing, `route` the files and brief the owning
   maintainer to explain and plan; two or more units, or no owner, brief the
   architect first. To change, `brief <unit> --role developer` writes one

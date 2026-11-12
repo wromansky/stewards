@@ -148,6 +148,25 @@ fn interface_file_edit_gives_maintainer_tester_documenter() {
 }
 
 #[test]
+fn restamping_keeps_the_pending_tester_and_documenter_jobs() {
+    // The maintainer approving (a new stamp) must not make the other roles' jobs vanish.
+    let repo = fixture("single");
+    stamp_units(repo.path(), &["api", "store"]);
+    edit(
+        &repo.path().join("src/store/db.py"),
+        "_items = []",
+        "_items = [0]",
+    );
+    stamp_units(repo.path(), &["store"]);
+    let (code, v) = run(repo.path(), &["next"]);
+    assert_eq!(
+        jobs(&v),
+        pairs(&[("store", "tester"), ("store", "documenter")])
+    );
+    assert_eq!(code, 1);
+}
+
+#[test]
 fn test_root_edit_gives_maintainer_and_tester() {
     let repo = fixture("single");
     stamp_units(repo.path(), &["api", "store"]);
@@ -267,7 +286,11 @@ fn fresh_unit_with_an_older_tester_mark_still_gets_a_tester_job() {
     stamp_units(repo.path(), &["store"]);
     let (code, v) = run(repo.path(), &["next"]);
     assert_eq!(code, 1);
-    assert_eq!(jobs(&v), pairs(&[("store", "tester")]));
+    // the documenter has no mark, so it keeps measuring from the stamp it had before the restamp
+    assert_eq!(
+        jobs(&v),
+        pairs(&[("store", "tester"), ("store", "documenter")])
+    );
 }
 
 #[test]

@@ -63,8 +63,12 @@ pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed> {
         commit: git::head_commit(&repo.root)?.unwrap_or_default(),
         fingerprint: fingerprint(&entries, unit, &router),
         tree: tree.to_string(),
-        tester: marks.as_ref().and_then(|r| r.tester.clone()),
-        documenter: marks.and_then(|r| r.documenter),
+        // A role with no mark measures from the stamp. Keep that baseline when the stamp moves,
+        // or a pending tester or documenter job would vanish the moment the maintainer approves.
+        tester: marks
+            .as_ref()
+            .map(|r| r.tester.clone().unwrap_or_else(|| r.tree.clone())),
+        documenter: marks.map(|r| r.documenter.unwrap_or(r.tree)),
     };
     card.reviewed = Some(reviewed.clone());
     repo.write(

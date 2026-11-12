@@ -119,10 +119,13 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   any changed file the unit owns that is in no current task's lane, as
   `out of lane` in the summary. It is a report, not a rejection: the write
   has happened, and the maintainer's review sees it as untraced.
-- **Fix loop:** a review's findings are the next task. `brief <unit> --role
-  developer` reads the maintainer's latest answer: an explain answer's
-  `tasks`, or a review's `findings` as one task whose lane is the files the
-  findings name. A developer that reports `blocked_on` sends the main agent
+- **Fix loop:** a review's findings are the next task. An answer file stays
+  writable after it is validated, so the tool does not read it again: at
+  the maintainer's `submit` it writes the accepted task list to its own
+  file, `.stewards/briefs/<unit>-tasks.json` (an explain answer's `tasks`,
+  or a review's `findings` as one task whose lane is the files the findings
+  name; an approval removes it), and `brief <unit> --role developer`
+  re-validates that file every time it reads it. A developer that reports `blocked_on` sends the main agent
   back to the maintainer with that message as the task.
 - **Tests, two writers in turn:** a developer writes the check for its task
   inside its lane; the tester writes scenario tests for the contract and
@@ -134,12 +137,14 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   the answer `<same>.answer.json`; a new job overwrites both, so nothing
   accumulates. The brief's first line is a tool-owned header recording the
   mode, the snapshot it was packed from, the pack's bytes and anchor count,
-  and the bug title for a validator job; `submit` reads it.
+  and the bug title for a validator job; `submit` reads it. A successful
+  `submit` removes the answer with the brief when `--file` is that
+  `.answer.json` path; a failed one leaves both for a retry.
 - **Stamp:** only a maintainer review `submit` with `verdict: approve`
   stamps, and it stamps the brief's snapshot, not the tree at submit time,
   so anything written since (a parallel tester's tests, an applied finding)
-  is still stale and gets its own review. `approve` means no findings;
-  `submit` rejects an approval that carries any. Explain jobs, `changes`
+  is still stale and gets its own review. `approve` means no findings and
+  `changes` means at least one; `submit` rejects either verdict otherwise. Explain jobs, `changes`
   verdicts, and the other roles never stamp. `stamp <unit>` is the human
   override.
 - **Role marks:** the tester's and documenter's submits each record the
@@ -208,7 +213,9 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Debt:** `simplified:` comments are computed on demand by `debt` and
   attached to the owning unit by route; never stored.
 - **Bugs:** a tester's `bugs[]` and `validate --report` both land on the
-  owning card as `[[gap]] kind = "bug"` with the repro, keyed by title. The
+  owning card as `[[gap]] kind = "bug"` with the repro, keyed by title; a
+  tester's bug that names an interface takes that interface's anchor as its
+  `anchor`, and one that names none keeps the anchor it had. The
   validator's submit sets `severity`, or removes a bug it judges not real;
   the maintainer closes a fixed one like any gap.
 - **Docs:** `docs/units/<unit>.md` is rendered from the card; the documenter
@@ -419,7 +426,8 @@ roles?`), `~/.stewards/grammars/<lang>/{lib.so|.dylib, tags.scm}`.
 Anchor grammar: `path` is the text before the first `::`, `name` is the rest
 (Rust names contain `::`). A text match is an occurrence of `name` whose
 neighbouring chars are not `[A-Za-z0-9_]`; case-sensitive; hand-rolled char
-check, no regex crate.
+check, no regex crate. `name` is the bare identifier (`dispatch`, `Router::owner`), never
+a keyword phrase such as `fn dispatch`: `submit` rejects a name with whitespace.
 
 Snapshot: copy `.git/index` to a temporary file, then `git add -A` and `git
 write-tree` with `GIT_INDEX_FILE` pointing at it. The tree covers modified
@@ -433,8 +441,9 @@ Fingerprint: sha256 over the sorted `path blob` lines of `git ls-tree -r
 <snapshot>` for the files the unit owns by route.
 
 Unit names match `[a-z0-9][a-z0-9_-]*` (they become file names); anything
-else is `invalid_toml`. `.stewards/**` and `docs_path/**` are tool-owned:
-never routed, never reported as unowned.
+else is `invalid_toml`. `.stewards/**`, `docs_path/**`, and `.git/**` (any
+path with a `.git` component) are tool-owned, compared ignoring ASCII case:
+never routed, never reported as unowned, so no unit ever owns them.
 
 ## Command surface
 
@@ -467,28 +476,34 @@ failures; for `next`, also any job or failed flow check), 2 errors.
 ### Pack
 
 ```
-Pack { unit, role, task, budget, bytes, over_budget, purpose, interface[],
-       anchors[{path, name, line, source}], scenarios[], test_command,
-       primary_paths[], test_commands[], gaps[], flows[], decisions[],
-       units[{name, purpose, interface_ids}], doc, changed_files[],
-       hunks[{path, diff}], other_changed_files[], memory[], bug, dev_task,
-       repro_result, dropped[] }
+Pack { unit, role, task, budget, bytes, over_budget, purpose, paths[],
+       interface[], anchors[{path, name, line, source}], scenarios[],
+       test_command, primary_paths[], test_commands[], gaps[], flows[],
+       decisions[], units[{name, purpose, interface_ids, paths, files}], doc,
+       changed_files[], hunks[{path, diff}], other_changed_files[], memory[],
+       bug, dev_task, repro_result, dropped[] }
 ```
 
 Absent sections are `null`. `--diff` sets `changed_files` the way `next`
 does, restricts `anchors` to those whose path is in it, fills `hunks` with
 the unit's own files' diff (`git diff -U3 <stamped tree> <snapshot>` per
 file) and `other_changed_files` with what other stale units changed. With
-no usable stamp `--diff` changes nothing: the full pack is the first review.
+no usable stamp (never stamped, or the stamped tree is gone) the
+maintainer's `--diff` pack is the full pack, a first review, plus
+`changed_files` set to every file the unit owns in the snapshot (sorted, as
+`next` lists them) and no `hunks`: rendered as an `Owned files` list noting
+the unit has not been reviewed yet, capped at 200 paths then `(+N more)`;
+the JSON carries them all. `fit` drops this list after flows and before
+hunks are truncated.
 
 | role | sections |
 |---|---|
-| maintainer | purpose, interface, anchors (+source), gaps, flows, hunks + other_changed_files with `--diff` |
-| tester | interface (+source at interface anchors), scenarios, test_command, primary_paths, hunks with `--diff` |
-| documenter | purpose, interface, doc prose, flows |
-| validator | purpose, interface, primary_paths, the bug, test_command, commands.test, repro_result |
-| architect | every unit's purpose and interface ids, all flows, all decisions; no anchors, no source |
-| developer | purpose, interface, its task (change, lane, check), anchors (+source) in its lane, gaps, flows |
+| maintainer | purpose, paths, interface, anchors (+source), gaps, flows, hunks + other_changed_files with `--diff` (owned files with no usable stamp) |
+| tester | paths, interface (+source at interface anchors), scenarios, test_command, primary_paths, hunks with `--diff` |
+| documenter | purpose, paths, interface, doc prose, flows |
+| validator | purpose, paths, interface, primary_paths, the bug, test_command, commands.test, repro_result |
+| architect | every unit's purpose, interface ids, paths, and owned-file count, all flows, all decisions; no anchors, no source |
+| developer | purpose, paths, interface, its task (change, lane, check), anchors (+source) in its lane, gaps, flows |
 
 Source windows are 20 lines before and after the match (the definition span
 with tree-sitter). Budget is bytes of the `--human` rendering. Shrink order:
@@ -523,7 +538,8 @@ from the stamp. Jobs:
 - a file changed since the documenter's mark is an interface anchor's path
   → documenter
 - tester and documenter jobs do not need the unit to be stale; with no
-  mark they measure from the stamp
+  mark they measure from the stamp, and a never-stamped unit gets none
+  until its first review stamps it (a validator job does not wait)
 - 2+ units changed since their stamps (never-stamped units do not count)
   and no plan naming all of them → architect
 - a bug gap with no `severity` → validator, one per unit per round
@@ -579,10 +595,13 @@ route; group per unit.
   it is dead: an anchor can never read outside the repo or reach an
   excluded file through a link. An anchor is alive only when its path is a
   file in the repo's snapshot tree (tracked, modified, or untracked and not
-  ignored), so `.git/` and ignored files are dead and never inlined. Card text printed on one line has its
+  ignored), so `.git/` and ignored files are dead and never inlined. No unit
+  ever owns `.git/**` (any path with a `.git` component, in any ASCII case),
+  so it is never in a lane, a fingerprint, or a patch anchor. Card text printed on one line has its
   control characters replaced; purpose and prose in a rendered pack sit in
   fences longer than any backtick run they contain; rendered docs escape
-  card text and refuse a `docs_path` at or outside the repo root.
+  only the characters that could start markup, a link or an autolink in card
+  text, and refuse a `docs_path` at or outside the repo root.
 - **Execution.** Only commands whose argv starts with the whole argv of a
   `commands.*` entry from `repo.toml` ever run (`pytest` does not allow
   `pytest-x`): repro, plan step checks, scenario commands, test and
@@ -656,6 +675,8 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `no_direct_model` | `--direct` with no `[models.direct]` entry for the role, or an unsupported provider | set `[models.direct] <role> = "<provider>/<model>"` in the user config |
 | `direct_call_failed` | the model call failed (fixed text, never the prompt or key) | rerun with `BAML_LOG=info` |
 | `unsafe_path` | a path the tool reads or writes in a repo is not plain names, or passes through a symlink | remove the symlink at `<path>`; stewards never writes through links |
+| `card_changed` | a file `submit` was about to write changed since it was loaded (another submit finished first) | run the same submit again |
+| `no_tasks` | `brief --role developer` with no usable task list for the unit | brief the maintainer again with the change as `--task` |
 | `not_implemented` | a command or flag not built yet | use a release that has it |
 | `internal` | any other failure | report a bug |
 
@@ -802,9 +823,14 @@ Details the shapes leave open: enum values are lowercase snake case
 (`approve|changes`, `critical|medium|low`, `gap|future|bug`, the rungs as
 `not_needed` … `no_check`). A nullable field may be absent or null; every
 other field and every list is required; unknown fields, duplicate fields,
-and any text around the JSON are errors. `card_patch` has three optional
-lists (`interface`, `anchors`, `gaps`); a list that is present is the full
-new list for that part of the card, which is how a patch closes a gap. A
+and any text around the JSON are errors. `card_patch` has six optional
+lists. `interface`, `anchors`, and `gaps` upsert by key (interface `id`,
+anchor path and name, gap `title`): an entry replaces the one with its key
+or is appended, and every entry the patch does not name is kept, in order.
+Only `remove_interface` (ids), `remove_anchors` (`path::name`), and
+`remove_gaps` (titles) remove, which is how a patch closes a gap; a removal
+must name a key the card has and the patch does not also upsert, and a
+removed anchor need not resolve. A
 patch gap is `{kind, title, anchor?, note, repro?}`; severity and issue are
 the tool's. `scenario_patch` upserts scenarios by id. A plan is `{title,
 steps[] {unit, change, interfaces[], check}}`. A unit proposal is `{name,
@@ -1261,27 +1287,51 @@ paths; done is a `next` with no jobs.
 
 Read this section, then the Build order, then start.
 
-**State (2026-11-12).** Stage 1 is built on `feat/stage-1-core`: schemas,
-workspace, git snapshots, anchors, `route`, `check`, `stamp`, `debt`,
-`status`, `pack`, `next`, each reviewed and fixed, 196 tests. Stacked on it,
-`feat/stage-2-roles` holds the harness table and `guide`, user config and
-memory, `docs`, `init` step 1, and the BAML schemas with `llm.rs`;
-`feat/stage-2b-proof` holds the eval fixture. Nothing is merged to `main`
-but this document. Repo `wromansky/stewards` (public since 2026-11-12), auto-delete of
-merged branches on.
+**State (2026-11-12).** Stages 1 and 2 are built. `main` has stage 1.
+`feat/stage-2-roles` adds the harness table and `guide`, user config and
+memory, `docs`, `init` and `init --draft`, the BAML schemas with `llm.rs`,
+`brief`, `submit` for all six roles, the developer loop, and telemetry:
+about 500 tests. Stewards is adopted on this repository: nine units, their
+cards and test cards, `docs/units/`, and the `AGENTS.md` block are
+committed, written through the tool by role subagents handed only a brief
+path. `feat/stage-2b-proof` holds the eval fixture. CI runs on every push
+to a stage branch. Repo `wromansky/stewards` (public since 2026-11-12),
+auto-delete of merged branches on.
 
-**Next action.** The stage-1 gate, then the stage-2 chain on
-`feat/stage-2-roles`: `brief`, `submit` for the maintainer, `submit` for the
-other roles, the developer role, `init --draft`, then dogfooding on this
-repo. The task list in the build session is the plan; Build cycle says how
-waves run.
+**Next action.** Stage 2b: the eval runner and Pi driver, then the thin
+eval and its go or no-go before any stage 3 work. The task list in the
+build session is the plan; Build cycle says how waves run.
+
+**What dogfooding stage 2 showed (2026-11-12).** About eighty role jobs
+ran on this repository.
+- The loop works from a one-sentence handoff: architect, first reviews,
+  documenters, review rounds on real diffs, a finding turned into a
+  developer fix, a tester's bug judged by a validator.
+- It caught real defects in changes the build had already merged: the docs
+  escaping had dropped `$`, and `origin_url` misreads an empty remote URL.
+- `init` proposes one unit for a crate whose modules sit flat in `src/`;
+  the units here were drawn by hand from the table below.
+- Triggers are coarse. A tester and a documenter are due whenever a file
+  holding an interface anchor changes, and maintainers record most public
+  functions as interfaces, so a small edit in each of eight units cost 33
+  role jobs over two rounds. Candidates: trigger on the changed lines
+  overlapping an interface's own lines; or leave it to the maintainer's
+  `tester_needed` and a matching flag for the documenter.
+- The architect job returns every round in which two stamped units
+  changed, until plans exist (stage 3).
+- A model learns a length cap only by being rejected; the caps belong in
+  the schema text.
+- Two roles can record one bug under two titles.
+- A fix task's lane is the files the findings name, which leaves out the
+  test file a finding asks for; the developer's out-of-lane write is
+  reported, as designed.
+- About one job in fifty did the work and never ran `submit`.
 
 **Deferred, known:** workspace loads every listed repo before applying
 `--repo`, so a broken sibling blocks `--repo good`; the harness table has no
 `parallel` field; an anchor's symlink check runs before the read, not with
-it; rendered docs escape every punctuation character, which is safe but
-ugly raw; `guide --errors` lists only the codes that existed when it was
-written.
+it; the lost-update check and the write are not one atomic step; briefs for
+jobs no longer due stay on disk until overwritten.
 
 **How we work.**
 - Clean room: no text from the adelphi-adlc-plugin repo, ever.

@@ -4,8 +4,18 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{append, edit, fixture, pairs, run, stamp_units, stewards, workspace_fixture};
+use common::{append, edit, pairs, run, stamp_units, stewards, workspace_fixture};
 use serde_json::Value;
+use tempfile::TempDir;
+
+/// The fixture with prose on store's card, so its `no docs yet` documenter job stays out of the
+/// tests of the other triggers.
+fn fixture(name: &str) -> TempDir {
+    let dir = common::fixture(name);
+    let card = dir.path().join(".stewards/units/store.toml");
+    append(&card, "\n[doc]\noverview = \"Keeps the items.\"\n");
+    dir
+}
 
 /// `(unit, role)` of each job.
 fn jobs(v: &Value) -> Vec<(String, String)> {
@@ -87,7 +97,30 @@ fn never_stamped_unit_gets_a_maintainer_job_listing_all_its_files() {
         ]
     );
     assert_eq!(job["command"], "stewards brief store --role maintainer");
-    assert!(job["brief_path"].is_null());
+    let brief = repo.path().canonicalize().unwrap();
+    let brief = brief.join(".stewards/briefs/store-maintainer.md");
+    assert_eq!(job["brief_path"], brief.to_str().unwrap());
+}
+
+#[test]
+fn never_stamped_units_get_only_maintainer_and_validator_jobs() {
+    // store has an interface and no docs, and api's interface file counts as changed
+    let repo = common::fixture("single");
+    add_gaps(
+        repo.path(),
+        "store",
+        "[[gap]]\nkind = \"bug\"\ntitle = \"save loses items\"\n",
+    );
+    let (code, v) = run(repo.path(), &["next", "--no-brief"]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        jobs(&v),
+        pairs(&[
+            ("api", "maintainer"),
+            ("store", "maintainer"),
+            ("store", "validator")
+        ])
+    );
 }
 
 #[test]

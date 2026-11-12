@@ -1,13 +1,395 @@
+// `guide` and the AGENTS.md block.
 use std::process::ExitCode;
 
-use crate::output::{Global, not_implemented};
+use anyhow::Context;
+use serde::Serialize;
+
+use crate::harness::{self, GENERIC_DELEGATION, HARNESSES};
+use crate::output::{Global, Human, emit};
+use crate::workspace::Repo;
+
+const START: &str = "<!-- stewards:start -->";
+const END: &str = "<!-- stewards:end -->";
+
+const BLOCK: &str = r##"<!-- stewards:start -->
+## Stewards
+
+This repo has a team of agents that already know it. Use them.
+
+Ritual
+- Entering: run `stewards status`. It lists the units, who owns what, and what is stale.
+- Before a change: run `stewards route <files>`; brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`) to explain the area and plan the change. Two or more units, or no owner: brief the architect first (`stewards brief --role architect --task "<the change>"`).
+- Changing: run `stewards brief <unit> --role developer` and dispatch every brief it writes, together when there are several. A small edit you may make yourself.
+- Before reporting done: run `stewards next`. Dispatch every brief it writes to a subagent that can run shell, wait for each summary, and repeat until `stewards next` lists no jobs. A review that returns findings: run `stewards brief <unit> --role developer` again to fix them. Done means no jobs.
+
+Roles (one per unit; the tool packs their context, you only hand over the brief path)
+- maintainer: explains, plans, reviews the diff, keeps the unit's card current.
+- tester: owns the contract and its scenarios; writes and runs tests; never edits source.
+- documenter: keeps `docs/units/<unit>.md` true.
+- validator: judges a bug from its reproduction; severity from evidence only.
+- architect: plans changes that cross units; records flows and decisions.
+- developer: implements one task of the maintainer's plan inside its lane.
+
+Editing
+- Think first: state assumptions; ask when the request has two readings.
+- Simplicity: the ladder, in order: not needed → already in the repo → stdlib → platform → installed dependency → one line → minimum code.
+- Surgical: every changed line traces to the request; match the existing style.
+- Goal-driven: every non-trivial change leaves one runnable check that fails if the logic breaks.
+- A deliberate shortcut is a `simplified:` comment naming its ceiling and upgrade path.
+
+Hygiene: branch off `main`; commit only when asked; lint touched files clean, no disables.
+
+`stewards guide` prints the long form, including how to delegate in this harness. No `stewards` on PATH: install with `cargo install stewards` and follow the rules above meanwhile.
+<!-- stewards:end -->"##;
+
+/// The AGENTS.md block, markers included.
+pub fn block() -> &'static str {
+    BLOCK
+}
+
+/// Puts the block at the top of the repo's `AGENTS.md` (creating it), or replaces the text
+/// between existing markers. Returns whether the file changed.
+pub fn upsert_block(repo: &Repo) -> anyhow::Result<bool> {
+    let agents_md = &repo.root.join("AGENTS.md");
+    let old = match std::fs::read_to_string(agents_md) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| agents_md.display().to_string()),
+    };
+    let span = old
+        .find(START)
+        .and_then(|s| old[s..].find(END).map(|e| (s, s + e + END.len())));
+    let new = match span {
+        Some((s, e)) => format!("{}{BLOCK}{}", &old[..s], &old[e..]),
+        None if old.is_empty() => format!("{BLOCK}\n"),
+        None => format!("{BLOCK}\n\n{old}"),
+    };
+    if new == old {
+        return Ok(false);
+    }
+    repo.write("AGENTS.md", new.as_bytes())?;
+    Ok(true)
+}
+
+#[derive(Serialize)]
+struct Delegation {
+    harness: &'static str,
+    text: &'static str,
+}
+
+#[derive(Serialize)]
+struct ErrorRow {
+    code: &'static str,
+    when: &'static str,
+    fix: &'static str,
+}
+
+#[derive(Serialize)]
+struct Term {
+    term: &'static str,
+    definition: &'static str,
+}
+
+#[derive(Serialize)]
+struct Guide {
+    /// The detected or forced harness; null for the generic paragraph.
+    harness: Option<&'static str>,
+    ritual: &'static str,
+    roles: &'static str,
+    editing: &'static str,
+    hygiene: &'static str,
+    delegation: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    all_delegations: Option<Vec<Delegation>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    errors: Option<&'static [ErrorRow]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    glossary: Option<&'static [Term]>,
+}
+
+impl Human for Guide {
+    fn render(&self) -> String {
+        let mut out = format!(
+            "# stewards guide\n\n{}\n\n{}\n\n{}\n\n{}\n\n## Delegation ({})\n\n{}\n",
+            self.ritual,
+            self.roles,
+            self.editing,
+            self.hygiene,
+            self.harness.unwrap_or("generic"),
+            self.delegation
+        );
+        for d in self.all_delegations.iter().flatten() {
+            out += &format!("\n### {}\n\n{}\n", d.harness, d.text);
+        }
+        if let Some(errors) = self.errors {
+            out += "\n## Error codes\n\n| code | when | fix |\n|---|---|---|\n";
+            for e in errors {
+                out += &format!("| `{}` | {} | {} |\n", e.code, e.when, e.fix);
+            }
+        }
+        if let Some(glossary) = self.glossary {
+            out += "\n## Glossary\n\n";
+            for t in glossary {
+                out += &format!("- **{}**: {}\n", t.term, t.definition);
+            }
+        }
+        out.trim_end().to_string()
+    }
+}
 
 pub fn run(
-    _g: &Global,
-    _harness: Option<&str>,
-    _all: bool,
-    _errors: bool,
-    _glossary: bool,
+    g: &Global,
+    harness: Option<&str>,
+    all: bool,
+    errors: bool,
+    glossary: bool,
 ) -> anyhow::Result<ExitCode> {
-    not_implemented("guide")
+    let chosen = match harness {
+        Some(name) => Some(harness::by_name(name)?),
+        None => harness::detect(),
+    };
+    // Paragraphs of the block: marker + title, intro, ritual, roles, editing, hygiene, footer.
+    let parts: Vec<&str> = BLOCK.split("\n\n").collect();
+    let guide = Guide {
+        harness: chosen.map(|h| h.name),
+        ritual: parts[2],
+        roles: parts[3],
+        editing: parts[4],
+        hygiene: parts[5],
+        delegation: chosen.map_or(GENERIC_DELEGATION, |h| h.delegation),
+        all_delegations: all.then(|| {
+            HARNESSES
+                .iter()
+                .map(|h| Delegation {
+                    harness: h.name,
+                    text: h.delegation,
+                })
+                .collect()
+        }),
+        errors: errors.then_some(&ERRORS[..]),
+        glossary: glossary.then_some(&GLOSSARY[..]),
+    };
+    emit(&guide, g.human);
+    Ok(ExitCode::SUCCESS)
 }
+
+const fn e(code: &'static str, when: &'static str, fix: &'static str) -> ErrorRow {
+    ErrorRow { code, when, fix }
+}
+
+static ERRORS: [ErrorRow; 29] = [
+    e(
+        "not_a_git_repo",
+        "no `.git` above cwd",
+        "`git init` or run inside a repository",
+    ),
+    e(
+        "no_stewards_dir",
+        "no `.stewards/` above cwd",
+        "`stewards init`",
+    ),
+    e(
+        "schema_too_new",
+        "`repo.toml` schema > tool's",
+        "upgrade stewards (`cargo install stewards`)",
+    ),
+    e(
+        "invalid_toml",
+        "parse failure, with file and line",
+        "fix the file at `<path>:<line>`",
+    ),
+    e(
+        "unknown_unit",
+        "unit name not in `units.toml`",
+        "one of the listed units",
+    ),
+    e(
+        "unknown_role",
+        "role not in the six",
+        "one of developer, maintainer, tester, documenter, validator, architect",
+    ),
+    e(
+        "answer_parse_failed",
+        "`submit` can't parse the file",
+        "the field errors listed; rerun submit",
+    ),
+    e(
+        "answer_dead_anchor",
+        "a patch names an anchor that doesn't resolve",
+        "correct the anchor or drop it",
+    ),
+    e(
+        "answer_too_long",
+        "field over cap",
+        "shorten `<field>` to ≤ N chars",
+    ),
+    e(
+        "command_not_allowed",
+        "command outside the allowlist",
+        "prefix with one of `commands.test` or add it to `repo.toml`",
+    ),
+    e(
+        "command_timeout",
+        "allowlisted command exceeded its timeout",
+        "raise `timeout_seconds` or fix the test",
+    ),
+    e(
+        "workspace_repo_missing",
+        "`stewards.toml` lists a path that doesn't exist",
+        "fix `repos` in `<path>`",
+    ),
+    e(
+        "baml_runtime_unavailable",
+        "`--direct` and the native lib is not found",
+        "set `BAML_LIBRARY_PATH` to the library, or set `STEWARDS_BAML_DOWNLOAD=1` to let stewards download it",
+    ),
+    e(
+        "no_api_key",
+        "`--direct` and the configured provider's key is unset or blank",
+        "export the variable named (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`)",
+    ),
+    e(
+        "tracker_auth",
+        "`gh`/`glab` not logged in, or Jira or Linear env missing",
+        "`gh auth login` / `glab auth login` / set `JIRA_URL`, `JIRA_TOKEN` / set `LINEAR_API_KEY`",
+    ),
+    e(
+        "harness_unknown",
+        "unsupported harness name",
+        "one of the listed harnesses",
+    ),
+    e(
+        "usage",
+        "bad arguments, a bad `-C`, or a role given with or without a unit wrongly",
+        "run `stewards <command> --help`",
+    ),
+    e(
+        "not_in_repo",
+        "the current directory is in no repo of the workspace",
+        "run inside a repo or pass `--repo <name>`",
+    ),
+    e(
+        "unknown_repo",
+        "`--repo` names no repo",
+        "one of the listed repos",
+    ),
+    e(
+        "path_outside_repo",
+        "`route` given a path in no repo",
+        "pass a path inside the repo",
+    ),
+    e(
+        "already_initialized",
+        "`init` where `.stewards/` files exist",
+        "edit `.stewards/units.toml` instead",
+    ),
+    e(
+        "no_brief",
+        "no brief, or an unreadable header, for the job",
+        "run the brief command named",
+    ),
+    e(
+        "no_direct_model",
+        "`--direct` with no `[models.direct]` entry for the role, or an unsupported provider",
+        "set `[models.direct] <role> = \"<provider>/<model>\"` in the user config",
+    ),
+    e(
+        "direct_call_failed",
+        "the model call failed (fixed text, never the prompt or key)",
+        "rerun with `BAML_LOG=info`",
+    ),
+    e(
+        "unsafe_path",
+        "a path the tool reads or writes in a repo is not plain names, or passes through a symlink",
+        "remove the symlink at `<path>`; stewards never writes through links",
+    ),
+    e(
+        "card_changed",
+        "a file `submit` was about to write changed since it was loaded (another submit finished first)",
+        "run the same submit again",
+    ),
+    e(
+        "no_tasks",
+        "`brief --role developer` with no usable task list for the unit",
+        "brief the maintainer again with the change as `--task`",
+    ),
+    e(
+        "not_implemented",
+        "a command or flag not built yet",
+        "use a release that has it",
+    ),
+    e("internal", "any other failure", "report a bug"),
+];
+
+const fn t(term: &'static str, definition: &'static str) -> Term {
+    Term { term, definition }
+}
+
+static GLOSSARY: [Term; 21] = [
+    t(
+        "unit",
+        "a part of a repo that changes together; owns paths; has one maintainer, tester, and documenter, and one developer per task.",
+    ),
+    t(
+        "task",
+        "one piece of a maintainer's plan, done by one developer.",
+    ),
+    t("lane", "the files a task may write."),
+    t(
+        "card",
+        "a unit's knowledge file, `.stewards/units/<unit>.toml`; **test card**: `.stewards/units/<unit>.test.toml`.",
+    ),
+    t(
+        "anchor",
+        "`path::name`, a place in source a card points at.",
+    ),
+    t(
+        "interface",
+        "an entry in a card naming a contract the unit promises, with an id scenarios reference.",
+    ),
+    t(
+        "scenario",
+        "a test-card entry proving one interface behavior.",
+    ),
+    t("gap", "a known shortfall, future item, or bug on a card."),
+    t(
+        "debt",
+        "a `simplified:` comment in code, computed, never stored.",
+    ),
+    t("flow", "an ordered chain of units a request crosses."),
+    t(
+        "decision",
+        "why a boundary or convention exists. Flows and decisions live in `repo.toml`.",
+    ),
+    t(
+        "pack",
+        "the exact context the tool computes for a unit, role, and task.",
+    ),
+    t(
+        "brief",
+        "a file holding role instructions, the pack, memory, the answer schema, and submit instructions; handed to a subagent by path.",
+    ),
+    t(
+        "submit",
+        "the command that validates a typed answer and writes it.",
+    ),
+    t(
+        "snapshot",
+        "a git tree of the working tree as it is now: tracked, modified, and untracked-but-not-ignored files.",
+    ),
+    t("stamp", "recording that a unit was reviewed at a snapshot."),
+    t(
+        "fingerprint",
+        "sha256 over the blobs of the files a unit owns in a snapshot; **stale**: the current fingerprint differs from the stamped one.",
+    ),
+    t("job", "one (unit, role) task `next` decides is due."),
+    t(
+        "plan",
+        "an architect's ordered steps across units, tracked by `next`.",
+    ),
+    t("ritual", "entering → before change → before done."),
+    t(
+        "arm",
+        "an eval configuration (`bare`, `block-only`, `full`).",
+    ),
+];

@@ -64,12 +64,18 @@ impl Router {
         })
     }
 
-    /// True for `.stewards/**` and `docs_path/**`, which no unit owns; `path` is repo-relative
-    /// with forward slashes.
+    /// True for `.stewards/**`, `docs_path/**`, and any path with a `.git` component, which no
+    /// unit owns; `path` is repo-relative with forward slashes. ASCII case is ignored, since a
+    /// case-insensitive file system makes `.GIT` and `.git` the same directory.
     pub fn tool_owned(&self, path: &str) -> bool {
-        let under =
-            |dir: &str| path == dir || path.strip_prefix(dir).is_some_and(|r| r.starts_with('/'));
-        under(".stewards") || under(&self.docs_path)
+        let under = |dir: &str| {
+            path.get(..dir.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(dir))
+                && path[dir.len()..].chars().next().is_none_or(|c| c == '/')
+        };
+        under(".stewards")
+            || under(&self.docs_path)
+            || path.split('/').any(|c| c.eq_ignore_ascii_case(".git"))
     }
 
     /// The matching units in `units.toml` order, each with its best glob's specificity.

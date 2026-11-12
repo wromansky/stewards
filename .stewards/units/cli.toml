@@ -1,0 +1,104 @@
+unit = "cli"
+
+[reviewed]
+commit = "e68ec0e8d29e804bf3091e0216bb44f63665e6b9"
+fingerprint = "sha256:447bac9a9ca03fc29c9a782b1e32e1c8f27729db4c67031b650a2a8dfa9529d0"
+tree = "f1cda9ed982949caf35f104e87c550cbc0de8c64"
+tester = "7c8524f35b056135cede80e97d7c90e8806d96ec"
+documenter = "42a346540efe14f487d47bfceb05ed15c97d7c72"
+
+[[interface]]
+id = "json-envelope"
+anchor = "src/output.rs::emit"
+contract = "Every command prints one JSON object on stdout: `stewards: {version: CARGO_PKG_VERSION, schema: 1}` flattened with the payload's fields; with --human it prints the payload's markdown `Human::render` instead. A closed pipe is dropped silently (exit code kept); other write errors go to stderr."
+
+[[interface]]
+id = "cli-error"
+anchor = "src/output.rs::CliError"
+contract = "A failed command prints the envelope with `error: {code, message, fix}` (+ `errors` when non-empty) on stdout and exits 2; --human prints `error:` and `fix:` lines plus one line per field error. A non-CliError prints as code `internal`."
+
+[[interface]]
+id = "usage-errors"
+anchor = "src/main.rs::main"
+contract = "Clap parse failures (missing or unknown args) and a `-C` dir that cannot be entered are CliError code `usage`, exit 2, JSON unless --human appears in argv; --help and --version print clap's text and exit normally."
+
+[[interface]]
+id = "global-flags"
+anchor = "src/main.rs::Cli"
+contract = "--human, --repo <name>, -C <dir> and --direct are accepted before or after any subcommand; -C changes the working directory before dispatch; --direct is also set by STEWARDS_DIRECT=1."
+
+[[interface]]
+id = "not-implemented"
+anchor = "src/output.rs::not_implemented"
+contract = "Unbuilt commands (completions, eval, render, review, validate) parse their flags and then fail with CliError code `not_implemented`, exit 2."
+
+[[anchor]]
+path = "src/main.rs"
+name = "Cli"
+
+[[anchor]]
+path = "src/main.rs"
+name = "dispatch"
+
+[[anchor]]
+path = "src/output.rs"
+name = "Global"
+
+[[anchor]]
+path = "src/output.rs"
+name = "Envelope"
+
+[[anchor]]
+path = "tests/common/mod.rs"
+name = "fixture"
+
+[[anchor]]
+path = "tests/common/mod.rs"
+name = "workspace_fixture"
+
+[[anchor]]
+path = "tests/skeleton.rs"
+name = "every_command_parses_its_flags"
+
+[[anchor]]
+path = "src/output.rs"
+name = "with_note"
+
+[[anchor]]
+path = "tests/common/mod.rs"
+name = "run_in"
+
+[[gap]]
+kind = "future"
+title = "completions is a stub"
+anchor = "src/completions.rs::run"
+note = "`stewards completions <shell>` returns not_implemented; it already receives `Cli::command()` for clap_complete."
+
+[[gap]]
+kind = "future"
+title = "eval is a stub"
+anchor = "src/eval.rs::run"
+note = "`stewards eval` returns not_implemented."
+
+[[gap]]
+kind = "future"
+title = "render is a stub"
+anchor = "src/render.rs::run"
+note = "`stewards render --harness` returns not_implemented."
+
+[[gap]]
+kind = "future"
+title = "review is a stub"
+anchor = "src/review.rs::run"
+note = "`stewards review --pr` returns not_implemented."
+
+[[gap]]
+kind = "future"
+title = "validate is a stub"
+anchor = "src/validate.rs::run"
+note = "`stewards validate` returns not_implemented."
+
+[doc]
+overview = "The cli unit is the stewards binary itself: the part a person or an agent actually runs. It parses the command line with clap, hands each subcommand to the unit that implements it, and makes every command answer in one predictable shape. By default a command prints a single JSON object on stdout, wrapped in an envelope that carries the stewards version and a schema number of 1 beside the command's own fields. With --human it prints the markdown rendering instead. When a command fails it prints the same envelope with an error holding a code, a message and a fix, and the process exits 2. The unit also owns the global flags (--human, --repo <name>, -C <dir>, --direct), the stub commands that are parsed but not built yet, and the shared helpers the integration tests use."
+how_it_works = "Everything starts in src/main.rs. The Cli struct declares the four global flags, accepted before or after any subcommand, and a Command enum with one variant per subcommand. A --help or --version request prints clap's text and exits normally; any other parse failure becomes a CliError with code usage, printed as JSON unless --human is in argv, exit 2. After a good parse main builds a Global (human, repo, direct); direct is true with --direct or STEWARDS_DIRECT=1. If -C was given, main changes directory before anything else, and a directory it cannot enter is also a usage error. Then dispatch calls the run function of the owning module, parsing --role strings into a Role. The files here other than main.rs and output.rs (completions, eval, render, review, validate) are stubs returning not_implemented; init's unbuilt flags and next --pr reuse that helper. src/output.rs holds the shared pieces. emit prints a payload as enveloped JSON or, with --human, through Human::render. It never panics on a failed write: a closed pipe is dropped quietly so the command keeps its exit code, and other write errors go to stderr. Every command prints through it, including brief --stdout, which sends the brief text as a human-rendered payload. CliError carries code, message, fix and, for a failed submit, field errors serialised only when non-empty; CliError::emit prints an error: line, a fix: line and one line per field error in human form. with_note appends a note to a CliError's message, or adds context to any other error. Back in main, a CliError is emitted as is and any other error as code internal with fix 'report a bug'; both exit 2. Tests live in tests/skeleton.rs, with helpers in tests/common/mod.rs such as fixture, run and stewards."
+how_to_change = "To add or change a command, start in src/main.rs: add the variant and its flags to the Command enum, add its arm to dispatch, and put the work in a module declared in src/lib.rs whose run takes &Global and returns anyhow::Result<ExitCode>. Give the payload type Serialize and Human implementations and print it with emit, so that JSON and --human stay in step; do not write to stdout yourself, because emit is what keeps a closed pipe from panicking. Report failures by returning a CliError with a stable code and a concrete fix; the main loop turns it into the envelope and exit 2, so do not print errors or exit yourself. To build one of the stubs, replace its not_implemented call with a real run and add its tests; the interface promises those commands fail with not_implemented until then. Keep true the things callers depend on: one JSON object on stdout with the stewards version and schema 1 fields flattened with the payload; errors with code, message and fix, exit 2, and JSON unless --human is in argv even for parse failures; --help and --version exiting normally; global flags accepted anywhere on the line; -C applied before dispatch; and STEWARDS_DIRECT=1 equal to --direct. If the envelope shape changes in a way readers would notice, bump the schema number in output.rs. Check changes against tests/skeleton.rs and the other integration tests, which use the helpers in tests/common."

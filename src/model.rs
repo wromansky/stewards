@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -335,6 +335,18 @@ impl Loaded {
             )
         })?)
     }
+
+    /// The unit's card, or an empty card for it when it has none yet.
+    pub fn card(&self, unit: &str) -> UnitCard {
+        self.cards.get(unit).cloned().unwrap_or_else(|| UnitCard {
+            unit: unit.to_string(),
+            reviewed: None,
+            interface: vec![],
+            anchors: vec![],
+            gaps: vec![],
+            doc: None,
+        })
+    }
 }
 
 /// Reads `.stewards/` under the git root `root`. A unit's card or test card may be absent.
@@ -374,6 +386,18 @@ pub fn load_repo(root: &Path) -> Result<Loaded> {
     let units = parse_toml::<UnitsFile>(root, ".stewards/units.toml")?
         .map(|f| f.unit)
         .unwrap_or_default();
+    // a lookup by name must find one unit
+    let mut seen = BTreeSet::new();
+    if let Some(u) = units.iter().find(|u| !seen.insert(&u.name)) {
+        bail!(CliError::new(
+            "invalid_toml",
+            format!(".stewards/units.toml: duplicate unit name `{}`", u.name),
+            format!(
+                "rename or remove one `[[unit]]` named `{}` in .stewards/units.toml",
+                u.name
+            ),
+        ));
+    }
 
     let mut cards = BTreeMap::new();
     let mut tests = BTreeMap::new();

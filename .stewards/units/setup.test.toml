@@ -1,0 +1,25 @@
+unit = "setup"
+
+[[scenario]]
+id = "docs-escapes-markup-only"
+interface = "docs"
+given = 'an interface contract containing | \ ` < > [ ] ! * _ ~ & # : @ and www. (any case)'
+expect = "each markup-starting character is backslash-escaped, the table row keeps its 4 separators, and ordinary prose (commas, periods, hyphens, parentheses, slashes, semicolons) has no backslash"
+level = "integration"
+command = "cargo test --test docs"
+
+[[scenario]]
+id = "init-gitignore-slash-variants"
+interface = "init"
+given = "a .gitignore that already holds /.stewards/telemetry/ and /.stewards/briefs (leading slash, no trailing slash)"
+expect = "init treats both as present: .gitignore is unchanged and not listed in wrote"
+level = "integration"
+command = "cargo test --test init gitignore_lines_written_with_a_leading_or_without_a_trailing_slash_are_present"
+
+[[scenario]]
+id = "init-repo-name-from-origin"
+interface = "init"
+given = "a git repo with an origin remote https://example.invalid/acme/widgets.git"
+expect = "repo.toml name is widgets (origin URL last segment without .git); without an origin it falls back to the directory name"
+level = "integration"
+command = "cargo test --test init the_repo_name_is_the_origin_url_last_segment_when_there_is_an_origin"

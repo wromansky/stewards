@@ -52,7 +52,11 @@ pub fn workspace_fixture() -> TempDir {
 
 /// Runs the binary in `dir` and returns its exit code and JSON stdout.
 pub fn run(dir: &Path, args: &[&str]) -> (i32, serde_json::Value) {
-    let out = stewards(dir, args);
+    json(stewards(dir, args))
+}
+
+/// The exit code and JSON stdout of a run of the binary.
+pub fn json(out: Output) -> (i32, serde_json::Value) {
     let v = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
         panic!(
             "not JSON: {}{}",
@@ -105,11 +109,18 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// Runs the built `stewards` binary in `dir`.
+/// Runs the built `stewards` binary in `dir`, with an empty STEWARDS_HOME.
 pub fn stewards(dir: &Path, args: &[&str]) -> Output {
+    let home = TempDir::new().unwrap();
+    run_in(dir, home.path(), args)
+}
+
+/// Runs the built `stewards` binary in `dir` with `home` as STEWARDS_HOME.
+pub fn run_in(dir: &Path, home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_stewards"))
         .args(args)
         .current_dir(dir)
+        .env("STEWARDS_HOME", home)
         .output()
         .unwrap()
 }

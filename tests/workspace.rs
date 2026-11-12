@@ -92,3 +92,22 @@ fn outside_any_git_repo_is_not_a_git_repo() {
     let dir = TempDir::new().unwrap();
     assert_eq!(error_of(discover(dir.path(), None)).code, "not_a_git_repo");
 }
+
+#[test]
+fn loaded_card_returns_the_stored_card_or_an_empty_one() {
+    let repo = fixture("single");
+    std::fs::remove_file(repo.path().join(".stewards/units/store.toml")).unwrap();
+    let ws = discover(repo.path(), None).unwrap();
+    let loaded = ws.repos[0].loaded.as_ref().unwrap();
+
+    let api = loaded.card("api");
+    assert_eq!(api.unit, "api");
+    assert_eq!(api.interface.len(), loaded.cards["api"].interface.len());
+
+    let store = loaded.card("store");
+    assert_eq!(store.unit, "store");
+    assert!(store.reviewed.is_none());
+    assert!(store.interface.is_empty() && store.anchors.is_empty() && store.gaps.is_empty());
+    assert!(store.doc.is_none());
+    assert!(!loaded.cards.contains_key("store"));
+}

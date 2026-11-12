@@ -1,0 +1,9 @@
+unit = "model"
+
+[[scenario]]
+id = "loaded-card-empty-when-missing"
+interface = "loaded-unit"
+given = "a loaded repo where unit api has a card file and unit store has none"
+expect = 'Loaded::card("api") returns the stored card; Loaded::card("store") returns an empty card named store (no stamp, interface, anchors, gaps or doc) without adding it to Loaded.cards'
+level = "integration"
+command = "cargo test --test workspace loaded_card_returns_the_stored_card_or_an_empty_one"

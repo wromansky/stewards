@@ -1,0 +1,10 @@
+Answer in JSON using this schema:
+{
+  doc: {
+    overview: string,
+    how_it_works: string,
+    how_to_change: string,
+  },
+  pulled_anchors: string[],
+  notes: string,
+}

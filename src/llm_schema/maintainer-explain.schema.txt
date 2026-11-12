@@ -1,0 +1,50 @@
+Answer in JSON using this schema:
+{
+  explanation: string,
+  tasks: [
+    {
+      title: string,
+      change: string,
+      files: string[],
+      check: string or null,
+    }
+  ],
+  card_patch: {
+    // entries to add or update, by id; the rest of the card is kept
+    interface: [
+      {
+        id: string,
+        // path::Name, the bare identifier with no keyword
+        anchor: string,
+        contract: string,
+      }
+    ] or null,
+    // entries to add, by path and name; the rest of the card is kept
+    anchors: [
+      {
+        path: string,
+        // the bare identifier with no keyword
+        name: string,
+      }
+    ] or null,
+    // entries to add or update, by title; the rest of the card is kept
+    gaps: [
+      {
+        kind: 'gap' or 'future' or 'bug',
+        title: string,
+        // path::Name, the bare identifier with no keyword
+        anchor: string or null,
+        note: string,
+        repro: string or null,
+      }
+    ] or null,
+    // ids of interface entries to remove
+    remove_interface: string[] or null,
+    // path::name of anchors to remove
+    remove_anchors: string[] or null,
+    // titles of gaps to remove
+    remove_gaps: string[] or null,
+  } or null,
+  pulled_anchors: string[],
+  notes: string,
+}

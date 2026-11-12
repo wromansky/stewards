@@ -8,13 +8,22 @@ use sha2::{Digest, Sha256};
 
 use crate::anchors::{Resolution, resolve};
 use crate::git;
-use crate::model::{Anchor, Reviewed, UnitCard};
+use crate::model::{Anchor, Reviewed};
 use crate::output::{Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, here};
 
-/// Unowned files named in the one `unowned` finding.
-const UNOWNED_LISTED: usize = 10;
+/// Files or interface ids named in one `unowned` or `uncovered_interface` finding.
+const LISTED: usize = 10;
+
+/// The first `LISTED` of `items` joined by commas, then ` (+N more)` for the rest.
+fn listed(items: &[&str]) -> String {
+    let more = match items.len().saturating_sub(LISTED) {
+        0 => String::new(),
+        n => format!(" (+{n} more)"),
+    };
+    format!("{}{more}", items[..items.len().min(LISTED)].join(", "))
+}
 
 /// Card or `--task` text printed on one line: control characters, newlines included, and the
 /// Unicode line and paragraph separators become spaces.
@@ -23,6 +32,13 @@ pub fn one_line(s: &str) -> String {
         |c: char| c.is_control() || c == '\u{2028}' || c == '\u{2029}',
         " ",
     )
+}
+
+/// Invisible and direction-changing format characters: they hide text or reorder it on screen.
+pub fn invisible(c: char) -> bool {
+    matches!(c, '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+        | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}'
+        | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{E0000}'..='\u{E007F}')
 }
 
 /// True when the unit has no `[reviewed]`, or its fingerprint differs from `current`.
@@ -43,33 +59,34 @@ pub fn fingerprint(tree: &[(String, String)], unit: &str, router: &Router) -> St
     format!("sha256:{hex}")
 }
 
-/// Writes `[reviewed]` for `unit` at snapshot `tree` into its card, keeping the role marks and the rest.
-pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed> {
+/// The `[reviewed]` a stamp of `unit` at snapshot `tree` records, keeping the role marks of `marks`.
+pub fn reviewed_at(
+    repo: &Repo,
+    unit: &str,
+    tree: &str,
+    marks: Option<&Reviewed>,
+) -> Result<Reviewed> {
     let loaded = repo.loaded()?;
-    loaded.unit(unit)?;
     let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
     let entries = git::ls_tree(&repo.root, tree)?;
-    let mut card = loaded.cards.get(unit).cloned().unwrap_or_else(|| UnitCard {
-        unit: unit.to_string(),
-        reviewed: None,
-        interface: vec![],
-        anchors: vec![],
-        gaps: vec![],
-        doc: None,
-    });
-    let marks = card.reviewed.take();
-    let reviewed = Reviewed {
+    Ok(Reviewed {
         // no commits yet: the commit is display-only, so empty is fine
         commit: git::head_commit(&repo.root)?.unwrap_or_default(),
         fingerprint: fingerprint(&entries, unit, &router),
         tree: tree.to_string(),
         // A role with no mark measures from the stamp. Keep that baseline when the stamp moves,
         // or a pending tester or documenter job would vanish the moment the maintainer approves.
-        tester: marks
-            .as_ref()
-            .map(|r| r.tester.clone().unwrap_or_else(|| r.tree.clone())),
-        documenter: marks.map(|r| r.documenter.unwrap_or(r.tree)),
-    };
+        tester: marks.map(|r| r.tester.clone().unwrap_or_else(|| r.tree.clone())),
+        documenter: marks.map(|r| r.documenter.clone().unwrap_or_else(|| r.tree.clone())),
+    })
+}
+
+/// Writes `[reviewed]` for `unit` at snapshot `tree` into its card, keeping the role marks and the rest.
+pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed> {
+    let loaded = repo.loaded()?;
+    loaded.unit(unit)?;
+    let mut card = loaded.card(unit);
+    let reviewed = reviewed_at(repo, unit, tree, card.reviewed.as_ref())?;
     card.reviewed = Some(reviewed.clone());
     repo.write(
         &format!(".stewards/units/{unit}.toml"),
@@ -248,15 +265,24 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
                     ));
                 }
             }
-            for i in interfaces {
-                if !scenarios.iter().any(|s| s.interface == i.id) {
-                    report.warnings.push(finding(
-                        "uncovered_interface",
-                        None,
-                        Some(&i.anchor),
-                        format!("{name}: no scenario covers interface `{}`", i.id),
-                    ));
-                }
+            // One finding per unit, not per interface: every check and next output carries it.
+            let uncovered: Vec<&str> = interfaces
+                .iter()
+                .filter(|i| !scenarios.iter().any(|s| s.interface == i.id))
+                .map(|i| i.id.as_str())
+                .collect();
+            if !uncovered.is_empty() {
+                report.warnings.push(finding(
+                    "uncovered_interface",
+                    None,
+                    None,
+                    format!(
+                        "{name}: {} of {} interfaces have no scenario: {}",
+                        uncovered.len(),
+                        interfaces.len(),
+                        listed(&uncovered)
+                    ),
+                ));
             }
         }
 
@@ -280,24 +306,16 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
             .collect();
         unowned.sort();
         if !unowned.is_empty() {
-            let more = match unowned.len().saturating_sub(UNOWNED_LISTED) {
-                0 => String::new(),
-                n => format!(" (+{n} more)"),
-            };
-            let listed: Vec<_> = unowned
-                .iter()
-                .take(UNOWNED_LISTED)
-                .map(|p| p.as_str())
-                .collect();
+            let paths: Vec<&str> = unowned.iter().map(|p| p.as_str()).collect();
             report.warnings.push(Finding {
                 kind: "unowned",
                 unit: None,
                 path: None,
                 anchor: None,
                 message: format!(
-                    "{} tracked file(s) have no owner: {}{more}",
+                    "{} tracked file(s) have no owner: {}",
                     unowned.len(),
-                    listed.join(", ")
+                    listed(&paths)
                 ),
             });
         }

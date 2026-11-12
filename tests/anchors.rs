@@ -124,3 +124,69 @@ fn invalid_utf8_does_not_panic() {
     );
     assert_eq!(window(t.path(), "name", 0, 0).unwrap(), "name");
 }
+
+#[test]
+fn absolute_path_is_dead_path_and_has_no_window() {
+    let outside = repo_with("secret.txt", b"BEGIN\n");
+    let abs = outside
+        .path()
+        .join("secret.txt")
+        .to_string_lossy()
+        .into_owned();
+    let root = repo_with("f.txt", b"x");
+    let a = anchor(&abs, "BEGIN");
+    assert_eq!(resolve(root.path(), &a), Resolution::DeadPath);
+    assert_eq!(source_window(root.path(), &a, 1, 1), None);
+}
+
+#[test]
+fn parent_dir_path_is_dead_path_and_has_no_window() {
+    let outer = repo_with("secret.txt", b"BEGIN\n");
+    let inner = outer.path().join("repo");
+    std::fs::create_dir(&inner).unwrap();
+    let a = anchor("../secret.txt", "BEGIN");
+    assert_eq!(resolve(&inner, &a), Resolution::DeadPath);
+    assert_eq!(source_window(&inner, &a, 1, 1), None);
+}
+
+#[test]
+fn empty_name_is_dead_name() {
+    let t = repo_with("f.txt", b"abc\n");
+    let a = anchor("f.txt", "");
+    assert_eq!(resolve(t.path(), &a), Resolution::DeadName);
+    assert_eq!(source_window(t.path(), &a, 1, 1), None);
+}
+
+#[test]
+fn empty_file_is_dead_name_without_panic() {
+    let t = repo_with("f.txt", b"");
+    assert_eq!(
+        resolve(t.path(), &anchor("f.txt", "x")),
+        Resolution::DeadName
+    );
+    assert_eq!(window(t.path(), "x", 1, 1), None);
+    assert_eq!(window(t.path(), "", 1, 1), None);
+}
+
+#[test]
+fn match_overlapping_a_rejected_match_is_found() {
+    let t = repo_with("f.txt", b"ax-x-x\n");
+    assert_eq!(
+        resolve(t.path(), &anchor("f.txt", "x-x")),
+        Resolution::Found { line: 1 }
+    );
+}
+
+#[test]
+fn multibyte_neighbours_are_not_word_characters() {
+    let t = repo_with("f.txt", "\u{e9}name\nname\u{e9}\n".as_bytes());
+    assert_eq!(
+        resolve(t.path(), &anchor("f.txt", "name")),
+        Resolution::Found { line: 1 }
+    );
+    let t = repo_with("f.txt", "name\u{e9}\n".as_bytes());
+    assert_eq!(
+        resolve(t.path(), &anchor("f.txt", "name")),
+        Resolution::Found { line: 1 }
+    );
+}

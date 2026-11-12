@@ -1,5 +1,5 @@
 // Anchor resolution and source windows.
-use std::path::Path;
+use std::path::{Component, Path};
 
 use crate::model::Anchor;
 
@@ -15,13 +15,31 @@ fn is_word(b: u8) -> bool {
 }
 
 /// The file's text (invalid UTF-8 replaced) and the byte offset of the first whole-word `name`.
+/// `None` when the path is not a plain relative path inside `root` or the file can't be read.
 fn find(root: &Path, a: &Anchor) -> Option<(String, Option<usize>)> {
+    if !Path::new(&a.path)
+        .components()
+        .all(|c| matches!(c, Component::Normal(_)))
+    {
+        return None;
+    }
     let text = String::from_utf8_lossy(&std::fs::read(root.join(&a.path)).ok()?).into_owned();
     let bytes = text.as_bytes();
-    let at = text.match_indices(&a.name).map(|(i, _)| i).find(|&i| {
+    let mut start = 0;
+    let mut at = None;
+    while !a.name.is_empty() {
+        let Some(off) = text[start..].find(&a.name) else {
+            break;
+        };
+        let i = start + off;
         let end = i + a.name.len();
-        (i == 0 || !is_word(bytes[i - 1])) && (end == bytes.len() || !is_word(bytes[end]))
-    });
+        if (i == 0 || !is_word(bytes[i - 1])) && (end == bytes.len() || !is_word(bytes[end])) {
+            at = Some(i);
+            break;
+        }
+        // Step one char, not past the match, so an overlapping match is still seen.
+        start = i + text[i..].chars().next().map_or(1, char::len_utf8);
+    }
     Some((text, at))
 }
 
@@ -40,6 +58,6 @@ pub fn source_window(root: &Path, a: &Anchor, before: usize, after: usize) -> Op
     let (text, at) = find(root, a)?;
     let line = text[..at?].matches('\n').count();
     let lines: Vec<&str> = text.lines().collect();
-    let last = (line + after).min(lines.len() - 1);
-    Some(lines[line.saturating_sub(before)..=last].join("\n"))
+    let last = (line + after).min(lines.len().checked_sub(1)?);
+    Some(lines.get(line.saturating_sub(before)..=last)?.join("\n"))
 }

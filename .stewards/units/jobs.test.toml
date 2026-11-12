@@ -1,0 +1,49 @@
+unit = "jobs"
+
+[[scenario]]
+id = "submit-retires-own-answer"
+interface = "submit-file"
+given = "a maintainer job whose answer file is the brief's own .answer.json"
+expect = "a successful submit removes the brief and that answer; a second submit is no_brief"
+level = "integration"
+command = "cargo test --test submit a_second_submit_after_success_is_no_brief"
+
+[[scenario]]
+id = "submit-keeps-foreign-answer"
+interface = "submit-file"
+given = "a maintainer job submitted with --file pointing at an answer outside the brief's own path"
+expect = "the submit succeeds, the brief is removed, the caller's answer file is kept"
+level = "integration"
+command = "cargo test --test submit an_answer_file_from_outside_the_briefs_dir_is_kept"
+
+[[scenario]]
+id = "submit-keeps-answer-on-failure"
+interface = "submit-file"
+given = "a maintainer answer the validator rejects"
+expect = "the brief and the answer both remain for a retry"
+level = "integration"
+command = "cargo test --test submit dead_anchor_is_rejected_and_writes_nothing"
+
+[[scenario]]
+id = "submit-rejects-keyword-anchor-name"
+interface = "submit-file"
+given = "a maintainer card patch whose anchor names carry a keyword such as `def create_item`"
+expect = "answer_parse_failed naming each of interface[].anchor, anchors[].name and gaps[].anchor"
+level = "integration"
+command = "cargo test --test submit anchor_name_with_a_keyword_is_rejected_naming_each_field"
+
+[[scenario]]
+id = "submit-rejects-keyword-flow-entry"
+interface = "submit-file"
+given = "an architect flow whose entry anchor carries a keyword"
+expect = "answer_parse_failed on flows[0].entry and no write"
+level = "integration"
+command = "cargo test --test submit_roles architect_flow_entry_with_a_keyword_is_rejected"
+
+[[scenario]]
+id = "developer-submit-retires-answer"
+interface = "submit-file"
+given = "a developer job submitted from its own answer file"
+expect = "the brief and the answer are removed; card, stamp and task list are unchanged"
+level = "integration"
+command = "cargo test --test developer a_developer_submit_leaves_the_card_stamp_and_task_list_unchanged"

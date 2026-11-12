@@ -1,15 +1,16 @@
 unit = "cli"
 
 [reviewed]
-commit = "3c6db68cfc894ad163e09f30bc03928e40c91d3e"
-fingerprint = "sha256:4d59a5f84950891399c1ac88e8f816f619a8898b3dec315446b43313e95fae02"
-tree = "7383ef47d38cf1da373d9eb50f106e2674c121ea"
-documenter = "b8b4071a9aaee09ac714892e93ef7cb64d27c951"
+commit = "ccd203c122f389e6b86c83753295c84769496a3e"
+fingerprint = "sha256:fd4e25628079b4d62a4ceadef03ea13ed2271563d8a519f64d02d5e94a10d9b3"
+tree = "08248187727415e1a8a95fa0d44377eaaa86c941"
+tester = "572947e06ba886134402083c1b9b7a676a16ec03"
+documenter = "581a34269924dc030c0494331663a6f1752501e8"
 
 [[interface]]
 id = "json-envelope"
 anchor = "src/output.rs::emit"
-contract = "Every command prints one JSON object on stdout: `stewards: {version: CARGO_PKG_VERSION, schema: 1}` flattened with the payload's fields; with --human it prints the payload's markdown `Human::render` instead."
+contract = "Every command prints one JSON object on stdout: `stewards: {version: CARGO_PKG_VERSION, schema: 1}` flattened with the payload's fields; with --human it prints the payload's markdown `Human::render` instead. A closed pipe is dropped silently (exit code kept); other write errors go to stderr."
 
 [[interface]]
 id = "cli-error"

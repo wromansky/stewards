@@ -1,10 +1,11 @@
 unit = "setup"
 
 [reviewed]
-commit = "3c6db68cfc894ad163e09f30bc03928e40c91d3e"
-fingerprint = "sha256:5e1c8c312fe529597b78302ce90a7faa8ec42fc4d13f50bc19f2fffb98171203"
-tree = "7383ef47d38cf1da373d9eb50f106e2674c121ea"
-documenter = "a13a04fa4578f1f3ade1192e0d8a605c994c8348"
+commit = "ccd203c122f389e6b86c83753295c84769496a3e"
+fingerprint = "sha256:9945c902e2325ec837a7e9ec9e62f4cfaf6ca741868b97bda56919b8bca1b40e"
+tree = "150af39602bb094e5ec3279a2314fa86aae0f352"
+tester = "90290c0643e688769c01809b73b15a6604ad1c8b"
+documenter = "150af39602bb094e5ec3279a2314fa86aae0f352"
 
 [[interface]]
 id = "init"
@@ -108,7 +109,13 @@ title = "six harnesses are never detected from env"
 anchor = "src/harness.rs::EnvRule::Unverified"
 note = "Harnesses with an unverified env rule are only reachable through guide --harness; detect and telemetry fall back to generic for them."
 
+[[gap]]
+kind = "gap"
+title = "Last reviewed commit is written at line start"
+anchor = "src/docs.rs::unit_page"
+note = "esc assumes a tool-written prefix, but unit_page writes reviewed.commit alone on its line and the commit is not validated; a hand-edited commit like `1. x` or `---` renders as a list or rule. Cosmetic only: no HTML or link can form."
+
 [doc]
-overview = "The setup unit is how a repository gets onto stewards and how the generated files stay true. It proposes units for a repo and writes .stewards, writes the stewards block into AGENTS.md, tells each agent harness how to delegate, and renders human documentation pages from the unit cards. A reader meets it as four commands: init, guide, and docs, plus the harness table that guide and init draw on."
+overview = "The setup unit is how a repository gets onto stewards and how the generated files stay true. It proposes units for a repo and writes .stewards, writes the stewards block into AGENTS.md, tells each agent harness how to delegate, and renders human documentation pages from the unit cards. A reader meets it as three commands, init, guide and docs, plus the harness table that guide and init draw on."
 how_it_works = "Plain init (src/init.rs, propose) refuses with already_initialized if units.toml or repo.toml exists. Otherwise it proposes units from manifest roots, source directories and co-change history, writes both files, appends any missing .gitignore lines, upserts the AGENTS.md block, and reports the units, the unowned files and the paths it wrote. init --draft (draft_jobs) runs only the first step on an uninitialized repo and then briefs jobs: one architect job to name the units, plus a first-review maintainer job for each unit that has never been reviewed. With --direct it checks every model guard first, then calls and submits each job itself; if one fails it reports how many were already submitted. init --hooks and init --ci return not_implemented. The AGENTS.md block comes from src/guide.rs: upsert_block writes it at the top of the file (creating the file) or replaces the text between the existing start and end markers, and returns whether the file changed, so a rerun is a no-op. guide's run prints the ritual, roles, editing and hygiene paragraphs plus delegation text for the harness forced with --harness or else detected, falling back to generic text; --all adds every harness, --errors the error-code table, --glossary the glossary. src/harness.rs holds the facts table: detect returns the first harness whose env var prefix matches the environment (a harness with an unverified env rule is never detected), and by_name looks one up case-insensitively, failing with harness_unknown and the list of valid names. src/docs.rs (pages) renders docs_path/<unit>.md for one or all units, plus README.md, from the cards, tests and repo.toml. It escapes card text, links live anchors, rejects an empty docs_path or one that escapes the repo, rejects an unknown unit, and writes only files whose content changed."
 how_to_change = "Start from the file for the command: src/init.rs for proposing units and draft jobs, src/guide.rs for the AGENTS.md block and guide text, src/harness.rs for per-harness facts, src/docs.rs for rendered pages. Each has a test file in tests/ (init.rs, init_draft.rs, guide.rs, docs.rs); change the test with the behavior. Keep true what the contracts promise: plain init never overwrites an initialized repo; init --draft only runs on an uninitialized repo and checks every model guard before any --direct call; upsert_block stays idempotent and touches only the text between its markers; a harness is only detected when its env rule is verified, and an unknown name stays harness_unknown with the valid names; docs refuses a docs_path that is empty or escapes the repo and rewrites only changed files. Keep the card's interface table in step when a contract changes."

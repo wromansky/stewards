@@ -1,0 +1,9 @@
+unit = "cli"
+
+[[scenario]]
+id = "emit-closed-pipe"
+interface = "json-envelope"
+given = "`stewards route` with 3000 paths (output larger than a pipe buffer), JSON and --human, whose stdout reader closes after one byte"
+expect = "no panic on stderr, exit code 0; a broken pipe is dropped quietly"
+level = "integration"
+command = "cargo test --test skeleton output_into_a_pipe_closed_early_does_not_panic"

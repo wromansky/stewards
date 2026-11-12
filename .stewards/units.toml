@@ -41,4 +41,4 @@ paths = ["src/brief.rs", "src/submit.rs", "src/telemetry.rs", "tests/brief.rs", 
 [[unit]]
 name = "setup"
 purpose = "Onboarding and generated files: init proposes units and writes .stewards, the guide and AGENTS.md block, the per-harness facts table, and docs rendering from unit cards."
-paths = ["src/init.rs", "src/guide.rs", "src/harness.rs", "src/docs.rs", "tests/init.rs", "tests/init_draft.rs", "tests/guide.rs", "tests/docs.rs"]
+paths = ["src/init.rs", "src/guide.rs", "src/harness.rs", "src/docs.rs", "tests/init.rs", "tests/init_draft.rs", "tests/guide.rs", "tests/docs.rs", "tests/fixtures/docs/**"]

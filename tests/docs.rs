@@ -285,6 +285,7 @@ fn dangerous_contract_text_is_escaped_and_keeps_the_table_shape() {
         ("www.evil.example", r"www\.evil.example"),
         ("WWW.evil.example", r"WWW\.evil.example"),
         ("a@evil.example", r"a\@evil.example"),
+        ("$A or $B", r"\$A or \$B"),
         ("# heading", r"\# heading"),
     ];
     for (input, escaped) in cases {

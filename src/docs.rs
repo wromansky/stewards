@@ -131,7 +131,7 @@ pub fn pages(loaded: &Loaded, unit: Option<&str>) -> anyhow::Result<Vec<(String,
 
 /// Card and repo.toml text outside fenced blocks: one line, so it renders as plain
 /// text. Backslash-escapes only what could start markup in the middle of a line:
-/// `\ ` * _ [ ] < > | & ~ # ! : @`, plus the dot of every case-insensitive `www.`.
+/// `\ ` * _ [ ] < > | & ~ # ! : @ $`, plus the dot of every case-insensitive `www.`.
 /// Colon and at-sign are in the set because GitHub autolinks a bare `https://x` and
 /// `a@b.c` without any brackets; `www.` is autolinked too, so its dot is escaped.
 /// Everything else (comma, period, hyphen, parentheses, slash, ...) is written as is.
@@ -151,7 +151,7 @@ fn esc(s: &str) -> String {
                 .iter()
                 .collect::<String>()
                 .eq_ignore_ascii_case("www");
-        if www_dot || "\\`*_[]<>|&~#!:@".contains(c) {
+        if www_dot || "\\`*_[]<>|&~#!:@$".contains(c) {
             out.push('\\');
         }
         out.push(c);

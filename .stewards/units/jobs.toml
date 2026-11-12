@@ -1,10 +1,11 @@
 unit = "jobs"
 
 [reviewed]
-commit = "3c6db68cfc894ad163e09f30bc03928e40c91d3e"
-fingerprint = "sha256:78a490766da28a849c90c250a0882c5ae12152f72f6bdbdc1e862007e527e2dc"
-tree = "7383ef47d38cf1da373d9eb50f106e2674c121ea"
-documenter = "39368b71ef760bc5712300c86b5ca47d5d64bf46"
+commit = "ccd203c122f389e6b86c83753295c84769496a3e"
+fingerprint = "sha256:af0ed29ce80d06108b2c916e261398c94d5bfd1490a362fe155720159fef301c"
+tree = "08248187727415e1a8a95fa0d44377eaaa86c941"
+tester = "1c48c0f87a8d85b32e30cd3aa3ad3e7c762714ec"
+documenter = "af8e2c03bea9b620f6166f9ee6809e60b6c7c190"
 
 [[interface]]
 id = "brief-header"
@@ -29,7 +30,12 @@ contract = "Packs and frames a role's brief; `unsafe_path` for a repo root with 
 [[interface]]
 id = "submit-file"
 anchor = "src/submit.rs::submit_file"
-contract = "Submit needs a known unit (none for architect), a header matching unit, role, task number and a full tree id, and an answer that is a regular file of at most 256 KiB; it then runs the role's handler and appends telemetry, a telemetry failure being only a warning."
+contract = "Needs a known unit (none for architect), a header matching unit, role, task number and full tree id, and a regular answer file of at most 256 KiB; runs the role's handler, removes the job's own `.answer.json` if given as that regular file, and appends telemetry (failure only warns)."
+
+[[interface]]
+id = "anchor-name-bare"
+anchor = "src/submit.rs::spaced_name"
+contract = "An anchor name holding whitespace (`fn create_item`) in a card patch's interface, anchors or gaps, or an architect flow entry, is `answer_parse_failed` on that field instead of `answer_dead_anchor`."
 
 [[interface]]
 id = "write-and-retire"

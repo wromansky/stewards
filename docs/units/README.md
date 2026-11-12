@@ -16,8 +16,11 @@
 
 ## Flows
 
-_None._
+- brief-submit-cycle: [jobs](jobs.md) → [pack](pack.md) → [llm](llm.md) → [model](model.md) → [git](git.md) → [analysis](analysis.md)
+- next-job-scheduling: [next](next.md) → [analysis](analysis.md) → [git](git.md) → [model](model.md) → [jobs](jobs.md)
+- documenter-card-to-docs-page: [jobs](jobs.md) → [setup](setup.md)
 
 ## Decisions
 
-_None._
+- Docs fixtures route to setup through a narrower glob than model's tests/fixtures/\*\*: tests/fixtures/docs/\*\* only feeds the docs renderer tests, so setup lists it and the more specific glob wins routing; edits there review the unit that renders docs, not the model unit.
+- Stewards adopts itself with checked-in .stewards cards and generated docs/units pages: Running the tool on its own repo exercises every role on real code; docs/units is rendered from cards so it stays in the repo as generated output, and the AGENTS.md block is the init-written one.

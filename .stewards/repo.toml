@@ -5,3 +5,29 @@ test_roots = ["tests"]
 [commands]
 test = ["cargo test"]
 lint = ["cargo clippy", "cargo fmt"]
+
+[[flow]]
+name = "brief-submit-cycle"
+units = ["jobs", "pack", "llm", "model", "git", "analysis"]
+entry = "src/brief.rs::build"
+check = "cargo test --test submit approve_stamps_the_brief_snapshot_so_a_later_edit_stays_stale"
+
+[[flow]]
+name = "next-job-scheduling"
+units = ["next", "analysis", "git", "model", "jobs"]
+entry = "src/next.rs::next"
+check = "cargo test --test next interface_file_edit_gives_maintainer_tester_documenter"
+
+[[flow]]
+name = "documenter-card-to-docs-page"
+units = ["jobs", "setup"]
+entry = "src/submit.rs::documenter"
+check = "cargo test --test submit_roles documenter_writes_the_doc_renders_the_page_and_sets_its_mark"
+
+[[decision]]
+title = "Docs fixtures route to setup through a narrower glob than model's tests/fixtures/**"
+why = "tests/fixtures/docs/** only feeds the docs renderer tests, so setup lists it and the more specific glob wins routing; edits there review the unit that renders docs, not the model unit."
+
+[[decision]]
+title = "Stewards adopts itself with checked-in .stewards cards and generated docs/units pages"
+why = "Running the tool on its own repo exercises every role on real code; docs/units is rendered from cards so it stays in the repo as generated output, and the AGENTS.md block is the init-written one."

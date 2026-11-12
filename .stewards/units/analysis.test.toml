@@ -1,0 +1,17 @@
+unit = "analysis"
+
+[[scenario]]
+id = "check-uncovered-one-finding-per-unit"
+interface = "check-report"
+given = "unit `store` has 2 interfaces and a scenario covers only one of them"
+expect = "exactly one uncovered_interface warning, unit store, anchor null, message `store: 1 of 2 interfaces have no scenario: count-items`"
+level = "integration"
+command = "cargo test --test check interface_no_scenario_references_warns_uncovered"
+
+[[scenario]]
+id = "check-uncovered-lists-ten-ids-then-count"
+interface = "check-report"
+given = "unit `store` with 12 interfaces, 11 of them without a scenario"
+expect = "one uncovered_interface warning for the unit listing the first 10 uncovered ids joined by commas, then ` (+1 more)`"
+level = "integration"
+command = "cargo test --test check uncovered_interfaces_are_one_finding_per_unit_listing_ten_ids"

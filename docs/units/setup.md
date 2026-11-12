@@ -4,7 +4,7 @@
 
 ## Overview
 
-The setup unit is how a repository gets onto stewards and how the generated files stay true. It proposes units for a repo and writes .stewards, writes the stewards block into AGENTS.md, tells each agent harness how to delegate, and renders human documentation pages from the unit cards. A reader meets it as four commands: init, guide, and docs, plus the harness table that guide and init draw on.
+The setup unit is how a repository gets onto stewards and how the generated files stay true. It proposes units for a repo and writes .stewards, writes the stewards block into AGENTS.md, tells each agent harness how to delegate, and renders human documentation pages from the unit cards. A reader meets it as three commands, init, guide and docs, plus the harness table that guide and init draw on.
 
 ## How it works
 
@@ -29,11 +29,13 @@ Start from the file for the command: src/init.rs for proposing units and draft j
 
 ## Scenarios
 
-_None._
+| id | interface | given | expect | level |
+|---|---|---|---|---|
+| docs-escapes-markup-only | docs | an interface contract containing \| \\ \` \< \> \[ \] \! \* \_ \~ \& \# \: \@ and www\. (any case) | each markup-starting character is backslash-escaped, the table row keeps its 4 separators, and ordinary prose (commas, periods, hyphens, parentheses, slashes, semicolons) has no backslash | integration |
 
 ## Flows
 
-_None._
+- documenter-card-to-docs-page: jobs → setup
 
 ## Gaps
 

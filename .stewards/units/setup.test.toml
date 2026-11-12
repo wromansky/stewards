@@ -1,0 +1,9 @@
+unit = "setup"
+
+[[scenario]]
+id = "docs-escapes-markup-only"
+interface = "docs"
+given = 'an interface contract containing | \ ` < > [ ] ! * _ ~ & # : @ and www. (any case)'
+expect = "each markup-starting character is backslash-escaped, the table row keeps its 4 separators, and ordinary prose (commas, periods, hyphens, parentheses, slashes, semicolons) has no backslash"
+level = "integration"
+command = "cargo test --test docs"

@@ -1,10 +1,11 @@
 unit = "analysis"
 
 [reviewed]
-commit = "3c6db68cfc894ad163e09f30bc03928e40c91d3e"
-fingerprint = "sha256:91ed6d0608a1ce99f3934227fe2df54d51b2680d993113b1705a4692974a3988"
-tree = "7383ef47d38cf1da373d9eb50f106e2674c121ea"
-documenter = "b8e4b4ad1c99708bbf4e03c0263b39a60f627fdc"
+commit = "ccd203c122f389e6b86c83753295c84769496a3e"
+fingerprint = "sha256:dbcb8d9092925c75e2f21059da8b635413aae5710eddafb77818f67b5dcc038c"
+tree = "08248187727415e1a8a95fa0d44377eaaa86c941"
+tester = "57cd5340335d396c2553b24a7efa0d24e01f5b32"
+documenter = "443882ac243aa7d2619b59803c15654babccd9b9"
 
 [[interface]]
 id = "route-owner"
@@ -44,7 +45,7 @@ contract = "stamp writes [reviewed] {commit, fingerprint, tree, tester, document
 [[interface]]
 id = "check-report"
 anchor = "src/check.rs::check_at"
-contract = "check fails on unreviewed, stale, dead_anchor (outside snapshot or unresolved), unknown_interface; warns uncovered_interface, overlap, one unowned (10 sorted + count). A unit filter drops overlap/unowned. `stewards check` exits 1 on failures."
+contract = "check fails on unreviewed, stale, dead_anchor (outside snapshot or unresolved), unknown_interface; warns overlap, one anchorless uncovered_interface per unit and one unowned (each: 10 sorted + count). A unit filter drops overlap/unowned. `stewards check` exits 1 on failures."
 
 [[interface]]
 id = "debt-scan"

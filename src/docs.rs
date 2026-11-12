@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::anchors::{Resolution, resolve};
 use crate::model::{Anchor, GapKind, Loaded, UnitDef};
 use crate::output::{CliError, Global, Human, emit};
-use crate::workspace::discover;
+use crate::workspace::here;
 
 const NOT_WRITTEN: &str = "_Not written yet._";
 
@@ -33,28 +33,9 @@ impl Human for DocsReport {
 }
 
 pub fn run(g: &Global, unit: Option<&str>) -> anyhow::Result<ExitCode> {
-    let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
-    let ws = discover(&cwd, g.repo.as_deref())?;
-    let repo = match ws.repos.as_slice() {
-        [only] => only,
-        many => many
-            .iter()
-            .find(|r| std::fs::canonicalize(&r.root).is_ok_and(|root| cwd.starts_with(root)))
-            .ok_or_else(|| {
-                CliError::new(
-                    "not_in_repo",
-                    "the current directory is in no repo of this workspace",
-                    "run inside a repo or pass --repo <name>",
-                )
-            })?,
-    };
-    let loaded = repo.loaded.as_ref().ok_or_else(|| {
-        CliError::new(
-            "no_stewards_dir",
-            format!("no .stewards/repo.toml in {}", repo.root.display()),
-            "stewards init",
-        )
-    })?;
+    let (cwd, ws) = here(g)?;
+    let repo = ws.current_repo(&cwd)?;
+    let loaded = repo.loaded()?;
 
     let mut wrote = Vec::new();
     for (rel, text) in pages(loaded, unit)? {
@@ -95,18 +76,7 @@ pub fn pages(loaded: &Loaded, unit: Option<&str>) -> anyhow::Result<Vec<(String,
 
     let chosen: Vec<&UnitDef> = match unit {
         None => loaded.units.iter().collect(),
-        Some(name) => match loaded.units.iter().find(|u| u.name == name) {
-            Some(u) => vec![u],
-            None => {
-                let names: Vec<_> = loaded.units.iter().map(|u| u.name.as_str()).collect();
-                return Err(CliError::new(
-                    "unknown_unit",
-                    format!("no unit named `{name}`"),
-                    format!("one of: {}", names.join(", ")),
-                )
-                .into());
-            }
-        },
+        Some(name) => vec![loaded.unit(name)?],
     };
 
     let mut pages: Vec<(String, String)> = chosen

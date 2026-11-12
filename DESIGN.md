@@ -213,7 +213,9 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Debt:** `simplified:` comments are computed on demand by `debt` and
   attached to the owning unit by route; never stored.
 - **Bugs:** a tester's `bugs[]` and `validate --report` both land on the
-  owning card as `[[gap]] kind = "bug"` with the repro, keyed by title. The
+  owning card as `[[gap]] kind = "bug"` with the repro, keyed by title; a
+  tester's bug that names an interface takes that interface's anchor as its
+  `anchor`, and one that names none keeps the anchor it had. The
   validator's submit sets `severity`, or removes a bug it judges not real;
   the maintainer closes a fixed one like any gap.
 - **Docs:** `docs/units/<unit>.md` is rendered from the card; the documenter
@@ -536,7 +538,8 @@ from the stamp. Jobs:
 - a file changed since the documenter's mark is an interface anchor's path
   → documenter
 - tester and documenter jobs do not need the unit to be stale; with no
-  mark they measure from the stamp
+  mark they measure from the stamp, and a never-stamped unit gets none
+  until its first review stamps it (a validator job does not wait)
 - 2+ units changed since their stamps (never-stamped units do not count)
   and no plan naming all of them → architect
 - a bug gap with no `severity` → validator, one per unit per round

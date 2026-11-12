@@ -335,6 +335,18 @@ impl Loaded {
             )
         })?)
     }
+
+    /// The unit's card, or an empty card for it when it has none yet.
+    pub fn card(&self, unit: &str) -> UnitCard {
+        self.cards.get(unit).cloned().unwrap_or_else(|| UnitCard {
+            unit: unit.to_string(),
+            reviewed: None,
+            interface: vec![],
+            anchors: vec![],
+            gaps: vec![],
+            doc: None,
+        })
+    }
 }
 
 /// Reads `.stewards/` under the git root `root`. A unit's card or test card may be absent.

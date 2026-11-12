@@ -15,18 +15,22 @@ use crate::git;
 use crate::harness;
 use crate::llm::types::{self, CardPatch, Verdict};
 use crate::llm::{self, Answer, FieldError, Mode};
-use crate::model::{self, CommandEntry, Commands, GapKind, Loaded, Role, TestCard, UnitCard};
-use crate::output::{CliError, Global, Human, emit};
+use crate::model::{self, CommandEntry, Commands, GapKind, Role, TestCard, UnitCard};
+use crate::output::{CliError, Global, Human, emit, with_note};
 use crate::route::Router;
 use crate::telemetry;
-use crate::workspace::{Repo, discover, safe_path};
+use crate::workspace::{Repo, here, safe_path};
 
 /// Ids and titles.
 const ID_CAP: usize = 120;
 /// Contracts, anchors, paths, and commands.
 const LINE_CAP: usize = 300;
-/// Notes, cut, replace_with, gap notes, task changes, and every other prose field but explanations.
+/// Notes, cut, replace_with, gap notes, and every other prose field but explanations and task
+/// changes.
 const PROSE_CAP: usize = 2000;
+/// A task's change: larger than the prose cap, since the fix task of a `changes` review joins
+/// every finding.
+const TASK_CHANGE_CAP: usize = 20_000;
 const EXPLANATION_CAP: usize = 4000;
 /// How much of an explanation submit prints.
 const EXPLANATION_SHOWN: usize = 2000;
@@ -56,7 +60,7 @@ const SHELL_CHARS: &[char] = &[
 ];
 
 #[derive(Serialize, Default)]
-pub(crate) struct Submitted {
+pub struct Submitted {
     pub(crate) summary: String,
     explanation: Option<String>,
     tester_brief: Option<PathBuf>,
@@ -104,8 +108,7 @@ impl Human for Submitted {
 }
 
 pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<ExitCode> {
-    let cwd = std::env::current_dir()?.canonicalize()?;
-    let ws = discover(&cwd, g.repo.as_deref())?;
+    let (cwd, ws) = here(g)?;
     let out = submit_file(ws.current_repo(&cwd)?, unit, role, file)?;
     emit(&out, g.human);
     Ok(ExitCode::SUCCESS)
@@ -142,34 +145,21 @@ pub(crate) fn submit_file(
         ));
     }
     // The unit names the files submit writes, so only a units.toml name (checked on load) passes.
-    if let Some(unit) = unit
-        && !loaded.units.iter().any(|u| u.name == unit)
-    {
-        let names: Vec<_> = loaded.units.iter().map(|u| u.name.as_str()).collect();
-        bail!(CliError::new(
-            "unknown_unit",
-            format!("no unit named `{unit}`; units: {}", names.join(", ")),
-            "one of the listed units",
-        ));
+    if let Some(unit) = unit {
+        loaded.unit(unit)?;
     }
     // a developer's task number is in its answer file's name
     let n = match unit.filter(|_| role == Role::Developer) {
         Some(u) => Some(task_number(u, file)?),
         None => None,
     };
-    let brief_rel = match (unit, n) {
-        (Some(u), Some(n)) => format!(".stewards/briefs/{u}-developer-{n}.md"),
-        _ => brief::rel_path(unit, role),
-    };
+    let brief_rel = brief::rel_path(unit, role, n);
     let header = brief::read_header(&repo.root.join(&brief_rel))?;
     check_header(&repo.root, unit, role, n, &header, &brief_rel)?;
     let text = read_answer(file)?;
     // The job's own answer, the path the brief names: removed with the brief once the submit
     // succeeds. An answer given from anywhere else, or through a link, is the caller's.
-    let answer_rel = format!(
-        "{}.answer.json",
-        brief_rel.strip_suffix(".md").expect("a brief is .md")
-    );
+    let answer_rel = brief::answer_rel(&brief_rel);
     let own_answer = [file, &repo.root.join(&answer_rel)]
         .iter()
         .all(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()))
@@ -206,10 +196,7 @@ pub(crate) fn submit_file(
     let record = telemetry::Record {
         unit: unit.map(String::from),
         role: role.as_str(),
-        mode: match header.mode {
-            Mode::Review => "review",
-            Mode::Explain => "explain",
-        },
+        mode: header.mode,
         task: header.task.clone(),
         bytes: header.bytes,
         anchors: header.anchors,
@@ -324,18 +311,6 @@ fn parse_answer(role: Role, mode: Mode, text: &str) -> Result<Answer> {
     })
 }
 
-/// The unit's card, or an empty one when it has none yet.
-fn card_of(loaded: &Loaded, unit: &str) -> UnitCard {
-    loaded.cards.get(unit).cloned().unwrap_or_else(|| UnitCard {
-        unit: unit.to_string(),
-        reviewed: None,
-        interface: vec![],
-        anchors: vec![],
-        gaps: vec![],
-        doc: None,
-    })
-}
-
 fn maintainer(
     repo: &Repo,
     unit: &str,
@@ -424,7 +399,7 @@ fn maintainer(
                 }
             });
             if let Some(t) = &fix {
-                check_text(&mut problems, "findings", &t.change, PROSE_CAP, false);
+                check_text(&mut problems, "findings", &t.change, TASK_CHANGE_CAP, false);
             }
             let tasks = fix.map(|t| vec![t]);
             (
@@ -452,7 +427,7 @@ fn maintainer(
             && router.owner(&a.path) == Some(unit)
             && matches!(resolve(root, a), Resolution::Found { .. })
     };
-    let old = card_of(loaded, unit);
+    let old = loaded.card(unit);
     check_patch(&mut problems, patch.as_ref(), &old, alive);
     check_common(&mut problems, pulled, notes);
     if !problems.is_empty() {
@@ -501,13 +476,12 @@ fn maintainer(
         };
         put(&mut card.gaps, g, |o, n| o.title == n.title);
     }
-    let remove = |list: Option<Vec<String>>| list.unwrap_or_default();
-    let ids = remove(patch.remove_interface);
+    let ids = patch.remove_interface.unwrap_or_default();
     card.interface.retain(|i| !ids.contains(&i.id));
-    let anchors = remove(patch.remove_anchors);
+    let anchors = patch.remove_anchors.unwrap_or_default();
     card.anchors
         .retain(|a| !anchors.contains(&format!("{}::{}", a.path, a.name)));
-    let titles = remove(patch.remove_gaps);
+    let titles = patch.remove_gaps.unwrap_or_default();
     card.gaps.retain(|g| !titles.contains(&g.title));
     let mut changed = vec![];
     changes(
@@ -609,28 +583,29 @@ fn maintainer(
     let card_rel = format!(".stewards/units/{unit}.toml");
     let tasks_rel = tasks_rel(unit);
     let mut checked = vec![tasks_rel.as_str()];
-    let mut changes = vec![];
+    let mut edits = vec![];
     if let Some(text) = card_text {
         checked.push(&card_rel);
-        changes.push((card_rel.clone(), Some(text)));
+        edits.push((card_rel.clone(), Some(text)));
     }
     let tasks_text = tasks
         .as_ref()
         .map(serde_json::to_string_pretty)
         .transpose()?;
-    changes.push((tasks_rel.clone(), tasks_text));
+    edits.push((tasks_rel.clone(), tasks_text));
     if tasks.is_none() {
         let files = brief::developer_files_past(root, unit, 0)?;
-        changes.extend(files.into_iter().map(|rel| (rel, None)));
+        edits.extend(files.into_iter().map(|rel| (rel, None)));
     }
     if let Some(text) = tester_text {
-        let rel = brief::rel_path(Some(unit), Role::Tester);
+        let rel = brief::rel_path(Some(unit), Role::Tester, None);
         out.tester_brief = Some(root.join(&rel));
-        changes.push((rel, Some(text)));
-        changes.push((format!(".stewards/briefs/{unit}-tester.answer.json"), None));
+        let answer = brief::answer_rel(&rel);
+        edits.push((rel, Some(text)));
+        edits.push((answer, None));
     }
-    let brief_rel = brief::rel_path(Some(unit), Role::Maintainer);
-    write_remove_and_retire(repo, before, &checked, &changes, &brief_rel)?;
+    let brief_rel = brief::rel_path(Some(unit), Role::Maintainer, None);
+    write_remove_and_retire(repo, before, &checked, &edits, &brief_rel)?;
     Ok(out)
 }
 
@@ -692,7 +667,7 @@ fn developer(
             s
         }
     };
-    let brief_rel = format!(".stewards/briefs/{unit}-developer-{n}.md");
+    let brief_rel = brief::rel_path(Some(unit), Role::Developer, Some(n));
     write_and_retire(repo, before, &[], &brief_rel)?;
     Ok(Submitted {
         summary,
@@ -717,7 +692,7 @@ fn tester(
     };
     let loaded = repo.loaded()?;
     let commands = &loaded.repo.commands;
-    let mut card = card_of(loaded, unit);
+    let mut card = loaded.card(unit);
     let mut tests = loaded.tests.get(unit).cloned().unwrap_or_else(|| TestCard {
         unit: unit.to_string(),
         primary_paths: vec![],
@@ -819,27 +794,28 @@ fn tester(
             level: s.level.clone(),
             command: s.command.clone(),
         };
-        match tests.scenarios.iter_mut().find(|o| o.id == s.id) {
-            Some(old) => *old = new,
-            None => tests.scenarios.push(new),
-        }
+        put(&mut tests.scenarios, new, |o, n| o.id == n.id);
     }
     for b in &a.bugs {
-        match card.gaps.iter_mut().find(|g| g.title == b.title) {
-            Some(g) => {
-                g.repro = Some(b.repro.clone());
-                g.note = b.evidence.clone();
-            }
-            None => card.gaps.push(model::Gap {
-                kind: GapKind::Bug,
-                title: b.title.clone(),
-                anchor: None,
-                note: b.evidence.clone(),
-                repro: Some(b.repro.clone()),
-                severity: None,
-                issue: None,
-            }),
-        }
+        // the named interface's anchor shows the validator where the bug is; a known bug keeps
+        // its severity and issue, and its anchor when no interface is named
+        let named = b
+            .interface
+            .as_ref()
+            .and_then(|id| card.interface.iter().find(|i| &i.id == id));
+        let kept = card.gaps.iter().find(|g| g.title == b.title);
+        let g = model::Gap {
+            kind: GapKind::Bug,
+            title: b.title.clone(),
+            anchor: named
+                .map(|i| i.anchor.clone())
+                .or_else(|| kept.and_then(|o| o.anchor.clone())),
+            note: b.evidence.clone(),
+            repro: Some(b.repro.clone()),
+            severity: kept.and_then(|o| o.severity.clone()),
+            issue: kept.and_then(|o| o.issue.clone()),
+        };
+        put(&mut card.gaps, g, |o, n| o.title == n.title);
     }
     // At submit time, so the tester's own new test files do not call the tester back.
     if let Some(r) = card.reviewed.as_mut() {
@@ -862,7 +838,7 @@ fn tester(
         repo,
         before,
         &writes,
-        &brief::rel_path(Some(unit), Role::Tester),
+        &brief::rel_path(Some(unit), Role::Tester, None),
     )?;
 
     let ids = a.scenario_patch.iter().map(|s| s.id.as_str());
@@ -881,7 +857,8 @@ fn tester(
     })
 }
 
-fn documenter(
+/// The documenter's submit after its brief and `before` are read; public for the lost-update tests.
+pub fn documenter(
     repo: &Repo,
     unit: &str,
     header: &Header,
@@ -920,7 +897,7 @@ fn documenter(
     }
 
     let loaded = repo.loaded()?;
-    let mut card = card_of(loaded, unit);
+    let mut card = loaded.card(unit);
     card.doc = Some(model::Doc {
         overview: a.doc.overview,
         how_it_works: a.doc.how_it_works,
@@ -935,11 +912,23 @@ fn documenter(
     fresh.cards.insert(unit.to_string(), card);
     let mut writes = vec![(format!(".stewards/units/{unit}.toml"), card_text)];
     writes.extend(docs::pages(&fresh, Some(unit))?);
-    write_and_retire(
+    // The index is derived from every card, so documenters of two units both rewrite it: not
+    // a lost update, and not checked.
+    let checked: Vec<&str> = writes
+        .iter()
+        .map(|(rel, _)| rel.as_str())
+        .filter(|rel| !rel.ends_with("/README.md"))
+        .collect();
+    let edits: Vec<(String, Option<String>)> = writes
+        .iter()
+        .map(|(rel, text)| (rel.clone(), Some(text.clone())))
+        .collect();
+    write_remove_and_retire(
         repo,
         before,
-        &writes,
-        &brief::rel_path(Some(unit), Role::Documenter),
+        &checked,
+        &edits,
+        &brief::rel_path(Some(unit), Role::Documenter, None),
     )?;
     Ok(Submitted {
         summary: format!("{unit} documenter: doc updated; {}", writes[1].0),
@@ -956,7 +945,7 @@ fn validator(
     before: &Before,
 ) -> Result<Submitted> {
     let loaded = repo.loaded()?;
-    let mut card = card_of(loaded, unit);
+    let mut card = loaded.card(unit);
     let title = header.bug.as_deref().unwrap_or_default();
     let Some(at) = card
         .gaps
@@ -1005,7 +994,7 @@ fn validator(
         repo,
         before,
         &writes,
-        &brief::rel_path(Some(unit), Role::Validator),
+        &brief::rel_path(Some(unit), Role::Validator, None),
     )?;
     Ok(Submitted {
         summary: format!("{unit} validator: {}: {verdict}", one_line(title)),
@@ -1207,7 +1196,7 @@ fn architect(
         repo,
         before,
         &writes,
-        &brief::rel_path(None, Role::Architect),
+        &brief::rel_path(None, Role::Architect, None),
     )?;
 
     let names = a.flows.iter().map(|f| f.name.as_str());
@@ -1305,12 +1294,12 @@ pub fn write_and_retire(
     writes: &[(String, String)],
     brief_rel: &str,
 ) -> Result<()> {
-    let changes: Vec<(String, Option<String>)> = writes
+    let edits: Vec<(String, Option<String>)> = writes
         .iter()
         .map(|(rel, text)| (rel.clone(), Some(text.clone())))
         .collect();
     let checked: Vec<&str> = writes.iter().map(|(rel, _)| rel.as_str()).collect();
-    write_remove_and_retire(repo, before, &checked, &changes, brief_rel)
+    write_remove_and_retire(repo, before, &checked, &edits, brief_rel)
 }
 
 /// Writes each `(rel, Some(text))` and removes each `(rel, None)` in order, then removes the job's
@@ -1353,14 +1342,10 @@ fn after_writes(e: anyhow::Error, written: &[&str]) -> anyhow::Error {
     if written.is_empty() {
         return e;
     }
-    let done = format!("submit had already written {}", written.join(", "));
-    match e.downcast::<CliError>() {
-        Ok(mut err) => {
-            err.message = format!("{}; {done}", err.message);
-            err.into()
-        }
-        Err(e) => e.context(done),
-    }
+    with_note(
+        e,
+        format!("submit had already written {}", written.join(", ")),
+    )
 }
 
 /// The failed-submit error; its code names the problem when there is only one kind.
@@ -1505,7 +1490,13 @@ fn check_tasks(
     for (i, t) in tasks.iter().enumerate() {
         let f = format!("tasks[{i}]");
         check_text(out, &format!("{f}.title"), &t.title, ID_CAP, true);
-        check_text(out, &format!("{f}.change"), &t.change, PROSE_CAP, false);
+        check_text(
+            out,
+            &format!("{f}.change"),
+            &t.change,
+            TASK_CHANGE_CAP,
+            false,
+        );
         if t.files.is_empty() {
             out.push((
                 "answer_parse_failed",

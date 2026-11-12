@@ -11,7 +11,7 @@ use crate::llm::types::UnitProposal;
 use crate::llm::{self, Mode};
 use crate::model::{self, Role, SCHEMA, UnitDef};
 use crate::next::{self, Job};
-use crate::output::{CliError, Global, Human, emit, not_implemented};
+use crate::output::{CliError, Global, Human, emit, not_implemented, with_note};
 use crate::route::Router;
 use crate::submit::{self, Submitted};
 use crate::workspace::{self, Repo, Workspace};
@@ -384,9 +384,15 @@ fn append_gitignore(repo: &Repo) -> Result<bool> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| path.display().to_string()),
     };
+    // `/.stewards/briefs` ignores the same directory as `.stewards/briefs/`
+    let bare = |l: &str| {
+        let l = l.trim();
+        let l = l.strip_prefix('/').unwrap_or(l);
+        l.strip_suffix('/').unwrap_or(l).to_string()
+    };
     let missing: Vec<&str> = IGNORE_LINES
         .into_iter()
-        .filter(|l| !old.lines().any(|x| x.trim() == *l))
+        .filter(|l| !old.lines().any(|x| bare(x) == bare(l)))
         .collect();
     if missing.is_empty() {
         return Ok(false);
@@ -407,28 +413,8 @@ pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
             return not_implemented(&format!("init {flag}"));
         }
     }
-    let cwd = std::env::current_dir()?.canonicalize()?;
-    let ws = workspace::discover(&cwd, g.repo.as_deref())?;
-    let repo = ws
-        .repos
-        .iter()
-        .find(|r| {
-            r.root
-                .canonicalize()
-                .is_ok_and(|root| cwd.starts_with(root))
-        })
-        .or(if ws.repos.len() == 1 {
-            ws.repos.first()
-        } else {
-            None
-        })
-        .ok_or_else(|| {
-            CliError::new(
-                "not_in_repo",
-                "the current directory is not inside a repo",
-                "run inside a repo or pass --repo <name>",
-            )
-        })?;
+    let (cwd, ws) = workspace::here(g)?;
+    let repo = ws.current_repo(&cwd)?;
     let initialized = STARTING_FILES.iter().any(|f| repo.root.join(f).exists());
     // --draft continues an initialized repo; plain init only starts one
     let step1 = if draft && initialized {
@@ -441,6 +427,14 @@ pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     draft_jobs(g, ws.is_workspace, repo, step1)
+}
+
+/// The last path segment of a remote URL without a trailing `.git`: `widgets` for
+/// `git@host:acme/widgets.git` or `https://host/acme/widgets/`; `None` when that is empty.
+fn repo_name_of(url: &str) -> Option<String> {
+    let last = url.trim_end_matches('/').rsplit(['/', ':']).next()?;
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Step 1: proposes the units and writes the starting files.
@@ -503,9 +497,12 @@ fn propose(repo: &Repo) -> Result<Init> {
         }
     }
 
-    let repo_name = root
-        .file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let repo_name = git::origin_url(&root)
+        .and_then(|url| repo_name_of(&url))
+        .unwrap_or_else(|| {
+            root.file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+        });
     let commits = git::recent_commit_files(&root, COMMITS)?;
     let mut taken = HashSet::new();
     let mut proposed = Vec::new();
@@ -690,22 +687,11 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
             let done = || -> Result<Submitted> {
                 let answer = llm::direct(j.role, Mode::Review, unit.unwrap_or_default(), text)?;
                 brief::write_text(repo, unit, j.role, text)?;
-                let brief_rel = brief::rel_path(unit, j.role);
-                let stem = brief_rel.strip_suffix(".md").expect("a brief is .md");
-                let answer_rel = format!("{stem}.answer.json");
+                let answer_rel = brief::answer_rel(&brief::rel_path(unit, j.role, None));
                 repo.write(&answer_rel, answer.as_bytes())?;
                 submit::submit_file(repo, unit, j.role, &repo.root.join(answer_rel))
             };
-            let out = done().map_err(|e| {
-                let note = failure_note(&submitted, jobs.len());
-                match e.downcast::<CliError>() {
-                    Ok(mut err) => {
-                        err.message = format!("{}; {note}", err.message);
-                        err.into()
-                    }
-                    Err(e) => e.context(note),
-                }
-            })?;
+            let out = done().map_err(|e| with_note(e, failure_note(&submitted, jobs.len())))?;
             submitted.push(out);
         }
     } else {
@@ -755,6 +741,20 @@ mod tests {
         let first = note.split("; submitted: ").nth(1).unwrap();
         let first = first.split("; not applied: ").next().unwrap();
         assert_eq!(first.chars().count(), 300, "{first}");
+    }
+
+    #[test]
+    fn repo_name_of_takes_the_last_segment_without_dot_git() {
+        for (url, name) in [
+            ("https://github.com/acme/widgets.git", Some("widgets")),
+            ("git@github.com:acme/widgets.git", Some("widgets")),
+            ("git@host:widgets", Some("widgets")),
+            ("/srv/git/widgets/", Some("widgets")),
+            ("https://host/acme/", Some("acme")),
+            ("https://host/.git", None),
+        ] {
+            assert_eq!(repo_name_of(url).as_deref(), name, "{url}");
+        }
     }
 
     #[test]

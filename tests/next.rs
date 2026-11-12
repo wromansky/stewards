@@ -103,6 +103,27 @@ fn never_stamped_unit_gets_a_maintainer_job_listing_all_its_files() {
 }
 
 #[test]
+fn never_stamped_units_get_only_maintainer_and_validator_jobs() {
+    // store has an interface and no docs, and api's interface file counts as changed
+    let repo = common::fixture("single");
+    add_gaps(
+        repo.path(),
+        "store",
+        "[[gap]]\nkind = \"bug\"\ntitle = \"save loses items\"\n",
+    );
+    let (code, v) = run(repo.path(), &["next", "--no-brief"]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        jobs(&v),
+        pairs(&[
+            ("api", "maintainer"),
+            ("store", "maintainer"),
+            ("store", "validator")
+        ])
+    );
+}
+
+#[test]
 fn everything_stamped_and_unchanged_has_no_jobs() {
     let repo = fixture("single");
     stamp_units(repo.path(), &["api", "store"]);

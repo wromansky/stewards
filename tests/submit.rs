@@ -3,10 +3,9 @@ mod common;
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use common::{edit, fixture};
+use common::{edit, fixture, run_in};
 use serde_json::{Value, json};
 use stewards::brief::read_header;
 use stewards::model::{Role, UnitCard};
@@ -23,25 +22,8 @@ fn setup() -> (TempDir, TempDir) {
     (fixture("single"), TempDir::new().unwrap())
 }
 
-fn spawn(dir: &Path, home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_stewards"))
-        .args(args)
-        .current_dir(dir)
-        .env("STEWARDS_HOME", home)
-        .output()
-        .unwrap()
-}
-
 fn run(dir: &Path, home: &Path, args: &[&str]) -> (i32, Value) {
-    let out = spawn(dir, home, args);
-    let v = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
-        panic!(
-            "not JSON: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )
-    });
-    (out.status.code().unwrap(), v)
+    common::json(run_in(dir, home, args))
 }
 
 /// Writes the review brief for api with `next`.
@@ -202,6 +184,31 @@ fn changes_does_not_stamp_and_names_the_developer_brief() {
 }
 
 #[test]
+fn changes_with_long_findings_writes_a_fix_task_the_developer_brief_reads() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let finding = |line: u32| {
+        json!({"file": "src/api/items.py", "line": line, "rung": "one_line",
+               "cut": "c".repeat(750), "replace_with": "r".repeat(750)})
+    };
+    let mut a = review("changes");
+    a["findings"] = json!([finding(1), finding(2), finding(3)]);
+    let (code, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!(code, 0, "{v}");
+    let tasks = fs::read_to_string(dir.path().join(".stewards/briefs/api-tasks.json")).unwrap();
+    let tasks: Value = serde_json::from_str(&tasks).unwrap();
+    assert!(tasks[0]["change"].as_str().unwrap().chars().count() > 4500);
+    let args = ["brief", "api", "--role", "developer", "--task", "fix"];
+    let (code, v) = run(dir.path(), home.path(), &args);
+    assert_eq!(code, 0, "{v}");
+    assert!(
+        dir.path()
+            .join(".stewards/briefs/api-developer-1.md")
+            .is_file()
+    );
+}
+
+#[test]
 fn explain_prints_the_explanation_truncated_and_does_not_stamp() {
     let (dir, home) = setup();
     explain_job(dir.path(), home.path());
@@ -218,7 +225,7 @@ fn explain_prints_the_explanation_truncated_and_does_not_stamp() {
 
     explain_job(dir.path(), home.path());
     fs::write(dir.path().join(ANSWER), explain(&long).to_string()).unwrap();
-    let out = spawn(
+    let out = run_in(
         dir.path(),
         home.path(),
         &[
@@ -1092,7 +1099,6 @@ fn a_failed_write_names_what_was_already_written() {
     review_job(dir.path(), home.path());
     // a directory where the tester brief goes: the card is written, the brief cannot be
     let tester = dir.path().join(".stewards/briefs/api-tester.md");
-    fs::remove_file(&tester).unwrap();
     fs::create_dir(&tester).unwrap();
     let mut a = review("approve");
     a["tester_needed"] = json!(true);
@@ -1113,7 +1119,7 @@ fn status_telemetry_human_is_short_lines() {
     review_job(dir.path(), home.path());
     let bytes = read_header(&dir.path().join(BRIEF)).unwrap().bytes;
     assert_eq!(submit(dir.path(), home.path(), &review("changes")).0, 0);
-    let out = spawn(
+    let out = run_in(
         dir.path(),
         home.path(),
         &["status", "--telemetry", "--human"],

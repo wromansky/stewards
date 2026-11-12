@@ -99,6 +99,17 @@ impl Human for ErrorPayload<'_> {
     }
 }
 
+/// `e` with `note` appended: to the message of a `CliError`, else as context.
+pub fn with_note(e: anyhow::Error, note: String) -> anyhow::Error {
+    match e.downcast::<CliError>() {
+        Ok(mut err) => {
+            err.message = format!("{}; {note}", err.message);
+            err.into()
+        }
+        Err(e) => e.context(note),
+    }
+}
+
 /// The stub every unbuilt command returns.
 pub fn not_implemented(command: &str) -> anyhow::Result<std::process::ExitCode> {
     Err(CliError::new(

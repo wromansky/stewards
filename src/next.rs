@@ -170,7 +170,8 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
                 }
                 changed.push(p);
             }
-            if !changed.is_empty() {
+            // a never-stamped unit's first review comes first: a mark needs a `[reviewed]` block
+            if reviewed.is_some() && !changed.is_empty() {
                 jobs.push(job(Role::Tester, reasons, changed));
             }
 
@@ -195,7 +196,7 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
             if no_docs {
                 reasons.push("no docs yet".into());
             }
-            if !reasons.is_empty() {
+            if reviewed.is_some() && !reasons.is_empty() {
                 jobs.push(job(Role::Documenter, reasons, changed));
             }
 

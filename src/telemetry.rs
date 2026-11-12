@@ -8,13 +8,14 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::check::one_line;
+use crate::llm::Mode;
 use crate::workspace::{Repo, safe_path};
 
 #[derive(Debug, Serialize)]
 pub struct Record {
     pub unit: Option<String>,
     pub role: &'static str,
-    pub mode: &'static str,
+    pub mode: Mode,
     pub task: String,
     pub bytes: usize,
     pub anchors: usize,

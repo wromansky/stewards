@@ -214,6 +214,12 @@ pub fn head_commit(root: &Path) -> Result<Option<String>> {
     }
 }
 
+/// The URL of the `origin` remote; `None` when there is none.
+pub fn origin_url(root: &Path) -> Option<String> {
+    let url = run(root, &["remote", "get-url", "origin"], None).ok()?;
+    Some(url.trim().to_string()).filter(|u| !u.is_empty())
+}
+
 /// Current branch name (`HEAD` when detached), then the last commit subject on the next line
 /// (none before the first commit).
 pub fn task_text(root: &Path) -> Result<String> {

@@ -243,6 +243,40 @@ fn gitignore_lines_are_appended_only_when_missing() {
 }
 
 #[test]
+fn gitignore_lines_written_with_a_leading_or_without_a_trailing_slash_are_present() {
+    let (_tmp, dir) = build(&s(&["main.py"]), &[]);
+    let old = "/.stewards/telemetry/\n/.stewards/briefs\n";
+    write(&dir, ".gitignore", old);
+    let v = init(&dir);
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".gitignore")).unwrap(),
+        old
+    );
+    assert!(
+        !v["wrote"]
+            .as_array()
+            .unwrap()
+            .contains(&".gitignore".into())
+    );
+}
+
+#[test]
+fn the_repo_name_is_the_origin_url_last_segment_when_there_is_an_origin() {
+    let (_tmp, dir) = build(&s(&["main.py"]), &[]);
+    git(
+        &dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/acme/widgets.git",
+        ],
+    );
+    init(&dir);
+    assert_eq!(load_repo(&dir).unwrap().repo.name, "widgets");
+}
+
+#[test]
 fn agents_md_gets_the_block() {
     let (_tmp, dir) = build(&s(&["main.py"]), &[]);
     let v = init(&dir);

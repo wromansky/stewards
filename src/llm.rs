@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::model::Role;
@@ -19,7 +19,8 @@ use baml_client::sync_client::B;
 pub use baml_client::types;
 
 /// Only the maintainer has two modes; other roles ignore it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Mode {
     Review,
     Explain,
@@ -291,14 +292,7 @@ pub unsafe fn prepare_baml_env() {
 /// provider, that provider's key, the native library. Returns the provider, model, and key.
 pub fn direct_guards(role: Role) -> Result<(&'static str, String, String)> {
     let config = crate::user::load_config()?;
-    let role_name = match role {
-        Role::Developer => "developer",
-        Role::Maintainer => "maintainer",
-        Role::Tester => "tester",
-        Role::Documenter => "documenter",
-        Role::Validator => "validator",
-        Role::Architect => "architect",
-    };
+    let role_name = role.as_str();
     let no_model = |message: String| {
         CliError::new(
             "no_direct_model",

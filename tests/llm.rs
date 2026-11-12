@@ -83,38 +83,20 @@ fn only_error(role: Role, mode: Mode, text: &str, field: &str) -> FieldError {
 }
 
 #[test]
-fn maintainer_review_answer_parses() {
-    parse(Role::Maintainer, Mode::Review, &review().to_string()).unwrap();
-}
-
-#[test]
-fn maintainer_explain_answer_parses() {
-    parse(Role::Maintainer, Mode::Explain, &explain().to_string()).unwrap();
-}
-
-#[test]
-fn developer_answer_parses() {
-    parse(Role::Developer, Mode::Review, &developer().to_string()).unwrap();
-}
-
-#[test]
-fn tester_answer_parses() {
-    parse(Role::Tester, Mode::Review, &tester().to_string()).unwrap();
-}
-
-#[test]
-fn documenter_answer_parses() {
-    parse(Role::Documenter, Mode::Review, &documenter().to_string()).unwrap();
-}
-
-#[test]
-fn validator_answer_parses() {
-    parse(Role::Validator, Mode::Review, &validator().to_string()).unwrap();
-}
-
-#[test]
-fn architect_answer_parses() {
-    parse(Role::Architect, Mode::Review, &architect().to_string()).unwrap();
+fn every_answer_shape_parses() {
+    let answers = [
+        review(),
+        explain(),
+        developer(),
+        tester(),
+        documenter(),
+        validator(),
+        architect(),
+    ];
+    for ((role, mode), answer) in SHAPES.into_iter().zip(answers) {
+        let parsed = parse(role, mode, &answer.to_string());
+        assert!(parsed.is_ok(), "{role:?} {mode:?}: {:?}", parsed.err());
+    }
 }
 
 #[test]

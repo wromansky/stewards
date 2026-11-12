@@ -3,9 +3,8 @@ mod common;
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Output};
 
-use common::{edit, fixture};
+use common::{edit, fixture, run_in};
 use serde_json::Value;
 use stewards::brief::read_header;
 use stewards::llm::Mode;
@@ -17,25 +16,8 @@ fn setup() -> (TempDir, TempDir) {
     (fixture("single"), TempDir::new().unwrap())
 }
 
-fn spawn(dir: &Path, home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_stewards"))
-        .args(args)
-        .current_dir(dir)
-        .env("STEWARDS_HOME", home)
-        .output()
-        .unwrap()
-}
-
 fn run(dir: &Path, home: &Path, args: &[&str]) -> (i32, Value) {
-    let out = spawn(dir, home, args);
-    let v = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
-        panic!(
-            "not JSON: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )
-    });
-    (out.status.code().unwrap(), v)
+    common::json(run_in(dir, home, args))
 }
 
 /// Runs `brief` and returns the written brief's text.
@@ -235,7 +217,7 @@ fn architect_brief_has_no_unit() {
 #[test]
 fn stdout_prints_the_brief_and_writes_nothing() {
     let (dir, home) = setup();
-    let out = spawn(
+    let out = run_in(
         dir.path(),
         home.path(),
         &["brief", "api", "--role", "maintainer", "--stdout"],

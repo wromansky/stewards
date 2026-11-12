@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::anchors::{Resolution, resolve};
 use crate::git;
-use crate::model::{Anchor, Reviewed, UnitCard};
+use crate::model::{Anchor, Reviewed};
 use crate::output::{Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, here};
@@ -85,14 +85,7 @@ pub fn reviewed_at(
 pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed> {
     let loaded = repo.loaded()?;
     loaded.unit(unit)?;
-    let mut card = loaded.cards.get(unit).cloned().unwrap_or_else(|| UnitCard {
-        unit: unit.to_string(),
-        reviewed: None,
-        interface: vec![],
-        anchors: vec![],
-        gaps: vec![],
-        doc: None,
-    });
+    let mut card = loaded.card(unit);
     let reviewed = reviewed_at(repo, unit, tree, card.reviewed.as_ref())?;
     card.reviewed = Some(reviewed.clone());
     repo.write(

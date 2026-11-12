@@ -15,7 +15,7 @@ use crate::pack::{self, Pack};
 use crate::route::Router;
 use crate::submit;
 use crate::user::{self, Entry};
-use crate::workspace::{Repo, discover};
+use crate::workspace::{Repo, here};
 
 const HEADER_START: &str = "<!-- stewards-job ";
 const HEADER_END: &str = " -->";
@@ -25,7 +25,6 @@ const HEADER_END: &str = " -->";
 pub struct Header {
     pub unit: Option<String>,
     pub role: Role,
-    #[serde(with = "ModeName")]
     pub mode: Mode,
     pub snapshot: String,
     pub task: String,
@@ -37,13 +36,6 @@ pub struct Header {
     pub n: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lane: Option<Vec<String>>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "Mode", rename_all = "lowercase")]
-enum ModeName {
-    Review,
-    Explain,
 }
 
 pub fn read_header(path: &Path) -> Result<Header> {
@@ -64,17 +56,21 @@ pub fn read_header(path: &Path) -> Result<Header> {
         })
 }
 
-/// `<unit>-<role>`, or `architect` for the architect.
-fn stem(unit: Option<&str>, role: Role) -> String {
-    match unit {
-        Some(u) => format!("{u}-{}", role.as_str()),
-        None => role.as_str().into(),
+/// The repo-relative brief of the job: `.stewards/briefs/<unit>-<role>.md`, with `-<n>` for
+/// developer task `n`, or `architect.md`.
+pub fn rel_path(unit: Option<&str>, role: Role, n: Option<usize>) -> String {
+    let role = role.as_str();
+    match (unit, n) {
+        (Some(u), Some(n)) => format!(".stewards/briefs/{u}-{role}-{n}.md"),
+        (Some(u), None) => format!(".stewards/briefs/{u}-{role}.md"),
+        (None, _) => format!(".stewards/briefs/{role}.md"),
     }
 }
 
-/// The repo-relative brief of the job: `.stewards/briefs/<unit>-<role>.md` or `architect.md`.
-pub fn rel_path(unit: Option<&str>, role: Role) -> String {
-    format!(".stewards/briefs/{}.md", stem(unit, role))
+/// The answer file of the brief `brief_rel`: its `.md` replaced by `.answer.json`.
+pub fn answer_rel(brief_rel: &str) -> String {
+    let stem = brief_rel.strip_suffix(".md").expect("a brief is .md");
+    format!("{stem}.answer.json")
 }
 
 /// Pack and memory text cannot open or close a DATA section or hide text: each invisible
@@ -183,11 +179,7 @@ pub fn render(header: &Header, pack: &Pack, memory: &[&Entry], root: &Path) -> S
             .collect();
         out += &format!("\nMemory:\n<<<DATA\n{}\nDATA>>>\n", data(&lines.join("\n")));
     }
-    let stem = match header.n {
-        Some(n) => format!("{}-{n}", stem(unit, header.role)),
-        None => stem(unit, header.role),
-    };
-    let answer = root.join(format!(".stewards/briefs/{stem}.answer.json"));
+    let answer = root.join(answer_rel(&rel_path(unit, header.role, header.n)));
     let file = shell_quote(&answer);
     let root = shell_quote(root);
     let submit = match unit {
@@ -275,12 +267,9 @@ fn frame(
 /// Writes the brief `text` built for the job to its path, removing a stale answer; returns the
 /// absolute path.
 pub fn write_text(repo: &Repo, unit: Option<&str>, role: Role, text: &str) -> Result<PathBuf> {
-    let rel = rel_path(unit, role);
+    let rel = rel_path(unit, role, None);
     repo.write(&rel, text.as_bytes())?;
-    repo.remove(&format!(
-        ".stewards/briefs/{}.answer.json",
-        stem(unit, role)
-    ))?;
+    repo.remove(&answer_rel(&rel))?;
     Ok(repo.root.join(rel))
 }
 
@@ -389,13 +378,13 @@ fn developer(
     }
     let mut jobs = vec![];
     for ((i, t), text) in tasks.iter().enumerate().zip(&texts) {
-        let stem = format!(".stewards/briefs/{unit}-developer-{}", i + 1);
-        repo.write(&format!("{stem}.md"), text.as_bytes())?;
-        repo.remove(&format!("{stem}.answer.json"))?;
+        let rel = rel_path(Some(unit), Role::Developer, Some(i + 1));
+        repo.write(&rel, text.as_bytes())?;
+        repo.remove(&answer_rel(&rel))?;
         jobs.push(Job {
             task: i + 1,
             title: t.title.clone(),
-            brief_path: repo.root.join(format!("{stem}.md")),
+            brief_path: repo.root.join(rel),
         });
     }
     for rel in developer_files_past(&repo.root, unit, tasks.len())? {
@@ -439,8 +428,7 @@ pub fn run(
     task: Option<&str>,
     stdout: bool,
 ) -> anyhow::Result<ExitCode> {
-    let cwd = std::env::current_dir()?.canonicalize()?;
-    let ws = discover(&cwd, g.repo.as_deref())?;
+    let (cwd, ws) = here(g)?;
     let repo = ws.current_repo(&cwd)?;
     let snapshot = git::snapshot(&repo.root)?;
     let task = match task {

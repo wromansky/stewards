@@ -7,7 +7,10 @@ use std::path::Path;
 
 use common::{append, edit, fixture, run, stamp_units};
 use serde_json::{Value, json};
+use stewards::brief::read_header;
 use stewards::model::{GapKind, TestCard, UnitCard, load_repo};
+use stewards::submit::record;
+use stewards::workspace::Repo;
 
 const CARD: &str = ".stewards/units/api.toml";
 const TESTS: &str = ".stewards/units/api.test.toml";
@@ -208,6 +211,35 @@ fn tester_bug_becomes_a_bug_gap_with_repro_and_note() {
     assert_eq!(gap.repro.as_deref(), Some("pytest tests/api -k count"));
     assert_eq!(gap.note, "expected 2, got 3");
     assert!(gap.severity.is_none());
+    assert_eq!(
+        gap.anchor.as_deref(),
+        Some("src/api/items.py::create_item"),
+        "the bug's interface anchors it"
+    );
+}
+
+#[test]
+fn tester_repeated_bug_sets_the_anchor_only_when_it_names_an_interface() {
+    let dir = fixture("single");
+    let d = dir.path();
+    append(
+        &d.join(CARD),
+        &format!("{BUG}anchor = \"src/api/items.py::router\"\n"),
+    );
+    let anchor = |d: &Path| {
+        let gap = card(d)
+            .gaps
+            .into_iter()
+            .find(|g| g.title == "count off by one");
+        gap.unwrap().anchor
+    };
+    let mut no_interface = bug("count off by one", "pytest tests/api -k count", "got 4");
+    no_interface["interface"] = Value::Null;
+    submit_ok(d, "tester", &tester(json!([]), json!([no_interface])));
+    assert_eq!(anchor(d).as_deref(), Some("src/api/items.py::router"));
+    let named = bug("count off by one", "pytest tests/api -k count", "got 4");
+    submit_ok(d, "tester", &tester(json!([]), json!([named])));
+    assert_eq!(anchor(d).as_deref(), Some("src/api/items.py::create_item"));
 }
 
 #[test]
@@ -632,6 +664,48 @@ fn tester_command_with_test_id_characters_is_accepted() {
     assert_eq!(x.command.as_deref(), Some(ids));
     let gap = card(d).gaps.into_iter().find(|g| g.title == "b").unwrap();
     assert_eq!(gap.repro.as_deref(), Some(plain));
+}
+
+/// Runs the documenter's submit through the library after `between` changes the repo since
+/// `before` was recorded, as a parallel submit would.
+fn documenter_after(d: &Path, between: impl FnOnce(&Path)) -> anyhow::Result<()> {
+    job(d, "documenter");
+    let header = read_header(&d.join(".stewards/briefs/api-documenter.md")).unwrap();
+    let files = [CARD, "docs/units/api.md", "docs/units/README.md"].map(String::from);
+    let before = record(d, &files).unwrap();
+    between(d);
+    let repo = Repo {
+        name: "single".into(),
+        root: d.to_path_buf(),
+        loaded: Some(load_repo(d).unwrap()),
+    };
+    let text = documenter("Serves items.").to_string();
+    stewards::submit::documenter(&repo, "api", &header, &text, &before).map(drop)
+}
+
+#[test]
+fn documenter_write_is_not_refused_for_an_index_another_documenter_wrote() {
+    let dir = fixture("single");
+    let d = dir.path();
+    let index = d.join("docs/units/README.md");
+    documenter_after(d, |d| {
+        fs::create_dir_all(d.join("docs/units")).unwrap();
+        fs::write(d.join("docs/units/README.md"), "another documenter's").unwrap();
+    })
+    .unwrap();
+    assert_eq!(card(d).doc.unwrap().overview, "Serves items.");
+    assert!(fs::read_to_string(index).unwrap().contains("[api](api.md)"));
+}
+
+#[test]
+fn documenter_write_is_refused_for_a_card_changed_since_it_was_read() {
+    let dir = fixture("single");
+    let d = dir.path();
+    let e = documenter_after(d, |d| append(&d.join(CARD), BUG)).unwrap_err();
+    let e = e.downcast_ref::<stewards::output::CliError>().unwrap();
+    assert_eq!(e.code, "card_changed");
+    assert!(e.message.contains(CARD), "{}", e.message);
+    assert!(card(d).gaps.iter().any(|g| g.title == "count off by one"));
 }
 
 #[test]

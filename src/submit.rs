@@ -34,6 +34,8 @@ pub const TASK_CHANGE_CAP: usize = 20_000;
 pub const EXPLANATION_CAP: usize = 4000;
 /// How much of an explanation submit prints.
 const EXPLANATION_SHOWN: usize = 2000;
+/// How much of a reviewer finding's `cut` submit prints.
+const CUT_SHOWN: usize = 300;
 /// The largest answer file read.
 const ANSWER_BYTES: u64 = 256 * 1024;
 /// Entries in any one list of an answer.
@@ -69,10 +71,22 @@ pub struct Submitted {
     pub(crate) unit_proposals: Vec<types::UnitProposal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
+    /// A reviewer's findings, for the agent that made the change to fix.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    findings: Vec<ShownFinding>,
     #[serde(flatten)]
     developer: Option<DeveloperReport>,
     #[serde(skip)]
     pulled_anchors: Vec<String>,
+}
+
+/// A reviewer's finding as submit prints it: where, and what to cut, capped.
+#[derive(Serialize)]
+struct ShownFinding {
+    unit: String,
+    file: String,
+    line: i64,
+    cut: String,
 }
 
 /// What a developer submit computed from git, beside the summary.
@@ -102,6 +116,12 @@ impl Human for Submitted {
                 .map(|p| format!("tester brief: {}", p.display())),
         );
         out.extend(self.unit_proposals.iter().map(proposal_line));
+        out.extend(self.findings.iter().map(|f| {
+            one_line(&format!(
+                "- {} {}:{}: cut {}",
+                f.unit, f.file, f.line, f.cut
+            ))
+        }));
         out.extend(self.warning.as_ref().map(|w| format!("warning: {w}")));
         out.join("\n")
     }
@@ -122,7 +142,7 @@ pub(crate) fn submit_file(
     role: Role,
     file: &Path,
 ) -> Result<Submitted> {
-    // the architect takes no unit and gets ""
+    // the architect and the reviewer take no unit and get ""
     let submit: fn(&Repo, &str, &Header, &str, &Before) -> Result<Submitted> = match role {
         Role::Maintainer => maintainer,
         Role::Tester => tester,
@@ -130,10 +150,12 @@ pub(crate) fn submit_file(
         Role::Validator => validator,
         Role::Architect => architect,
         Role::Developer => developer,
+        Role::Reviewer => reviewer,
     };
     let loaded = repo.loaded()?;
-    if unit.is_some() == (role == Role::Architect) {
-        let wants = if role == Role::Architect {
+    let no_unit = matches!(role, Role::Architect | Role::Reviewer);
+    if unit.is_some() == no_unit {
+        let wants = if no_unit {
             "takes no unit"
         } else {
             "needs a unit"
@@ -156,6 +178,11 @@ pub(crate) fn submit_file(
     let brief_rel = brief::rel_path(unit, role, n);
     let header = brief::read_header(&repo.root.join(&brief_rel))?;
     check_header(&repo.root, unit, role, n, &header, &brief_rel)?;
+    // a reviewer's units name the files it writes, as a unit does
+    let covered = header.units.clone().unwrap_or_default();
+    for u in &covered {
+        loaded.unit(u)?;
+    }
     let text = read_answer(file)?;
     // The job's own answer, the path the brief names: removed with the brief once the submit
     // succeeds. An answer given from anywhere else, or through a link, is the caller's.
@@ -170,14 +197,18 @@ pub(crate) fn submit_file(
     if role == Role::Architect {
         files.push(UNITS_TOML.into());
     }
-    if let Some(u) = unit {
+    for u in unit
+        .iter()
+        .copied()
+        .chain(covered.iter().map(String::as_str))
+    {
         files.push(format!(".stewards/units/{u}.toml"));
         files.push(format!(".stewards/units/{u}.test.toml"));
-        if role == Role::Maintainer {
+        if matches!(role, Role::Maintainer | Role::Reviewer) {
             files.push(tasks_rel(u));
         }
         // a bad docs_path is the documenter's own error, reported after the answer's
-        if role == Role::Documenter
+        if matches!(role, Role::Documenter | Role::Reviewer)
             && let Ok(pages) = docs::pages(loaded, Some(u))
         {
             files.extend(pages.into_iter().map(|(rel, _)| rel));
@@ -203,6 +234,7 @@ pub(crate) fn submit_file(
         pulled_anchors: std::mem::take(&mut out.pulled_anchors),
         harness: harness::detect().map(|h| h.name),
         out_of_lane: out.developer.as_ref().map(|d| d.out_of_lane.len()),
+        units: header.units.as_ref().map(Vec::len),
         timestamp: telemetry::rfc3339(SystemTime::now()),
     };
     if let Err(e) = telemetry::append(repo, &record) {
@@ -253,9 +285,15 @@ fn check_header(
         && h.snapshot
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    // a reviewer's header names the units it covers, and only a reviewer's does
+    let units_ok = match &h.units {
+        None => role != Role::Reviewer,
+        Some(u) => role == Role::Reviewer && !u.is_empty(),
+    };
     if h.unit.as_deref() != unit
         || h.role != role
         || h.n != n
+        || !units_ok
         || !hex
         || !git::is_tree(root, &h.snapshot)
     {
@@ -325,89 +363,17 @@ fn maintainer(
     let snapshot = git::snapshot(root)?;
     let entries = git::ls_tree(root, &snapshot)?;
     let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
-    let rung = |f: &types::Finding| {
-        let rung = serde_json::to_value(&f.rung).expect("a rung serializes");
-        rung.as_str().unwrap_or_default().to_string()
-    };
     let mut problems = vec![];
     // `tasks` is the developers' task list to write; None removes it.
     let (patch, pulled, notes, tester_needed, tasks) = match &answer {
         Answer::MaintainerReview(a) => {
-            let empty = a.findings.is_empty();
-            if (a.verdict == Verdict::Approve) != empty {
-                let (problem, example) = if empty {
-                    (
-                        "changes with no findings; a changes verdict needs at least one finding"
-                            .to_string(),
-                        "\"approve\"",
-                    )
-                } else {
-                    (
-                        format!(
-                            "approve with {}; an approval has no findings",
-                            count(a.findings.len(), "finding")
-                        ),
-                        "\"changes\"",
-                    )
-                };
-                problems.push((
-                    "answer_parse_failed",
-                    FieldError {
-                        field: "verdict".into(),
-                        problem,
-                        example: example.into(),
-                    },
-                ));
-            }
-            check_list(&mut problems, "findings", a.findings.len());
-            for (i, f) in a.findings.iter().enumerate() {
-                let p = &mut problems;
-                let file = format!("findings[{i}].file");
-                check_text(p, &file, &f.file, LINE_CAP, true);
-                check_owned(p, &file, &f.file, root, unit, &router);
-                check_text(p, &format!("findings[{i}].cut"), &f.cut, PROSE_CAP, false);
-                let field = format!("findings[{i}].replace_with");
-                check_text(p, &field, &f.replace_with, PROSE_CAP, false);
-            }
-            // The findings are the one fix task: its lane is the files they name.
-            let fix = (a.verdict == Verdict::Changes).then(|| {
-                let mut files: Vec<String> = vec![];
-                for f in &a.findings {
-                    if !files.contains(&f.file) {
-                        files.push(f.file.clone());
-                    }
-                }
-                let lines: Vec<String> = a
-                    .findings
-                    .iter()
-                    .map(|f| {
-                        one_line(&format!(
-                            "{}:{} {}: cut {}; replace with {}",
-                            f.file,
-                            f.line,
-                            rung(f),
-                            f.cut,
-                            f.replace_with
-                        ))
-                    })
-                    .collect();
-                types::Task {
-                    title: "fix review findings".into(),
-                    change: lines.join("\n"),
-                    files,
-                    check: None,
-                }
-            });
-            if let Some(t) = &fix {
-                check_text(&mut problems, "findings", &t.change, TASK_CHANGE_CAP, false);
-            }
-            let tasks = fix.map(|t| vec![t]);
+            let fix = check_review(&mut problems, &a.verdict, &a.findings, root, unit, &router);
             (
                 &a.card_patch,
                 &a.pulled_anchors,
                 &a.notes,
                 a.tester_needed,
-                tasks,
+                fix.map(|t| vec![t]),
             )
         }
         Answer::MaintainerExplain(a) => {
@@ -420,88 +386,16 @@ fn maintainer(
         }
         _ => unreachable!("a maintainer answer parses to a maintainer variant"),
     };
-    // An anchor must live in a file of this unit in the snapshot: never `.git/`, an ignored
-    // file, or another unit's file.
-    let alive = |a: &model::Anchor| {
-        in_snapshot(&entries, &a.path)
-            && router.owner(&a.path) == Some(unit)
-            && matches!(resolve(root, a), Resolution::Found { .. })
-    };
     let old = loaded.card(unit);
+    let alive = |a: &model::Anchor| anchor_alive(root, &entries, &router, unit, a);
     check_patch(&mut problems, patch.as_ref(), &old, alive);
     check_common(&mut problems, pulled, notes);
     if !problems.is_empty() {
         return Err(rejected(problems));
     }
 
-    // Each list upserts by key and keeps the rest of the card; only the remove lists remove.
-    let mut card = old.clone();
-    let patch = patch.clone().unwrap_or_default();
-    let patched = patch.interface.is_some()
-        || patch.anchors.is_some()
-        || patch.gaps.is_some()
-        || patch.remove_interface.is_some()
-        || patch.remove_anchors.is_some()
-        || patch.remove_gaps.is_some();
-    for i in patch.interface.into_iter().flatten() {
-        let i = model::Interface {
-            id: i.id,
-            anchor: i.anchor,
-            contract: i.contract,
-        };
-        put(&mut card.interface, i, |o, n| o.id == n.id);
-    }
-    for a in patch.anchors.into_iter().flatten() {
-        let a = model::Anchor {
-            path: a.path,
-            name: a.name,
-        };
-        put(&mut card.anchors, a, |o, n| o == n);
-    }
-    for g in patch.gaps.into_iter().flatten() {
-        // severity and issue are the tool's: a gap keeps them across a patch, by title
-        let kept = old.gaps.iter().find(|o| o.title == g.title);
-        let g = model::Gap {
-            kind: match g.kind {
-                types::GapKind::Gap => GapKind::Gap,
-                types::GapKind::Future => GapKind::Future,
-                types::GapKind::Bug => GapKind::Bug,
-            },
-            title: g.title,
-            anchor: g.anchor,
-            note: g.note,
-            repro: g.repro,
-            severity: kept.and_then(|o| o.severity.clone()),
-            issue: kept.and_then(|o| o.issue.clone()),
-        };
-        put(&mut card.gaps, g, |o, n| o.title == n.title);
-    }
-    let ids = patch.remove_interface.unwrap_or_default();
-    card.interface.retain(|i| !ids.contains(&i.id));
-    let anchors = patch.remove_anchors.unwrap_or_default();
-    card.anchors
-        .retain(|a| !anchors.contains(&format!("{}::{}", a.path, a.name)));
-    let titles = patch.remove_gaps.unwrap_or_default();
-    card.gaps.retain(|g| !titles.contains(&g.title));
-    let mut changed = vec![];
-    changes(
-        &mut changed,
-        "interface",
-        &old.interface,
-        &card.interface,
-        |i| i.id.clone(),
-    );
-    changes(&mut changed, "anchor", &old.anchors, &card.anchors, |a| {
-        format!("{}::{}", a.path, a.name)
-    });
-    changes(&mut changed, "gap", &old.gaps, &card.gaps, |g| {
-        g.title.clone()
-    });
-    let card_line = if changed.is_empty() {
-        "card unchanged".to_string()
-    } else {
-        format!("card: {}", changed.join(", "))
-    };
+    let (mut card, patched) = apply_patch(&old, patch.as_ref());
+    let card_line = card_line(&old, &card);
 
     let approve = matches!(&answer, Answer::MaintainerReview(a) if a.verdict == Verdict::Approve);
     if approve {
@@ -588,15 +482,7 @@ fn maintainer(
         checked.push(&card_rel);
         edits.push((card_rel.clone(), Some(text)));
     }
-    let tasks_text = tasks
-        .as_ref()
-        .map(serde_json::to_string_pretty)
-        .transpose()?;
-    edits.push((tasks_rel.clone(), tasks_text));
-    if tasks.is_none() {
-        let files = brief::developer_files_past(root, unit, 0)?;
-        edits.extend(files.into_iter().map(|rel| (rel, None)));
-    }
+    edits.extend(task_edits(root, unit, tasks.as_ref())?);
     if let Some(text) = tester_text {
         let rel = brief::rel_path(Some(unit), Role::Tester, None);
         out.tester_brief = Some(root.join(&rel));
@@ -607,6 +493,205 @@ fn maintainer(
     let brief_rel = brief::rel_path(Some(unit), Role::Maintainer, None);
     write_remove_and_retire(repo, before, &checked, &edits, &brief_rel)?;
     Ok(out)
+}
+
+/// The name of a finding's rung, as the answer spells it.
+fn rung(f: &types::Finding) -> String {
+    let rung = serde_json::to_value(&f.rung).expect("a rung serializes");
+    rung.as_str().unwrap_or_default().to_string()
+}
+
+/// An anchor a patch may name: in a file `unit` owns in the snapshot `entries` (never `.git/`,
+/// an ignored file, or another unit's file), resolving there.
+fn anchor_alive(
+    root: &Path,
+    entries: &[(String, String)],
+    router: &Router,
+    unit: &str,
+    a: &model::Anchor,
+) -> bool {
+    in_snapshot(entries, &a.path)
+        && router.owner(&a.path) == Some(unit)
+        && matches!(resolve(root, a), Resolution::Found { .. })
+}
+
+/// Checks a review's verdict against its findings (`approve` has none, `changes` at least one)
+/// and each finding of `unit`; returns a `changes` review's fix task: the findings as one task
+/// whose lane is the files they name.
+fn check_review(
+    problems: &mut Problems,
+    verdict: &Verdict,
+    findings: &[types::Finding],
+    root: &Path,
+    unit: &str,
+    router: &Router,
+) -> Option<types::Task> {
+    let empty = findings.is_empty();
+    if (*verdict == Verdict::Approve) != empty {
+        let (problem, example) = if empty {
+            (
+                "changes with no findings; a changes verdict needs at least one finding"
+                    .to_string(),
+                "\"approve\"",
+            )
+        } else {
+            (
+                format!(
+                    "approve with {}; an approval has no findings",
+                    count(findings.len(), "finding")
+                ),
+                "\"changes\"",
+            )
+        };
+        problems.push((
+            "answer_parse_failed",
+            FieldError {
+                field: "verdict".into(),
+                problem,
+                example: example.into(),
+            },
+        ));
+    }
+    check_list(problems, "findings", findings.len());
+    for (i, f) in findings.iter().enumerate() {
+        let file = format!("findings[{i}].file");
+        check_text(problems, &file, &f.file, LINE_CAP, true);
+        check_owned(problems, &file, &f.file, root, unit, router);
+        check_text(
+            problems,
+            &format!("findings[{i}].cut"),
+            &f.cut,
+            PROSE_CAP,
+            false,
+        );
+        let field = format!("findings[{i}].replace_with");
+        check_text(problems, &field, &f.replace_with, PROSE_CAP, false);
+    }
+    let fix = (*verdict == Verdict::Changes).then(|| {
+        let mut files: Vec<String> = vec![];
+        for f in findings {
+            if !files.contains(&f.file) {
+                files.push(f.file.clone());
+            }
+        }
+        let lines: Vec<String> = findings
+            .iter()
+            .map(|f| {
+                one_line(&format!(
+                    "{}:{} {}: cut {}; replace with {}",
+                    f.file,
+                    f.line,
+                    rung(f),
+                    f.cut,
+                    f.replace_with
+                ))
+            })
+            .collect();
+        types::Task {
+            title: "fix review findings".into(),
+            change: lines.join("\n"),
+            files,
+            check: None,
+        }
+    });
+    if let Some(t) = &fix {
+        check_text(problems, "findings", &t.change, TASK_CHANGE_CAP, false);
+    }
+    fix
+}
+
+/// `old` with the patch applied, and whether the patch named anything. Each list upserts by key
+/// and keeps the rest of the card; only the remove lists remove.
+fn apply_patch(old: &UnitCard, patch: Option<&CardPatch>) -> (UnitCard, bool) {
+    let mut card = old.clone();
+    let patch = patch.cloned().unwrap_or_default();
+    let patched = patch.interface.is_some()
+        || patch.anchors.is_some()
+        || patch.gaps.is_some()
+        || patch.remove_interface.is_some()
+        || patch.remove_anchors.is_some()
+        || patch.remove_gaps.is_some();
+    for i in patch.interface.into_iter().flatten() {
+        let i = model::Interface {
+            id: i.id,
+            anchor: i.anchor,
+            contract: i.contract,
+        };
+        put(&mut card.interface, i, |o, n| o.id == n.id);
+    }
+    for a in patch.anchors.into_iter().flatten() {
+        let a = model::Anchor {
+            path: a.path,
+            name: a.name,
+        };
+        put(&mut card.anchors, a, |o, n| o == n);
+    }
+    for g in patch.gaps.into_iter().flatten() {
+        // severity and issue are the tool's: a gap keeps them across a patch, by title
+        let kept = old.gaps.iter().find(|o| o.title == g.title);
+        let g = model::Gap {
+            kind: match g.kind {
+                types::GapKind::Gap => GapKind::Gap,
+                types::GapKind::Future => GapKind::Future,
+                types::GapKind::Bug => GapKind::Bug,
+            },
+            title: g.title,
+            anchor: g.anchor,
+            note: g.note,
+            repro: g.repro,
+            severity: kept.and_then(|o| o.severity.clone()),
+            issue: kept.and_then(|o| o.issue.clone()),
+        };
+        put(&mut card.gaps, g, |o, n| o.title == n.title);
+    }
+    let ids = patch.remove_interface.unwrap_or_default();
+    card.interface.retain(|i| !ids.contains(&i.id));
+    let anchors = patch.remove_anchors.unwrap_or_default();
+    card.anchors
+        .retain(|a| !anchors.contains(&format!("{}::{}", a.path, a.name)));
+    let titles = patch.remove_gaps.unwrap_or_default();
+    card.gaps.retain(|g| !titles.contains(&g.title));
+    (card, patched)
+}
+
+/// What changed from `old` to `card`, for a summary: `card unchanged`, or `card: ` and each
+/// interface, anchor, and gap added, edited, or removed.
+fn card_line(old: &UnitCard, card: &UnitCard) -> String {
+    let mut changed = vec![];
+    changes(
+        &mut changed,
+        "interface",
+        &old.interface,
+        &card.interface,
+        |i| i.id.clone(),
+    );
+    changes(&mut changed, "anchor", &old.anchors, &card.anchors, |a| {
+        format!("{}::{}", a.path, a.name)
+    });
+    changes(&mut changed, "gap", &old.gaps, &card.gaps, |g| {
+        g.title.clone()
+    });
+    if changed.is_empty() {
+        "card unchanged".to_string()
+    } else {
+        format!("card: {}", changed.join(", "))
+    }
+}
+
+/// The task list's edits: `tasks` written to the unit's task file, or, with none, the file and
+/// every developer job file of the unit removed.
+fn task_edits(
+    root: &Path,
+    unit: &str,
+    tasks: Option<&Vec<types::Task>>,
+) -> Result<Vec<(String, Option<String>)>> {
+    let text = tasks.map(serde_json::to_string_pretty).transpose()?;
+    let mut edits = vec![(tasks_rel(unit), text)];
+    if tasks.is_none() {
+        let files = brief::developer_files_past(root, unit, 0)?;
+        edits.extend(files.into_iter().map(|rel| (rel, None)));
+    }
+    Ok(edits)
 }
 
 /// Writes nothing but telemetry and retires the brief: the lane report is computed from git.
@@ -693,89 +778,17 @@ fn tester(
     let loaded = repo.loaded()?;
     let commands = &loaded.repo.commands;
     let mut card = loaded.card(unit);
-    let mut tests = loaded.tests.get(unit).cloned().unwrap_or_else(|| TestCard {
-        unit: unit.to_string(),
-        primary_paths: vec![],
-        test_command: None,
-        scenarios: vec![],
-    });
+    let mut tests = test_card(loaded, unit);
 
     let mut p = vec![];
-    let interface = |p: &mut Problems, field: String, id: &str| {
-        if !card.interface.iter().any(|i| i.id == id) {
-            let ids: Vec<&str> = card.interface.iter().map(|i| i.id.as_str()).collect();
-            p.push((
-                "answer_parse_failed",
-                FieldError {
-                    field,
-                    problem: format!(
-                        "`{id}` is not an interface id of unit `{unit}`; ids: {}",
-                        ids.join(", ")
-                    ),
-                    example: format!("\"{}\"", ids.first().unwrap_or(&"create-item")),
-                },
-            ));
-        }
-    };
-    check_list(&mut p, "scenario_patch", a.scenario_patch.len());
-    for (i, s) in a.scenario_patch.iter().enumerate() {
-        let f = format!("scenario_patch[{i}]");
-        check_text(&mut p, &format!("{f}.id"), &s.id, ID_CAP, true);
-        check_text(
-            &mut p,
-            &format!("{f}.interface"),
-            &s.interface,
-            ID_CAP,
-            true,
-        );
-        check_text(&mut p, &format!("{f}.given"), &s.given, LINE_CAP, true);
-        check_text(&mut p, &format!("{f}.expect"), &s.expect, LINE_CAP, true);
-        check_text(&mut p, &format!("{f}.level"), &s.level, ID_CAP, true);
-        if let Some(c) = &s.command {
-            check_text(&mut p, &format!("{f}.command"), c, LINE_CAP, true);
-            check_command(&mut p, &format!("{f}.command"), c, commands);
-        }
-        interface(&mut p, format!("{f}.interface"), &s.interface);
-    }
+    check_scenarios(&mut p, &a.scenario_patch, &card, unit, commands);
     check_list(&mut p, "results", a.results.len());
     for (i, r) in a.results.iter().enumerate() {
         let f = format!("results[{i}]");
         check_text(&mut p, &format!("{f}.scenario"), &r.scenario, ID_CAP, true);
         check_text(&mut p, &format!("{f}.output"), &r.output, PROSE_CAP, false);
     }
-    check_list(&mut p, "bugs", a.bugs.len());
-    for (i, b) in a.bugs.iter().enumerate() {
-        let f = format!("bugs[{i}]");
-        check_text(&mut p, &format!("{f}.title"), &b.title, ID_CAP, true);
-        check_text(&mut p, &format!("{f}.repro"), &b.repro, LINE_CAP, true);
-        check_command(&mut p, &format!("{f}.repro"), &b.repro, commands);
-        check_text(
-            &mut p,
-            &format!("{f}.evidence"),
-            &b.evidence,
-            PROSE_CAP,
-            false,
-        );
-        if let Some(id) = &b.interface {
-            check_text(&mut p, &format!("{f}.interface"), id, ID_CAP, true);
-            interface(&mut p, format!("{f}.interface"), id);
-        }
-        // a bug upserts by title, so it may not take the title of a gap of another kind
-        if card
-            .gaps
-            .iter()
-            .any(|g| g.title == b.title && g.kind != GapKind::Bug)
-        {
-            p.push((
-                "answer_parse_failed",
-                FieldError {
-                    field: format!("{f}.title"),
-                    problem: "a gap that is not a bug already has this title".into(),
-                    example: "\"count off by one\"".into(),
-                },
-            ));
-        }
-    }
+    check_bugs(&mut p, &a.bugs, &card, unit, commands);
     check_list(&mut p, "tests_written", a.tests_written.len());
     for (i, t) in a.tests_written.iter().enumerate() {
         check_text(&mut p, &format!("tests_written[{i}]"), t, LINE_CAP, true);
@@ -785,38 +798,8 @@ fn tester(
         return Err(rejected(p));
     }
 
-    for s in &a.scenario_patch {
-        let new = model::Scenario {
-            id: s.id.clone(),
-            interface: s.interface.clone(),
-            given: s.given.clone(),
-            expect: s.expect.clone(),
-            level: s.level.clone(),
-            command: s.command.clone(),
-        };
-        put(&mut tests.scenarios, new, |o, n| o.id == n.id);
-    }
-    for b in &a.bugs {
-        // the named interface's anchor shows the validator where the bug is; a known bug keeps
-        // its severity and issue, and its anchor when no interface is named
-        let named = b
-            .interface
-            .as_ref()
-            .and_then(|id| card.interface.iter().find(|i| &i.id == id));
-        let kept = card.gaps.iter().find(|g| g.title == b.title);
-        let g = model::Gap {
-            kind: GapKind::Bug,
-            title: b.title.clone(),
-            anchor: named
-                .map(|i| i.anchor.clone())
-                .or_else(|| kept.and_then(|o| o.anchor.clone())),
-            note: b.evidence.clone(),
-            repro: Some(b.repro.clone()),
-            severity: kept.and_then(|o| o.severity.clone()),
-            issue: kept.and_then(|o| o.issue.clone()),
-        };
-        put(&mut card.gaps, g, |o, n| o.title == n.title);
-    }
+    apply_scenarios(&mut tests, &a.scenario_patch);
+    apply_bugs(&mut card, &a.bugs);
     // At submit time, so the tester's own new test files do not call the tester back.
     if let Some(r) = card.reviewed.as_mut() {
         r.tester = Some(git::snapshot(&repo.root)?);
@@ -857,6 +840,136 @@ fn tester(
     })
 }
 
+/// The unit's test card, or an empty one.
+fn test_card(loaded: &model::Loaded, unit: &str) -> TestCard {
+    loaded.tests.get(unit).cloned().unwrap_or_else(|| TestCard {
+        unit: unit.to_string(),
+        primary_paths: vec![],
+        test_command: None,
+        scenarios: vec![],
+    })
+}
+
+/// `answer_parse_failed` for `field` unless `id` is an interface id of `card`.
+fn check_interface_id(p: &mut Problems, field: String, id: &str, card: &UnitCard, unit: &str) {
+    if !card.interface.iter().any(|i| i.id == id) {
+        let ids: Vec<&str> = card.interface.iter().map(|i| i.id.as_str()).collect();
+        p.push((
+            "answer_parse_failed",
+            FieldError {
+                field,
+                problem: format!(
+                    "`{id}` is not an interface id of unit `{unit}`; ids: {}",
+                    ids.join(", ")
+                ),
+                example: format!("\"{}\"", ids.first().unwrap_or(&"create-item")),
+            },
+        ));
+    }
+}
+
+/// Checks a `scenario_patch` for `card`: caps, an allowed command, a known interface id.
+fn check_scenarios(
+    p: &mut Problems,
+    scenarios: &[types::Scenario],
+    card: &UnitCard,
+    unit: &str,
+    commands: &Commands,
+) {
+    check_list(p, "scenario_patch", scenarios.len());
+    for (i, s) in scenarios.iter().enumerate() {
+        let f = format!("scenario_patch[{i}]");
+        check_text(p, &format!("{f}.id"), &s.id, ID_CAP, true);
+        check_text(p, &format!("{f}.interface"), &s.interface, ID_CAP, true);
+        check_text(p, &format!("{f}.given"), &s.given, LINE_CAP, true);
+        check_text(p, &format!("{f}.expect"), &s.expect, LINE_CAP, true);
+        check_text(p, &format!("{f}.level"), &s.level, ID_CAP, true);
+        if let Some(c) = &s.command {
+            check_text(p, &format!("{f}.command"), c, LINE_CAP, true);
+            check_command(p, &format!("{f}.command"), c, commands);
+        }
+        check_interface_id(p, format!("{f}.interface"), &s.interface, card, unit);
+    }
+}
+
+/// Checks the `bugs` reported for `card`: caps, an allowed repro, a known interface id, and a
+/// title no gap of another kind has.
+fn check_bugs(
+    p: &mut Problems,
+    bugs: &[types::Bug],
+    card: &UnitCard,
+    unit: &str,
+    commands: &Commands,
+) {
+    check_list(p, "bugs", bugs.len());
+    for (i, b) in bugs.iter().enumerate() {
+        let f = format!("bugs[{i}]");
+        check_text(p, &format!("{f}.title"), &b.title, ID_CAP, true);
+        check_text(p, &format!("{f}.repro"), &b.repro, LINE_CAP, true);
+        check_command(p, &format!("{f}.repro"), &b.repro, commands);
+        check_text(p, &format!("{f}.evidence"), &b.evidence, PROSE_CAP, false);
+        if let Some(id) = &b.interface {
+            check_text(p, &format!("{f}.interface"), id, ID_CAP, true);
+            check_interface_id(p, format!("{f}.interface"), id, card, unit);
+        }
+        // a bug upserts by title, so it may not take the title of a gap of another kind
+        if card
+            .gaps
+            .iter()
+            .any(|g| g.title == b.title && g.kind != GapKind::Bug)
+        {
+            p.push((
+                "answer_parse_failed",
+                FieldError {
+                    field: format!("{f}.title"),
+                    problem: "a gap that is not a bug already has this title".into(),
+                    example: "\"count off by one\"".into(),
+                },
+            ));
+        }
+    }
+}
+
+/// Upserts each scenario into the test card by id.
+fn apply_scenarios(tests: &mut TestCard, scenarios: &[types::Scenario]) {
+    for s in scenarios {
+        let new = model::Scenario {
+            id: s.id.clone(),
+            interface: s.interface.clone(),
+            given: s.given.clone(),
+            expect: s.expect.clone(),
+            level: s.level.clone(),
+            command: s.command.clone(),
+        };
+        put(&mut tests.scenarios, new, |o, n| o.id == n.id);
+    }
+}
+
+/// Upserts each bug onto the card as a bug gap, by title.
+fn apply_bugs(card: &mut UnitCard, bugs: &[types::Bug]) {
+    for b in bugs {
+        // the named interface's anchor shows the validator where the bug is; a known bug keeps
+        // its severity and issue, and its anchor when no interface is named
+        let named = b
+            .interface
+            .as_ref()
+            .and_then(|id| card.interface.iter().find(|i| &i.id == id));
+        let kept = card.gaps.iter().find(|g| g.title == b.title);
+        let g = model::Gap {
+            kind: GapKind::Bug,
+            title: b.title.clone(),
+            anchor: named
+                .map(|i| i.anchor.clone())
+                .or_else(|| kept.and_then(|o| o.anchor.clone())),
+            note: b.evidence.clone(),
+            repro: Some(b.repro.clone()),
+            severity: kept.and_then(|o| o.severity.clone()),
+            issue: kept.and_then(|o| o.issue.clone()),
+        };
+        put(&mut card.gaps, g, |o, n| o.title == n.title);
+    }
+}
+
 /// The documenter's submit after its brief and `before` are read; public for the lost-update tests.
 pub fn documenter(
     repo: &Repo,
@@ -869,28 +982,7 @@ pub fn documenter(
         unreachable!("a documenter answer parses to the documenter variant")
     };
     let mut p = vec![];
-    for (field, value) in [
-        ("doc.overview", &a.doc.overview),
-        ("doc.how_it_works", &a.doc.how_it_works),
-        ("doc.how_to_change", &a.doc.how_to_change),
-    ] {
-        check_text(&mut p, field, value, PROSE_CAP, false);
-        check_doc_markdown(&mut p, field, value);
-    }
-    // an empty doc leaves `next` listing the job again, forever
-    if [&a.doc.overview, &a.doc.how_it_works, &a.doc.how_to_change]
-        .iter()
-        .all(|v| v.trim().is_empty())
-    {
-        p.push((
-            "answer_parse_failed",
-            FieldError {
-                field: "doc".into(),
-                problem: "all three prose fields are empty".into(),
-                example: "{\"overview\": \"Serves items over HTTP.\", ...}".into(),
-            },
-        ));
-    }
+    check_doc(&mut p, &a.doc);
     check_common(&mut p, &a.pulled_anchors, &a.notes);
     if !p.is_empty() {
         return Err(rejected(p));
@@ -898,11 +990,7 @@ pub fn documenter(
 
     let loaded = repo.loaded()?;
     let mut card = loaded.card(unit);
-    card.doc = Some(model::Doc {
-        overview: a.doc.overview,
-        how_it_works: a.doc.how_it_works,
-        how_to_change: a.doc.how_to_change,
-    });
+    card.doc = Some(model_doc(&a.doc));
     if let Some(r) = card.reviewed.as_mut() {
         r.documenter = Some(git::snapshot(&repo.root)?);
     }
@@ -935,6 +1023,236 @@ pub fn documenter(
         pulled_anchors: a.pulled_anchors,
         ..Default::default()
     })
+}
+
+/// Checks the documenter's three prose sections: caps, markdown that could fake a section, and
+/// not all three empty.
+fn check_doc(p: &mut Problems, doc: &types::Doc) {
+    for (field, value) in [
+        ("doc.overview", &doc.overview),
+        ("doc.how_it_works", &doc.how_it_works),
+        ("doc.how_to_change", &doc.how_to_change),
+    ] {
+        check_text(p, field, value, PROSE_CAP, false);
+        check_doc_markdown(p, field, value);
+    }
+    // an empty doc leaves `next` listing the job again, forever
+    if [&doc.overview, &doc.how_it_works, &doc.how_to_change]
+        .iter()
+        .all(|v| v.trim().is_empty())
+    {
+        p.push((
+            "answer_parse_failed",
+            FieldError {
+                field: "doc".into(),
+                problem: "all three prose fields are empty".into(),
+                example: "{\"overview\": \"Serves items over HTTP.\", ...}".into(),
+            },
+        ));
+    }
+}
+
+/// The reviewer's submit after its brief and `before` are read; public for the lost-update tests.
+/// Every unit of the brief once, each checked as its maintainer's review, tester's scenarios and
+/// bugs, and documenter's doc would be, and nothing written on any error. Per unit: the card
+/// patch, bugs, and doc; an approval stamps at the brief's snapshot and sets the tester and
+/// documenter marks there; `changes` writes the fix task as a maintainer's does.
+pub fn reviewer(
+    repo: &Repo,
+    _unit: &str,
+    header: &Header,
+    text: &str,
+    before: &Before,
+) -> Result<Submitted> {
+    let Answer::Review(a) = parse_answer(Role::Reviewer, header.mode, text)? else {
+        unreachable!("a reviewer answer parses to the review variant")
+    };
+    let root = &repo.root;
+    let loaded = repo.loaded()?;
+    let commands = &loaded.repo.commands;
+    let snapshot = git::snapshot(root)?;
+    let entries = git::ls_tree(root, &snapshot)?;
+    let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+    let covered = header.units.clone().unwrap_or_default();
+
+    let mut p = vec![];
+    check_list(&mut p, "units", a.units.len());
+    // each covered unit's review, with its card patched and its fix task
+    let mut reviews = vec![];
+    for (k, u) in a.units.iter().enumerate() {
+        let field = format!("units[{k}].unit");
+        check_text(&mut p, &field, &u.unit, ID_CAP, true);
+        let problem = if !covered.contains(&u.unit) {
+            format!(
+                "`{}` is not under review; the units are: {}",
+                u.unit,
+                covered.join(", ")
+            )
+        } else if a.units[..k].iter().any(|o| o.unit == u.unit) {
+            format!("`{}` appears twice; give each unit once", u.unit)
+        } else {
+            let unit = u.unit.as_str();
+            let old = loaded.card(unit);
+            let (card, _) = apply_patch(&old, u.card_patch.as_ref());
+            let mut fix = None;
+            prefixed(&mut p, &format!("units[{k}]."), |p| {
+                fix = check_review(p, &u.verdict, &u.findings, root, unit, &router);
+                let alive = |a: &model::Anchor| anchor_alive(root, &entries, &router, unit, a);
+                check_patch(p, u.card_patch.as_ref(), &old, alive);
+                check_text(p, "check.command", &u.check.command, LINE_CAP, true);
+                check_text(p, "check.output", &u.check.output, PROSE_CAP, false);
+                if u.verdict == Verdict::Approve && !u.check.pass {
+                    p.push((
+                        "answer_parse_failed",
+                        FieldError {
+                            field: "verdict".into(),
+                            problem: "approve with a failing check; a unit whose tests fail                                       is not approved"
+                                .into(),
+                            example: "\"changes\", with a finding for the failure".into(),
+                        },
+                    ));
+                }
+                // the scenarios and bugs may name an interface the patch adds
+                let scenarios = u.scenario_patch.as_deref().unwrap_or_default();
+                check_scenarios(p, scenarios, &card, unit, commands);
+                check_bugs(
+                    p,
+                    u.bugs.as_deref().unwrap_or_default(),
+                    &card,
+                    unit,
+                    commands,
+                );
+                if let Some(doc) = &u.doc {
+                    check_doc(p, doc);
+                }
+            });
+            reviews.push((u, old, card, fix));
+            continue;
+        };
+        p.push((
+            "answer_parse_failed",
+            FieldError {
+                field,
+                problem,
+                example: format!("\"{}\"", covered[0]),
+            },
+        ));
+    }
+    for unit in covered
+        .iter()
+        .filter(|c| !a.units.iter().any(|u| &u.unit == *c))
+    {
+        p.push((
+            "answer_parse_failed",
+            FieldError {
+                field: "units".into(),
+                problem: format!("`{unit}` is missing; every unit under review appears once"),
+                example: format!("{{\"unit\": \"{unit}\", ...}}"),
+            },
+        ));
+    }
+    check_common(&mut p, &a.pulled_anchors, &a.notes);
+    if !p.is_empty() {
+        return Err(rejected(p));
+    }
+
+    let mut edits: Vec<(String, Option<String>)> = vec![];
+    let mut checked = vec![];
+    let mut fresh = loaded.clone();
+    let mut documented = vec![];
+    let mut parts = vec![];
+    let mut findings = vec![];
+    let short: String = header.snapshot.chars().take(7).collect();
+    for (u, old, mut card, fix) in reviews {
+        let unit = u.unit.as_str();
+        apply_bugs(&mut card, u.bugs.as_deref().unwrap_or_default());
+        let mut part = vec![card_line(&old, &card)];
+        if let Some(doc) = &u.doc {
+            card.doc = Some(model_doc(doc));
+            documented.push(unit);
+            part.push("doc updated".into());
+        }
+        let scenarios = u.scenario_patch.as_deref().unwrap_or_default();
+        if !scenarios.is_empty() {
+            let mut tests = test_card(loaded, unit);
+            apply_scenarios(&mut tests, scenarios);
+            let rel = format!(".stewards/units/{unit}.test.toml");
+            edits.push((rel.clone(), Some(toml::to_string(&tests)?)));
+            checked.push(rel);
+            part.push(count(scenarios.len(), "scenario") + " upserted");
+        }
+        if u.verdict == Verdict::Approve {
+            // at the brief's snapshot, as a maintainer's; the reviewer answered for the tester
+            // and the documenter too
+            let mut r = check::reviewed_at(repo, unit, &header.snapshot, old.reviewed.as_ref())?;
+            r.tester = Some(header.snapshot.clone());
+            r.documenter = Some(header.snapshot.clone());
+            card.reviewed = Some(r);
+            part.push(format!("stamped {short}"));
+        } else {
+            part.insert(0, count(u.findings.len(), "finding"));
+            part.push("not stamped".into());
+            findings.extend(u.findings.iter().map(|f| ShownFinding {
+                unit: unit.to_string(),
+                file: f.file.clone(),
+                line: f.line,
+                cut: one_line(&f.cut).chars().take(CUT_SHOWN).collect(),
+            }));
+        }
+        let card_text = toml::to_string(&card)?;
+        if card_text != toml::to_string(&old)? {
+            let rel = format!(".stewards/units/{unit}.toml");
+            edits.push((rel.clone(), Some(card_text)));
+            checked.push(rel);
+        }
+        edits.extend(task_edits(root, unit, fix.map(|t| vec![t]).as_ref())?);
+        checked.push(tasks_rel(unit));
+        let verdict = if u.verdict == Verdict::Approve {
+            "approve"
+        } else {
+            "changes"
+        };
+        parts.push(format!("{unit} {verdict} ({})", part.join("; ")));
+        fresh.cards.insert(unit.to_string(), card);
+    }
+    // each page renders its card as it is about to be written; the index once, unchecked, as the
+    // documenter's
+    for unit in documented {
+        for (rel, text) in docs::pages(&fresh, Some(unit))? {
+            if !rel.ends_with("/README.md") {
+                checked.push(rel.clone());
+            }
+            edits.retain(|(r, _)| *r != rel);
+            edits.push((rel, Some(text)));
+        }
+    }
+    let checked: Vec<&str> = checked.iter().map(String::as_str).collect();
+    let brief_rel = brief::rel_path(None, Role::Reviewer, None);
+    write_remove_and_retire(repo, before, &checked, &edits, &brief_rel)?;
+    Ok(Submitted {
+        summary: one_line(&format!("reviewer: {}", parts.join(", "))),
+        findings,
+        pulled_anchors: a.pulled_anchors,
+        ..Default::default()
+    })
+}
+
+/// Runs `check` on a list of its own and adds its problems to `out`, `prefix` before each field.
+fn prefixed(out: &mut Problems, prefix: &str, check: impl FnOnce(&mut Problems)) {
+    let mut p = vec![];
+    check(&mut p);
+    out.extend(p.into_iter().map(|(code, mut e)| {
+        e.field = format!("{prefix}{}", e.field);
+        (code, e)
+    }));
+}
+
+fn model_doc(doc: &types::Doc) -> model::Doc {
+    model::Doc {
+        overview: doc.overview.clone(),
+        how_it_works: doc.how_it_works.clone(),
+        how_to_change: doc.how_to_change.clone(),
+    }
 }
 
 fn validator(

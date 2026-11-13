@@ -92,12 +92,15 @@ enum Command {
     },
     /// Record [reviewed] at the current snapshot (human override)
     Stamp { unit: String },
-    /// Find stale units, write review briefs, print the jobs
+    /// Find what changed, write the review brief, print the jobs
     Next {
         #[arg(long)]
         task: Option<String>,
         #[arg(long)]
         no_brief: bool,
+        /// The per-unit jobs (maintainer, tester, documenter, validator, architect) instead of one review
+        #[arg(long)]
+        roles: bool,
         #[arg(long)]
         no_run: bool,
         #[arg(long)]
@@ -121,7 +124,7 @@ enum Command {
     Debt,
     /// Render docs/units/<unit>.md and the index
     Docs { unit: Option<String> },
-    /// Write the six native role agents
+    /// Write the seven native role agents
     Render {
         #[arg(long)]
         harness: String,
@@ -254,9 +257,10 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
         Command::Next {
             task,
             no_brief,
+            roles,
             no_run,
             pr,
-        } => next::run(g, task.as_deref(), no_brief, no_run, pr),
+        } => next::run(g, task.as_deref(), no_brief, roles, no_run, pr),
         Command::Check => check::run(g),
         Command::Validate { report, export } => validate::run(g, report.as_deref(), export),
         Command::Review { pr } => review::run(g, pr),

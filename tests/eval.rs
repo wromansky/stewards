@@ -1070,12 +1070,17 @@ fn only_a_change_to_a_tracked_file_counts_as_changed() {
 }
 
 #[test]
-fn no_developers_replaces_both_developer_lines_of_the_block() {
+fn no_developers_cuts_the_changing_line_to_its_first_sentence() {
     let block = stewards::guide::block();
     let off = without_developers(block).unwrap();
-    assert!(off.contains("- Changing: make the edits yourself.\n"));
-    assert!(off.contains("A review that returns findings: fix them yourself. Done means no jobs; a change with jobs still listed is not done."));
+    assert!(off.contains("\n- Changing: make the edit yourself.\n"));
     assert!(!off.contains("--role developer"));
+    let changed: Vec<(&str, &str)> = block
+        .lines()
+        .zip(off.lines())
+        .filter(|(a, b)| a != b)
+        .collect();
+    assert_eq!(changed.len(), 1, "{changed:?}");
     assert_eq!(off.lines().count(), block.lines().count());
     assert!(without_developers("no block").is_err());
 }

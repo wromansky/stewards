@@ -193,3 +193,20 @@ class ArchitectAnswer {
   pulled_anchors string[] @description("max 200 items, each max 300 chars")
   notes string @description("max 2000 chars")
 }
+
+class UnitReview {
+  unit string @description("one of the units under review; max 120 chars")
+  verdict Verdict
+  findings Finding[] @description("max 200 items; all cut and replace_with together max 20000 chars")
+  card_patch CardPatch?
+  check CheckRun @description("the unit's test command as run, and the tail of its output; a failing check cannot approve")
+  scenario_patch Scenario[]? @description("only when the contract changed; upserts by id; max 200 items")
+  bugs Bug[]? @description("defects found and not fixed here; max 200 items")
+  doc Doc? @description("all three sections as they should read; only when what one says is no longer true")
+}
+
+class ReviewAnswer {
+  units UnitReview[] @description("every unit under review exactly once, no other; max 200 items")
+  pulled_anchors string[] @description("max 200 items, each max 300 chars")
+  notes string @description("max 2000 chars")
+}

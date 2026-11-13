@@ -275,7 +275,7 @@ fn next_writes_briefs_and_fills_brief_path() {
         "return []",
         "return [1]",
     );
-    let (code, v) = run(dir.path(), home.path(), &["next"]);
+    let (code, v) = run(dir.path(), home.path(), &["next", "--roles"]);
     assert_eq!(code, 1);
     let jobs = v["jobs"].as_array().unwrap();
     assert!(!jobs.is_empty());

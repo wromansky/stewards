@@ -26,7 +26,7 @@ pub use suite::{Source, Suite, SuiteTask};
 const ADOPTION_OWN: [&str; 4] = [".stewards/", "docs/units/", "AGENTS.md", ".gitignore"];
 
 /// The prompt of the `full` arm's adoption session, run once per eval before any `full` run.
-pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards init --draft` and hand every brief it writes to a subagent that can run shell, then follow the AGENTS.md block: run `stewards next` and dispatch every brief it writes until it lists no jobs.";
+pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards init --draft` and hand every brief it writes to a subagent that can run shell, then run `stewards next --roles` and dispatch every brief it writes until it lists no jobs.";
 
 /// The final stop reasons of a response that did not end normally.
 pub const FAILED_STOPS: [&str; 3] = ["error", "aborted", "length"];
@@ -1138,23 +1138,17 @@ fn commit_adopted(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The developer lines of the AGENTS.md block, and their `--no-developers` replacements.
-const DEVELOPER_LINE: &str = "- Changing: run `stewards brief <unit> --role developer` and dispatch every brief it writes, together when there are several. A small edit you may make yourself; it is reviewed like any other.";
-const NO_DEVELOPER_LINE: &str = "- Changing: make the edits yourself.";
-const DEVELOPER_FIX: &str = "run `stewards brief <unit> --role developer` again to fix them.";
-const NO_DEVELOPER_FIX: &str = "fix them yourself.";
+/// The developer line of the AGENTS.md block, and its `--no-developers` replacement.
+const DEVELOPER_LINE: &str = "- Changing: make the edit yourself. When a maintainer split a plan into tasks, run `stewards brief <unit> --role developer` and dispatch every brief it writes.";
+const NO_DEVELOPER_LINE: &str = "- Changing: make the edit yourself.";
 
 /// The AGENTS.md text with the developer role switched off; an error when the block's developer
-/// lines are not found, so a changed block cannot silently leave developers on.
+/// line is not found, so a changed block cannot silently leave developers on.
 pub fn without_developers(agents_md: &str) -> Result<String> {
-    for needle in [DEVELOPER_LINE, DEVELOPER_FIX] {
-        if !agents_md.contains(needle) {
-            bail!("AGENTS.md block has no `{needle}`");
-        }
+    if !agents_md.contains(DEVELOPER_LINE) {
+        bail!("AGENTS.md block has no `{DEVELOPER_LINE}`");
     }
-    Ok(agents_md
-        .replace(DEVELOPER_LINE, NO_DEVELOPER_LINE)
-        .replace(DEVELOPER_FIX, NO_DEVELOPER_FIX))
+    Ok(agents_md.replace(DEVELOPER_LINE, NO_DEVELOPER_LINE))
 }
 
 /// `cp -a from/. to/`.

@@ -8,15 +8,20 @@ reopen one by editing this file, not by drifting in code.
 Five, all primary, in the author's words:
 
 1. Same behavior across harnesses.
-2. Maximum token efficiency.
+2. Reviewed changes and a repository memory at a small, measured overhead:
+   one review subagent per change, not a token saving.
 3. Maximum code cleanliness.
 4. Documentation generated from code.
 5. Knowledge persists across sessions.
 
+The saving was tested and not found: four thin-eval passes on 2026-11-12
+(three on the fixture, one on this repository) cost `full` more tokens
+than `bare` on every task; see "What the thin eval showed" in the Handoff.
+
 Audience for year one: the author, across their own repos.
 
-Feel: a team to delegate to. The agent's main move is handing work to a
-specialist that already knows the area.
+Feel: a team that already knows the repo. The agent makes the change and
+hands its review to one subagent that already knows the area.
 
 What persists: structure (areas, owners, anchors), contracts (interfaces and
 expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
@@ -57,17 +62,20 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   repo gets the same block there. `init` places the block at the top of
   `AGENTS.md`, because some harnesses truncate project docs or take only
   the first matching file.
-- **Efficiency:** three numbers go down (main context per task, total tokens
-  per task, repeated work across sessions), and each agent gets the exact
-  context its job needs: no more, no less.
+- **Overhead:** each agent gets the exact context its job needs, no more,
+  no less, and a change costs one review job, not one per unit and role.
+  Eval runs and telemetry measure the overhead; nothing promises a saving.
 - **License:** MIT, no attribution section. Clean room: no text from the
   adelphi-adlc-plugin repo.
 
 ### Team
 
-- **Roles, six:** four per unit and two that work across them (the
-  validator takes the bug's unit; the architect takes none, so `pack`,
-  `brief`, and `submit` omit the unit for it). Developer (implements one
+- **Roles, seven:** four per unit and three that work across them (the
+  validator takes the bug's unit; the architect and the reviewer take none,
+  so `pack`, `brief`, and `submit` omit the unit for them). Reviewer
+  (reviews one change across every unit it touched: the maintainer's review
+  of each unit's diff, its test command run, its card, scenarios, and docs
+  kept true, never edits source), developer (implements one
   task of the maintainer's plan, writes only the files in its lane, never
   stamps), maintainer (explains, plans, splits a plan into developer tasks,
   reviews the diff for cleanliness and surgical scope, keeps the card
@@ -76,6 +84,13 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   unit's card), validator (judges a bug from its reproduction, severity from
   evidence only), architect (plans changes that cross units, records flows
   and decisions, proposes unit boundaries).
+- **Two flows:** the per-change flow is the reviewer: plain `next` folds
+  every stamped unit due for a maintainer, tester, or documenter job into
+  one reviewer job. The per-role flow is for adoption (`init --draft`, then
+  `next --roles` until it lists no jobs), for `next --roles` on request or
+  before a release, and for plans (maintainer explain, developer tasks,
+  architect). A unit's first review is always its maintainer's. A unit
+  stamped through either flow is fresh for both.
 - **Team member, physically:** the same in every harness: a fresh-context
   child that reads a brief by path and runs shell. Where the harness has a
   file format for a reusable role, `render` writes one file per role from
@@ -113,15 +128,18 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   developers' briefs, their combined diff becomes the maintainer's one
   review, and the main agent only dispatches. A developer is a fresh child
   per task, not a standing process; what makes it the unit's own is its
-  pack. The main agent may make a small edit itself; the review is the same.
+  pack. A change with no maintainer plan the main agent makes itself; the
+  review is the same.
 - **Lanes, checked:** a developer's answer does not list its files; at its
   `submit` the tool diffs the brief's snapshot against the tree and reports
   any changed file the unit owns that is in no current task's lane, as
   `out of lane` in the summary. It is a report, not a rejection: the write
   has happened, and the maintainer's review sees it as untraced.
-- **Fix loop:** a review's findings are the next task. An answer file stays
+- **Fix loop:** a review's findings are the next task. A reviewer's submit
+  prints each finding's file, line, and `cut` text, so the main agent fixes
+  them itself and runs `next` again. An answer file stays
   writable after it is validated, so the tool does not read it again: at
-  the maintainer's `submit` it writes the accepted task list to its own
+  the maintainer's or reviewer's `submit` it writes the accepted task list to its own
   file, `.stewards/briefs/<unit>-tasks.json` (an explain answer's `tasks`,
   or a review's `findings` as one task whose lane is the files the findings
   name; an approval removes it), and `brief <unit> --role developer`
@@ -131,21 +149,25 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   inside its lane; the tester writes scenario tests for the contract and
   may edit any test under the test roots. They never overlap: developers
   run in the changing step, the tester in the `next` round after it.
-- **Job files:** one open job per (unit, role), or per task for developers.
-  The brief is `.stewards/briefs/<unit>-<role>.md` (`architect.md` for the
-  architect, `<unit>-developer-<n>.md` per task),
+- **Job files:** one open job per (unit, role), or per task for developers,
+  and one review per repo. The brief is `.stewards/briefs/<unit>-<role>.md`
+  (`architect.md` for the architect, `review.md` for the reviewer,
+  `<unit>-developer-<n>.md` per task),
   the answer `<same>.answer.json`; a new job overwrites both, so nothing
   accumulates. The brief's first line is a tool-owned header recording the
   mode, the snapshot it was packed from, the pack's bytes and anchor count,
-  and the bug title for a validator job; `submit` reads it. A successful
+  the bug title for a validator job, and the units a reviewer job covers;
+  `submit` reads it. A successful
   `submit` removes the answer with the brief when `--file` is that
   `.answer.json` path; a failed one leaves both for a retry.
-- **Stamp:** only a maintainer review `submit` with `verdict: approve`
-  stamps, and it stamps the brief's snapshot, not the tree at submit time,
+- **Stamp:** only an approval stamps: a maintainer review `submit` with
+  `verdict: approve`, or a reviewer's unit with `verdict: approve`. It
+  stamps the brief's snapshot, not the tree at submit time,
   so anything written since (a parallel tester's tests, an applied finding)
   is still stale and gets its own review. `approve` means no findings and
-  `changes` means at least one; `submit` rejects either verdict otherwise. Explain jobs, `changes`
-  verdicts, and the other roles never stamp. `stamp <unit>` is the human
+  `changes` means at least one; `submit` rejects either verdict otherwise.
+  A reviewer cannot approve a unit whose test command it reports failing.
+  Explain jobs, `changes` verdicts, and the other roles never stamp. `stamp <unit>` is the human
   override.
 - **Role marks:** the tester's and documenter's submits each record the
   snapshot they finished at, beside the stamp. Their jobs are due by what
@@ -154,13 +176,17 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   new tests do not call the tester back. With no mark, the stamp is used;
   when a new stamp replaces it, a role with no mark takes the old stamp as
   its mark, so a pending tester or documenter job survives the maintainer's
-  approval.
-- **Triggers:** before changing, `route` the files and brief the owning
-  maintainer to explain and plan; two or more units, or no owner, brief the
-  architect first. To change, `brief <unit> --role developer` writes one
+  approval. A reviewer's approval sets both marks to the stamp, since the
+  reviewer answered for all three roles.
+- **Triggers:** before changing, `route` the files; a change the main agent
+  cannot plan from the unit pages goes to the owning maintainer to explain
+  and plan, or, for two or more units or no owner, to the architect. To change, `brief <unit> --role developer` writes one
   brief per task of the maintainer's plan (or the unit's step of an open
-  architect plan) and the main agent dispatches them. Before reporting done, `next` finds the stale units and
-  writes the jobs: maintainer review for every stale unit; tester when a
+  architect plan) and the main agent dispatches them; a change with no plan
+  the main agent makes itself. Before reporting done, `next` finds the
+  units due and writes one review brief covering every stamped one, plus a
+  maintainer first review for each never-stamped one; `next --roles` writes
+  the per-role jobs instead: maintainer review for every stale unit; tester when a
   change since its mark touched an interface's lines or a file under
   `test_roots`; documenter when a change since its mark touched an
   interface's lines (a change only in a private helper an interface calls
@@ -168,7 +194,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   languages the line rule knows, any change to the interface's file
   counts); architect when
   two or more units changed since their stamps and no plan covers them;
-  validator for a bug with no severity. Done means `next` lists no jobs.
+  validator for a bug with no severity. Done means plain `next` lists no
+  jobs.
   `check` covers review only (stamps, anchors, scenario ids): it is what
   the hook and CI run.
 - **Modes:** `next` writes review briefs; `brief` writes explain briefs,
@@ -191,7 +218,7 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   card. Interface entries with ids live in the card; scenarios reference them.
 - **Writing knowledge:** every delegated job ends in a typed `submit` the
   tool validates and writes; `next` puts every stale unit back in front of
-  its maintainer. Agents never hand-edit cards.
+  the reviewer (its maintainer with `--roles`). Agents never hand-edit cards.
 - **Staleness:** `[reviewed]` records the stamped snapshot tree, the unit's
   fingerprint in it (sha256 over the blobs of the files it owns), and the
   commit for display. `check` fails when a unit's current fingerprint
@@ -265,7 +292,7 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   remote host picks `gh` or `glab`.
 - **Telemetry:** `.stewards/telemetry/<yyyy-mm>.jsonl`, gitignored, one line
   per submit: unit, role, task, pack bytes and anchor count, pulled anchors,
-  harness, timestamp. Token counts come from eval transcripts, never from
+  harness, timestamp, and for a reviewer the number of units it covered. Token counts come from eval transcripts, never from
   what a subagent says about itself.
 - **Evals:** `stewards eval` drives Claude Code, Codex, and Pi over a
   purpose-built fixture, three arms, graders for all five goals; on demand
@@ -307,7 +334,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **stamp**: recording that a unit was reviewed at a snapshot.
 - **fingerprint**: sha256 over the blobs of the files a unit owns in a
   snapshot; **stale**: the current fingerprint differs from the stamped one.
-- **job**: one (unit, role) task `next` decides is due.
+- **job**: one task `next` decides is due: one review covering every unit a
+  change touched, or with `--roles` one per (unit, role).
 - **plan**: an architect's ordered steps across units, tracked by `next`.
 - **ritual**: entering → before change → before done.
 - **arm**: an eval configuration (`bare`, `block-only`, `full`).
@@ -365,7 +393,7 @@ unit = "api"
 commit = "f0b4435"                       # informational
 fingerprint = "sha256:..."               # what check compares
 tree = "<snapshot tree sha>"             # the snapshot stamped; the review diff starts here
-tester = "<snapshot tree sha>"           # role marks: where the tester and documenter last finished
+tester = "<snapshot tree sha>"           # role marks: where the tester and documenter last finished; a reviewer's approval sets both to its stamp
 documenter = "<snapshot tree sha>"
 [[interface]]
 id = "create-item"
@@ -454,20 +482,20 @@ never routed, never reported as unowned, so no unit ever owns them.
 | Command | Does |
 |---|---|
 | `guide [--harness h] [--all] [--errors] [--glossary]` | prints the ritual, roles, editing rules, delegation text for the detected harness, error codes, glossary |
-| `init [--draft] [--hooks] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts and writes the AGENTS.md block; `--draft` briefs the naming and card drafting; `--hooks` installs the pre-push hook; `--ci` writes the CI template |
+| `init [--draft] [--hooks] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts and writes the AGENTS.md block; `--draft` briefs the naming and card drafting and says to finish with `next --roles`; `--hooks` installs the pre-push hook; `--ci` writes the CI template |
 | `status [--telemetry]` | units, freshness, coverage, gaps, across the workspace; uninitialized repos |
 | `route <path>...` | owning unit per path, `null` when none; no LLM: an unowned path goes to the architect |
-| `pack [unit] --role <r> [--diff] [--task t]` | the context pack; no unit for the architect |
-| `brief [unit] --role <r> [--task t] [--stdout]` | writes an explain brief, prints its path and size |
-| `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update; an approving maintainer review stamps |
+| `pack [unit] --role <r> [--diff] [--task t]` | the context pack; no unit for the architect or the reviewer (the reviewer's is every due unit's section and the next-round names) |
+| `brief [unit] --role <r> [--task t] [--stdout]` | writes an explain brief (the review brief for the reviewer, a `usage` error when no stamped unit is due), prints its path and size |
+| `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update; an approving maintainer review, or a reviewer's approved unit, stamps |
 | `stamp <unit>` | records `[reviewed]` at the current snapshot; the human override |
-| `next [--task t] [--no-brief] [--no-run] [--pr n]` | finds the stale units, runs `check` and plan step checks, writes the review briefs, prints the jobs |
+| `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check` and plan step checks, writes the review brief (with `--roles`, the per-role briefs), prints the jobs |
 | `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files |
 | `validate [--report <f>] [--export]` | `--report` records a bug on its unit's card, runs the repro through the allowlist, writes the validator brief; `--export` files an issue for every judged bug that has none |
 | `review --pr <n>` | maintainer review briefs on a PR or MR diff; findings posted as review comments |
 | `debt` | `simplified:` comments attached to units |
 | `docs [unit]` | renders `docs/units/<unit>.md` and the index |
-| `render --harness <h> [--repo-level]` | writes the six native role agents |
+| `render --harness <h> [--repo-level]` | writes the seven native role agents |
 | `eval [--harness h] [--suite s] [--arm a] [--task n]... [--runs n] [--max-cost usd] [--no-developers] [--model id] [--thinking level] [--setup-dir d] [--keep-work]` | runs the eval suite; exit 0 when the suite passes, 1 otherwise |
 | `completions <shell>` | shell completions |
 
@@ -508,7 +536,15 @@ hunks are truncated.
 | validator | purpose, paths, interface, primary_paths, the bug, test_command, commands.test, repro_result |
 | architect | every unit's purpose, interface ids, paths, and owned-file count, all flows, all decisions; no anchors, no source |
 | developer | purpose, paths, interface, its task (change, lane, check), anchors (+source) in its lane, gaps, flows |
+| reviewer | per covered unit: the maintainer's `--diff` sections plus scenarios, test_command, and doc prose |
 
+The reviewer's pack is one section per unit it covers, under one budget of
+48,000 bytes for them all (a constant, not a `[budgets]` key). Units join
+in `units.toml` order while the total fits; from the first that does not
+fit on, units are listed as next round: named in the brief and in the job's
+reasons, not covered by this job, and still due, so the next `next` lists
+them. The first unit always joins; alone over the budget, it is shrunk as
+any pack is (below) and no other unit joins it.
 Source windows are 20 lines before and after the match (the definition span
 with tree-sitter). Budget is bytes of the `--human` rendering. Shrink order:
 halve every source window once; drop windows last-listed first; drop gaps;
@@ -534,7 +570,7 @@ files are `git diff --name-only <stamped tree> <snapshot>` restricted to the
 files it owns; with no stamp, or a stamped tree git has pruned, every owned
 file counts as changed and the pack has no hunks. There is no base ref:
 committed, staged, unstaged, and untracked changes are all just distance
-from the stamp. Jobs:
+from the stamp. The per-role jobs, which `next --roles` lists:
 
 - every stale unit → maintainer review
 - a change since the tester's mark touches an interface's lines, or a file
@@ -583,6 +619,17 @@ from the stamp. Jobs:
   allowlist (unless `--no-run`); a failure is reported against the flow
 - `check` failures are included; `next` exits 0 only with no jobs, a green
   `check`, and passing flow checks; otherwise 1
+
+Plain `next` lists, per repo, one `reviewer` job folding every stamped unit
+that has a maintainer (stale), tester, or documenter job above: its reasons
+are each of those jobs' reasons led by the unit's name (`api: stale`, `api:
+interface changed: src/api.rs::create_item`), its changed files and debt
+are theirs, and units past the review budget add one reason, `next round,
+over the review budget: <units>`. Its brief is `.stewards/briefs/review.md`
+and its command `stewards brief --role reviewer`. Each never-stamped unit
+keeps its maintainer job (a first review). Nothing else: no architect,
+tester, documenter, or validator job. A validator job for a bug the
+reviewer reports is a `--roles` job.
 
 ### Debt
 
@@ -689,7 +736,7 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `schema_too_new` | `repo.toml` schema > tool's | upgrade stewards (`cargo install stewards`) |
 | `invalid_toml` | parse failure, with file and line | fix the file at `<path>:<line>` |
 | `unknown_unit` | unit name not in `units.toml` | one of the listed units |
-| `unknown_role` | role not in the six | one of developer, maintainer, tester, documenter, validator, architect |
+| `unknown_role` | role not in the seven | one of developer, maintainer, tester, documenter, validator, architect, reviewer |
 | `answer_parse_failed` | `submit` can't parse the file | the field errors listed; rerun submit |
 | `answer_dead_anchor` | a patch names an anchor that doesn't resolve | correct the anchor or drop it |
 | `answer_too_long` | field over cap | shorten `<field>` to ≤ N chars |
@@ -728,17 +775,14 @@ This repo has a team of agents that already know it. Use them. This section is t
 
 Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
-- Before a change: run `stewards route <files>`; brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`) to explain the area and plan the change. Two or more units, or no owner: brief the architect first (`stewards brief --role architect --task "<the change>"`).
-- Changing: run `stewards brief <unit> --role developer` and dispatch every brief it writes, together when there are several. A small edit you may make yourself; it is reviewed like any other.
-- Before reporting done: after any edit, however small and whoever made it, run `stewards next`. Dispatch every brief it writes to a subagent that can run shell, wait for each summary, and repeat until `stewards next` lists no jobs. A review that returns findings: run `stewards brief <unit> --role developer` again to fix them. Done means no jobs; a change with jobs still listed is not done.
+- Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`), or the architect for two or more units (`stewards brief --role architect --task "<the change>"`).
+- Changing: make the edit yourself. When a maintainer split a plan into tasks, run `stewards brief <unit> --role developer` and dispatch every brief it writes.
+- Before reporting done: after any edit, however small, run `stewards next`. It writes one review brief for the whole change. Hand that brief's path to one subagent that can run shell and wait for its summary. Fix the findings it returns, then run `stewards next` again; repeat until it lists no jobs. Done means no jobs; a change with jobs still listed is not done.
+- On request or before a release: `stewards next --roles` lists the deeper per-unit jobs (maintainer, tester, documenter, validator, architect).
 
-Roles (one per unit; the tool packs their context, you only hand over the brief path)
-- maintainer: explains, plans, reviews the diff, keeps the unit's card current.
-- tester: owns the contract and its scenarios; writes and runs tests; never edits source.
-- documenter: keeps `docs/units/<unit>.md` true.
-- validator: judges a bug from its reproduction; severity from evidence only.
-- architect: plans changes that cross units; records flows and decisions.
-- developer: implements one task of the maintainer's plan inside its lane.
+Roles (the tool packs their context; you only hand over the brief path)
+- reviewer: reviews one change across the units it touched, runs their tests, keeps cards and docs true.
+- maintainer, tester, documenter, validator, architect, developer: the per-unit specialists behind `--roles`, plans and first reviews.
 
 Editing
 - Think first: state assumptions; ask when the request has two readings.
@@ -847,6 +891,24 @@ Architect:
 > change makes a boundary wrong. For an explanation: answer from the
 > summaries; name the unit to ask for detail.
 
+Reviewer:
+
+> You review one change across the units below. For each unit: read its
+> hunks against the request and check cleanliness and scope on the ladder:
+> approve only when every changed line traces to the request and nothing
+> fails a rung; for each problem give the file, line, the first rung it
+> fails, what to cut, and the smaller replacement; never flag validation at
+> trust boundaries, error handling that prevents data loss, security, or
+> accessibility. Run the unit's test command and report it in `check`; a
+> unit whose tests fail is not approved. Keep the card true. Update
+> scenarios only if the contract changed. Write the doc when the unit has
+> none; rewrite it only if what a section says is no longer true. Report a
+> defect you will not fix as a bug. Never edit source. Open more only by
+> anchor. One answer, one `submit`.
+
+The reviewer's brief adds one line after the role text naming the units
+under review, each to appear exactly once in `units` and no other.
+
 Answer shapes: maintainer review `verdict approve|changes`, `findings[]
 {file, line, rung, cut, replace_with}`, `card_patch {interface[], anchors[],
 gaps[]} | null`, `tester_needed` (true makes `submit` write the tester brief
@@ -856,8 +918,25 @@ and print its path); maintainer explain `explanation`, `tasks[] {title, change, 
 {scenario, pass, output}`, `bugs[] {title, repro, evidence, interface?}`,
 `tests_written[]`; documenter `doc {overview, how_it_works, how_to_change}`;
 validator `real, severity, reason, evidence[]`; architect `plan | null,
-flows[], decisions[], unit_proposals[], explanation`. All carry
-`pulled_anchors[]` and `notes`.
+flows[], decisions[], unit_proposals[], explanation`; reviewer `units[]
+{unit, verdict approve|changes, findings[], card_patch | null, check
+{command, pass, output}, scenario_patch[] | null, bugs[] | null, doc |
+null}`. All carry `pulled_anchors[]` and `notes`.
+
+A reviewer's answer names every unit of its brief exactly once and no
+other, and each unit's fields pass the checks and caps the maintainer's,
+tester's, and documenter's do; a unit approved with a failing `check` is
+rejected. `submit` validates the whole answer first and writes nothing on
+any error. Then per unit, through the same code paths: the card patch;
+bugs as the tester's become bug gaps with no severity; the doc as the
+documenter's, with its page rendered; scenarios as the tester's, into the
+test card; on `approve` the stamp at the brief's snapshot with both role
+marks set there, and the unit's task list removed; on `changes` no stamp
+and the findings as the unit's fix task. The lost-update check covers every
+file it writes, and the brief is retired, as for any role. The summary
+names each unit's verdict, card changes, and whether it was stamped, and
+`findings[] {unit, file, line, cut}` (each `cut` capped at 300 characters)
+lists what to fix.
 
 Details the shapes leave open: enum values are lowercase snake case
 (`approve|changes`, `critical|medium|low`, `gap|future|bug`, the rungs as
@@ -1032,8 +1111,8 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `cli` manifest root on the fixture; the root `.gitignore` and `AGENTS.md`
   stay unowned, anything else unowned stops the eval; the summary says so
   in plain words), then an adoption session on the same model that runs
-  `stewards init --draft` and dispatches until `stewards next` lists no
-  jobs, recorded as a `setup` run. The runner then diffs the adopted state
+  `stewards init --draft` and dispatches until `stewards next --roles`
+  lists no jobs, recorded as a `setup` run. The runner then diffs the adopted state
   against the `fixture: initial` commit: a changed, deleted, or added file
   outside `.stewards/`, `docs/units/`, `AGENTS.md`, and `.gitignore` stops
   the eval with `eval_setup_incomplete` naming the files, except a newly
@@ -1049,9 +1128,8 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `git clean -fdX` after the copy. `--setup-dir` (fixture suites only, else `usage`) reuses an adopted copy; it
   must be a git repository with an empty `git status --porcelain` and a
   clean `next`, and gets the same diff check. `--no-developers` is `full`
-  with the block's "Changing:" line replaced by `- Changing: make the edits
-  yourself.` and the developer fix sentence by `fix them yourself.`,
-  labelled `full-no-developers`. A task with a `setup` runs in a new
+  with the block's "Changing:" line cut to its first sentence, `- Changing:
+  make the edit yourself.`, labelled `full-no-developers`. A task with a `setup` runs in a new
   session in the directory its setup task left: each run of fixture task 6
   first runs task 5 there as a `setup` run. A fixture session has 30
   minutes, then Pi's process group is killed
@@ -1314,7 +1392,7 @@ the JSON error; anything else is `internal`.
 
 ```rust
 // model.rs: the schemas as serde types, plus
-pub enum Role { Developer, Maintainer, Tester, Documenter, Validator, Architect }  // FromStr, as_str
+pub enum Role { Developer, Maintainer, Tester, Documenter, Validator, Architect, Reviewer }  // FromStr, as_str
 impl Anchor { pub fn parse(s: &str) -> Result<Anchor> }
 pub fn load_repo(root: &Path) -> Result<Loaded>     // checks .git and .stewards for the root it is given
 
@@ -1378,7 +1456,8 @@ impl Pack { pub fn render(&self) -> String; pub fn fit(&mut self, budget: usize)
 // next.rs
 pub struct Job { unit, role, task, snapshot, reasons, changed, brief_path, command, debt_added }
 pub struct NextReport { jobs, architect, flow_checks, check }
-pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport>
+pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool, roles: bool) -> Result<NextReport>
+pub fn review_due(repo: &Repo, task: Option<&str>) -> Result<(String, String, Vec<String>)>  // snapshot, task, units
 
 // debt.rs
 pub fn is_debt_line(line: &str) -> bool
@@ -1445,41 +1524,30 @@ Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
 ```
 > stewards status
 { units: [api, client, cli], stale: [], warnings: [] }
+> cat docs/units/api.md                                                   # how api works, before its source
 > stewards route api/items.py
 { unit: "api" }
-> stewards brief api --role maintainer --task "add a count endpoint"
-{ path: ".stewards/briefs/api-maintainer.md", bytes: 6120 }
-[Agent] read .stewards/briefs/api-maintainer.md and do what it says
-  └ subagent: reads brief, opens api/items.py::list_items, writes answer,
-    runs `stewards submit api --role maintainer --file ...`
-    → "api maintainer: explained; card unchanged" and the plan, ≤ 2,000 chars
-> stewards brief api --role developer
-{ jobs: [ { task: 1, brief_path: ".stewards/briefs/api-developer-1.md" } ] }
-[Agent] developer: edits api/items.py, api/store.py, api/tests/test_items.py
-    → "api developer 1: 3 files; check pass"
+[Agent] edits api/items.py, api/store.py, api/tests/test_items.py itself  # plannable from the unit page
 > stewards next
-{ jobs: [
-    { unit: api, role: maintainer, brief_path: ".stewards/briefs/api-maintainer.md" },
-    { unit: api, role: tester,     brief_path: ".stewards/briefs/api-tester.md" },
-    { unit: api, role: documenter, brief_path: ".stewards/briefs/api-documenter.md" } ],
+{ jobs: [ { unit: "", role: reviewer, brief_path: ".stewards/briefs/review.md",
+            reasons: ["api: stale", "api: interface changed: api/items.py::list_items"] } ],
   architect: false, check: { failures: [api stale], warnings: [] } }
-[Agent ×3] each reads its brief, works, submits
-  → maintainer: "changes; 1 finding (rung: one line, api/store.py:41); card_patch: +interface count-items"
-  → tester: "scenario count-ok added, 4/4 pass; unit test_command pass"   # marks its snapshot
-  → documenter: "doc updated"                                             # marks its snapshot
-> stewards brief api --role developer                                     # the finding is the task; lane: api/store.py
-[Agent] developer: "api developer 1: 1 file; check pass"
+[Agent] read .stewards/briefs/review.md and do what it says
+  └ subagent: reads the hunks, runs `python -m unittest` in api, writes the answer,
+    runs `stewards submit --role reviewer --file ...`
+    → "reviewer: api changes (1 finding; card: +interface count-items; 1 scenario upserted; not stamped)"
+      "- api api/store.py:41: cut the hand-rolled loop"
+[Agent] fixes api/store.py:41 itself
 > stewards next
-{ jobs: [ { unit: api, role: maintainer, ... } ], check: { failures: [api stale] } }   # api/store.py touches no interface's lines and no test file: no tester, no documenter
-[Agent] maintainer: "approve; stamped 8b1e044"
+{ jobs: [ { unit: "", role: reviewer, reasons: ["api: stale"] } ], ... }
+[Agent] reviewer: "reviewer: api approve (card unchanged; stamped 8b1e044)"   # sets the tester and documenter marks too
 > stewards next
 { jobs: [], check: { failures: [], warnings: [] } }   exit 0
 ```
 
-The main agent never reads a brief, a card, or source; every brief path is one line;
-the finding goes back to a developer, not to the main agent; the second
-round is the maintainer alone because the fix touched no interface's
-lines and no test file; done is a `next` with no jobs.
+The main agent never reads a brief or a card; every brief path is one line;
+it makes the change and the fix itself, and one subagent per round reviews
+every unit the change touched; done is a `next` with no jobs.
 
 ## Handoff (for a new session)
 
@@ -1488,7 +1556,8 @@ Read this section, then the Build order, then start.
 **State (2026-11-12).** Stages 1 and 2 are built. `main` has stage 1.
 `feat/stage-2-roles` adds the harness table and `guide`, user config and
 memory, `docs`, `init` and `init --draft`, the BAML schemas with `llm.rs`,
-`brief`, `submit` for all six roles, the developer loop, and telemetry:
+`brief`, `submit` for all six roles (the reviewer, a seventh, came after
+the thin eval), the developer loop, and telemetry:
 about 500 tests. Stewards is adopted on this repository: nine units, their
 cards and test cards, `docs/units/`, and the `AGENTS.md` block are
 committed, written through the tool by role subagents handed only a brief
@@ -1496,9 +1565,40 @@ path. `feat/stage-2b-proof` holds the eval fixture. CI runs on every push
 to a stage branch. Repo `wromansky/stewards` (public since 2026-11-12),
 auto-delete of merged branches on.
 
-**Next action.** Stage 2b: the eval runner and Pi driver, then the thin
-eval and its go or no-go before any stage 3 work. The task list in the
-build session is the plan; Build cycle says how waves run.
+**Next action.** Stage 2b's runner, Pi driver, and thin eval are built and
+ran (below); the per-change ritual is now one review job. A separate task
+changes the eval graders to match. The task list in the build session is
+the plan; Build cycle says how waves run.
+
+**What the thin eval showed (2026-11-12).** Four passes, one run per arm
+per task, Pi on `anthropic/claude-sonnet-5-5` at medium thinking: three on
+the fixture (tasks 1, 3, 4, 6) and one on this repository's `self` suite
+(tasks 1 to 4). `full`/`bare` ratios of median main-session tokens (equal
+to total tokens: no `full` task session started a subagent), then of cost:
+
+| pass | task 1 | task 3 | task 4 | task 6 | cost, tasks 1/3/4/6 |
+|---|---|---|---|---|---|
+| fixture 1 | 1.14 | 1.36 | 1.17 | 1.39 | 1.02, 1.23, 1.13, 0.89 |
+| fixture 2 | 1.14 | 1.87 | 1.23 | 1.60 | 1.14, 1.52, 1.24, 1.23 |
+| fixture 3 | 1.25 | 1.32 | 1.34 | 1.56 | 1.25, 1.54, 1.40, 1.16 |
+
+| pass | task 1 | task 2 | task 3 | task 4 | cost, tasks 1/2/3/4 |
+|---|---|---|---|---|---|
+| self 1 | 1.04 | 1.04 | 1.50 | 1.04 | 0.82, 1.19, 1.26, 0.92 |
+
+- No pass saved tokens on any task: `full` ran 4% to 87% over `bare`.
+- An agent following the block ran the cheap steps (`status`, `route`,
+  `next`) and then did not dispatch the review jobs, because a small change
+  listed 7 to 13 of them (maintainer, tester, and documenter per unit, plus
+  the architect). On the change tasks no `full` run showed more than 3 of
+  the 6 ritual steps.
+- Asked directly, as in adoption, the same roles worked and found real
+  bugs: after fixture pass 1's adoption the cards held four of the five
+  seeded bugs as gaps.
+- Decision (the user's): the per-change ritual is one review job (the
+  reviewer); the per-role jobs stay for adoption and on request (`next
+  --roles`); the token-saving goal is dropped in favour of reviewed changes
+  and a repository memory at a small, measured overhead (Goals).
 
 **What dogfooding stage 2 showed (2026-11-12).** About eighty role jobs
 ran on this repository.

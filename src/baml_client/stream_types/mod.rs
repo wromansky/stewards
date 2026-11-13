@@ -55,6 +55,8 @@ pub enum StreamTypes {
 
     PlanStep(PlanStep),
 
+    ReviewAnswer(ReviewAnswer),
+
     Scenario(Scenario),
 
     ScenarioResult(ScenarioResult),
@@ -64,6 +66,8 @@ pub enum StreamTypes {
     TesterAnswer(TesterAnswer),
 
     UnitProposal(UnitProposal),
+
+    UnitReview(UnitReview),
 
     ValidatorAnswer(ValidatorAnswer),
 }
@@ -109,6 +113,8 @@ impl baml::KnownTypes for StreamTypes {
 
             StreamTypes::PlanStep(_) => "PlanStep",
 
+            StreamTypes::ReviewAnswer(_) => "ReviewAnswer",
+
             StreamTypes::Scenario(_) => "Scenario",
 
             StreamTypes::ScenarioResult(_) => "ScenarioResult",
@@ -118,6 +124,8 @@ impl baml::KnownTypes for StreamTypes {
             StreamTypes::TesterAnswer(_) => "TesterAnswer",
 
             StreamTypes::UnitProposal(_) => "UnitProposal",
+
+            StreamTypes::UnitReview(_) => "UnitReview",
 
             StreamTypes::ValidatorAnswer(_) => "ValidatorAnswer",
         }

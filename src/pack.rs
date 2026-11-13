@@ -23,6 +23,8 @@ const HUNK_LINES: usize = 40;
 const HALVED: &str = "source windows halved";
 /// Owned files rendered in a first review's list; the JSON carries them all.
 const OWNED_SHOWN: usize = 200;
+/// Bytes of the whole review pack, every unit's section together.
+pub const REVIEW_BUDGET: usize = 48_000;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Pack {
@@ -190,6 +192,7 @@ fn assemble(
         Role::Documenter => b.documenter,
         Role::Validator => b.validator,
         Role::Architect => b.architect,
+        Role::Reviewer => REVIEW_BUDGET,
     };
     let mut exclude = GlobSetBuilder::new();
     for g in &loaded.repo.pack.exclude {
@@ -299,10 +302,16 @@ fn assemble(
                     .collect(),
             )
         }
-        Role::Maintainer => {
+        Role::Maintainer | Role::Reviewer => {
             p.purpose = Some(def.purpose.clone());
             p.gaps = Some(card.map_or(vec![], |c| c.gaps.clone()));
             p.flows = Some(flows);
+            // the reviewer also sees what the tester and documenter would
+            if role == Role::Reviewer {
+                p.scenarios = Some(test.map_or(vec![], |t| t.scenarios.clone()));
+                p.test_command = test_command;
+                p.doc = Some(card.and_then(|c| c.doc.clone()).unwrap_or_default());
+            }
             Some(card.map_or(vec![], |c| c.anchors.clone()))
         }
         Role::Tester => {
@@ -360,7 +369,7 @@ fn assemble(
         .and_then(|c| c.reviewed.as_ref())
         .filter(|r| git::has_object(root, &r.tree));
     if diff
-        && matches!(role, Role::Maintainer | Role::Tester)
+        && matches!(role, Role::Maintainer | Role::Tester | Role::Reviewer)
         && let Some(reviewed) = stamped
     {
         let tree = reviewed.tree.as_str();
@@ -387,7 +396,7 @@ fn assemble(
         }
         p.hunks = Some(hunks);
         p.changed_files = Some(owned);
-        if role == Role::Maintainer {
+        if matches!(role, Role::Maintainer | Role::Reviewer) {
             // Each other unit measured from its own stamp; fresh units contribute nothing.
             let mut other = Vec::new();
             for u in loaded.units.iter().filter(|u| u.name != name) {
@@ -400,7 +409,7 @@ fn assemble(
             other.sort();
             p.other_changed_files = Some(other);
         }
-    } else if diff && role == Role::Maintainer {
+    } else if diff && matches!(role, Role::Maintainer | Role::Reviewer) {
         // A first review: every file the unit owns, as `next` lists for a never-stamped unit.
         let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
         let entries = git::ls_tree(root, snapshot)?;
@@ -418,8 +427,70 @@ fn assemble(
                 .collect(),
         );
     }
-    p.fit(budget);
+    // `review` fits the review pack's units together
+    if role == Role::Reviewer {
+        p.bytes = p.render().len();
+    } else {
+        p.fit(budget);
+    }
     Ok(p)
+}
+
+/// The review brief's pack: the reviewer's section of each unit of `due` (in units.toml order),
+/// added while the total fits `REVIEW_BUDGET`. The first unit is always in; alone over the budget,
+/// it is shrunk as `fit` shrinks any pack and no other unit joins it. From the first unit that
+/// does not fit on, the units are `next_round`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewPack {
+    pub budget: usize,
+    pub bytes: usize,
+    pub units: Vec<Pack>,
+    pub next_round: Vec<String>,
+}
+
+pub fn review(repo: &Repo, due: &[String], task: &str, snapshot: &str) -> Result<ReviewPack> {
+    let mut r = ReviewPack {
+        budget: REVIEW_BUDGET,
+        bytes: 0,
+        units: vec![],
+        next_round: vec![],
+    };
+    let mut full = false;
+    for unit in due {
+        if !full {
+            let mut p = assemble(repo, Some(unit), Role::Reviewer, task, true, snapshot, None)?;
+            if r.units.is_empty() || r.bytes + p.bytes <= REVIEW_BUDGET {
+                full = p.bytes > REVIEW_BUDGET;
+                p.fit(REVIEW_BUDGET);
+                r.bytes += p.bytes;
+                r.units.push(p);
+                continue;
+            }
+            full = true;
+        }
+        r.next_round.push(unit.clone());
+    }
+    r.bytes = r.render().len();
+    Ok(r)
+}
+
+impl ReviewPack {
+    pub fn render(&self) -> String {
+        let mut out: Vec<String> = self.units.iter().map(Pack::render).collect();
+        if !self.next_round.is_empty() {
+            out.push(format!(
+                "# Next round\n\nDue, but over this pack's budget; not in this review: {}\n",
+                one_line(&self.next_round.join(", "))
+            ));
+        }
+        out.join("\n")
+    }
+}
+
+impl Human for ReviewPack {
+    fn render(&self) -> String {
+        ReviewPack::render(self)
+    }
 }
 
 /// The window around the match at file line `line`, cut to half its reach on each side.
@@ -754,6 +825,17 @@ pub fn run(
         Some(t) => t.to_string(),
         None => git::task_text(&repo.root)?,
     };
+    if role == Role::Reviewer {
+        if let Some(u) = unit {
+            bail!(usage(
+                format!("the reviewer's pack takes no unit, got `{u}`"),
+                "stewards pack --role reviewer",
+            ));
+        }
+        let (snapshot, task, due) = crate::next::review_due(repo, Some(&task))?;
+        emit(&review(repo, &due, &task, &snapshot)?, g.human);
+        return Ok(ExitCode::SUCCESS);
+    }
     let snapshot = git::snapshot(&repo.root)?;
     emit(&pack(repo, unit, role, &task, diff, &snapshot)?, g.human);
     Ok(ExitCode::SUCCESS)

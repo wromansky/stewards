@@ -269,6 +269,20 @@ impl ::std::convert::AsRef<PlanStep> for PlanStep {
 
 #[derive(Debug, Clone, Default, BamlEncode, BamlDecode, Serialize, Deserialize)]
 #[serde(crate = "::baml::__internal::serde")]
+pub struct ReviewAnswer {
+    pub units: Vec<UnitReview>,
+    pub pulled_anchors: Vec<String>,
+    pub notes: String,
+}
+
+impl ::std::convert::AsRef<ReviewAnswer> for ReviewAnswer {
+    fn as_ref(&self) -> &ReviewAnswer {
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default, BamlEncode, BamlDecode, Serialize, Deserialize)]
+#[serde(crate = "::baml::__internal::serde")]
 pub struct Scenario {
     pub id: String,
     pub interface: String,
@@ -340,6 +354,25 @@ pub struct UnitProposal {
 
 impl ::std::convert::AsRef<UnitProposal> for UnitProposal {
     fn as_ref(&self) -> &UnitProposal {
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default, BamlEncode, BamlDecode, Serialize, Deserialize)]
+#[serde(crate = "::baml::__internal::serde")]
+pub struct UnitReview {
+    pub unit: String,
+    pub verdict: Verdict,
+    pub findings: Vec<Finding>,
+    pub card_patch: Option<CardPatch>,
+    pub check: CheckRun,
+    pub scenario_patch: Option<Vec<Scenario>>,
+    pub bugs: Option<Vec<Bug>>,
+    pub doc: Option<Doc>,
+}
+
+impl ::std::convert::AsRef<UnitReview> for UnitReview {
+    fn as_ref(&self) -> &UnitReview {
         self
     }
 }

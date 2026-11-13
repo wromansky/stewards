@@ -1,0 +1,128 @@
+Rung
+----
+- not_needed
+- already_in_repo
+- stdlib
+- platform
+- installed_dependency
+- one_line
+- untraced
+- no_check
+
+Answer in JSON using this schema:
+{
+  // every unit under review exactly once, no other; max 200 items
+  units: [
+    {
+      // one of the units under review; max 120 chars
+      unit: string,
+      verdict: 'approve' or 'changes',
+      // max 200 items; all cut and replace_with together max 20000 chars
+      findings: [
+        {
+          // max 300 chars
+          file: string,
+          line: int,
+          rung: Rung,
+          // max 2000 chars
+          cut: string,
+          // max 2000 chars
+          replace_with: string,
+        }
+      ],
+      card_patch: {
+        // entries to add or update, by id; the rest of the card is kept; max 200 items
+        interface: [
+          {
+            // max 120 chars
+            id: string,
+            // path::Name, the bare identifier with no keyword; max 300 chars
+            anchor: string,
+            // max 300 chars
+            contract: string,
+          }
+        ] or null,
+        // entries to add, by path and name; the rest of the card is kept; max 200 items
+        anchors: [
+          {
+            // max 300 chars
+            path: string,
+            // the bare identifier with no keyword; max 300 chars
+            name: string,
+          }
+        ] or null,
+        // entries to add or update, by title; the rest of the card is kept; max 200 items
+        gaps: [
+          {
+            kind: 'gap' or 'future' or 'bug',
+            // max 120 chars
+            title: string,
+            // path::Name, the bare identifier with no keyword; max 300 chars
+            anchor: string or null,
+            // max 2000 chars
+            note: string,
+            // max 300 chars
+            repro: string or null,
+          }
+        ] or null,
+        // ids of interface entries to remove; max 200 items, each max 120 chars
+        remove_interface: string[] or null,
+        // path::name of anchors to remove; max 200 items, each max 300 chars
+        remove_anchors: string[] or null,
+        // titles of gaps to remove; max 200 items, each max 120 chars
+        remove_gaps: string[] or null,
+      } or null,
+      // the unit's test command as run, and the tail of its output; a failing check cannot approve
+      check: {
+        // max 300 chars
+        command: string,
+        pass: bool,
+        // max 2000 chars
+        output: string,
+      },
+      // only when the contract changed; upserts by id; max 200 items
+      scenario_patch: [
+        {
+          // max 120 chars
+          id: string,
+          // max 120 chars
+          interface: string,
+          // max 300 chars
+          given: string,
+          // max 300 chars
+          expect: string,
+          // max 120 chars
+          level: string,
+          // max 300 chars
+          command: string or null,
+        }
+      ] or null,
+      // defects found and not fixed here; max 200 items
+      bugs: [
+        {
+          // max 120 chars
+          title: string,
+          // max 300 chars
+          repro: string,
+          // max 2000 chars
+          evidence: string,
+          // max 120 chars
+          interface: string or null,
+        }
+      ] or null,
+      // all three sections as they should read; only when what one says is no longer true
+      doc: {
+        // max 2000 chars
+        overview: string,
+        // max 2000 chars
+        how_it_works: string,
+        // max 2000 chars
+        how_to_change: string,
+      } or null,
+    }
+  ],
+  // max 200 items, each max 300 chars
+  pulled_anchors: string[],
+  // max 2000 chars
+  notes: string,
+}

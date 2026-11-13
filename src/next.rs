@@ -142,7 +142,7 @@ fn place_brief(
     if briefs == Briefs::None {
         return Ok(());
     }
-    let rel = brief::rel_path(unit, job.role, None);
+    let rel = brief::rel_path(unit, job.role, None, &job.snapshot);
     job.waiting = briefs == Briefs::KeepWaiting
         && repo
             .read(&rel, text.len() as u64)
@@ -150,7 +150,7 @@ fn place_brief(
     let path = if job.waiting {
         repo.root.join(rel)
     } else {
-        brief::write_text(repo, unit, job.role, text)?
+        brief::write_text(repo, unit, job.role, None, &job.snapshot, text)?
     };
     job.handoff = Some(brief::handoff(&path)?);
     job.brief_path = Some(path);

@@ -124,3 +124,47 @@ pub fn run_in(dir: &Path, home: &Path, args: &[&str]) -> Output {
         .output()
         .unwrap()
 }
+
+/// The repo-relative job files of `stem` (`api-maintainer`, `review`, `api-developer-1`) in
+/// `dir`'s `.stewards/briefs/` ending in `suffix` (`.md`, `.answer.json`, `.result.json`), at
+/// any snapshot: `<stem>-<8 hex>.<suffix>`.
+pub fn job_files(dir: &Path, stem: &str, suffix: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir.join(".stewards/briefs")) else {
+        return vec![];
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| {
+            n.strip_prefix(stem)
+                .and_then(|r| r.strip_prefix('-'))
+                .and_then(|r| r.strip_suffix(suffix))
+                .is_some_and(|s| {
+                    s.len() == 8 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                })
+        })
+        .map(|n| format!(".stewards/briefs/{n}"))
+        .collect();
+    names.sort();
+    names
+}
+
+/// The one brief of the job `stem` on disk in `dir`, repo-relative.
+pub fn brief(dir: &Path, stem: &str) -> String {
+    let mut found = job_files(dir, stem, ".md");
+    assert_eq!(found.len(), 1, "one brief for {stem}: {found:?}");
+    found.remove(0)
+}
+
+/// The answer file the one brief of `stem` names, repo-relative; with no brief on disk, an
+/// answer file named otherwise, as a caller may.
+pub fn answer(dir: &Path, stem: &str) -> String {
+    match job_files(dir, stem, ".md").as_slice() {
+        [] => format!(".stewards/briefs/{stem}.answer.json"),
+        _ => brief(dir, stem).replace(".md", ".answer.json"),
+    }
+}
+
+/// The result file of the one brief of `stem`, repo-relative.
+pub fn result(dir: &Path, stem: &str) -> String {
+    brief(dir, stem).replace(".md", ".result.json")
+}

@@ -225,6 +225,92 @@ fn written_files_load_and_every_name_passes_the_name_rule() {
     assert_eq!(loaded.repo.commands.test.len(), 1);
 }
 
+/// Each unit's test command comes from its own directories, run from the repo root; a root with
+/// no toolchain sets no repo-wide command, so no unit inherits another's.
+#[test]
+fn each_unit_gets_its_own_test_command_and_the_repo_only_its_roots() {
+    let (_tmp, dir) = build(
+        &s(&[
+            "svc/Cargo.toml",
+            "svc/src/main.rs",
+            "py/pyproject.toml",
+            "py/items.py",
+            "web/package.json",
+            "web/index.js",
+            "blank/package.json",
+            "blank/index.js",
+            "tool/go.mod",
+            "tool/Makefile",
+            "tool/main.go",
+        ]),
+        &[],
+    );
+    write(
+        &dir,
+        "web/package.json",
+        r#"{"scripts": {"test": "node --test"}}"#,
+    );
+    let placeholder = r#"{"scripts": {"test": "echo \"Error: no test specified\" && exit 1"}}"#;
+    write(&dir, "blank/package.json", placeholder);
+    write(
+        &dir,
+        "tool/Makefile",
+        "build:\n\tgo build\n\ntest: build\n\tgo test ./...\n",
+    );
+    let v = init(&dir);
+    let tests: Vec<(String, Option<String>)> = v["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| {
+            let cmd = u["test_command"].as_str().map(String::from);
+            (u["name"].as_str().unwrap().into(), cmd)
+        })
+        .collect();
+    let want = |name: &str, cmd: Option<&str>| (name.to_string(), cmd.map(String::from));
+    assert_eq!(
+        tests,
+        [
+            want("blank", None),
+            want("py", Some("pytest py")),
+            want("svc", Some("cargo test --manifest-path svc/Cargo.toml")),
+            want("tool", Some("make -C tool test")),
+            want("web", Some("npm test --prefix web")),
+        ]
+    );
+    let loaded = load_repo(&dir).unwrap();
+    assert!(loaded.repo.commands.test.is_empty());
+    assert_eq!(
+        loaded.tests["svc"].test_command.as_deref(),
+        Some("cargo test --manifest-path svc/Cargo.toml")
+    );
+    assert!(!loaded.tests.contains_key("blank"));
+}
+
+/// The fixture's layout: a Python test file and no manifest at the root give the repo-wide
+/// command, which a unit of the same toolchain leaves to the repo.
+#[test]
+fn a_root_test_layout_sets_the_repo_wide_command() {
+    let (_tmp, dir) = build(&s(&["items.py", "test_items.py"]), &[]);
+    let v = init(&dir);
+    assert!(v["units"][0].get("test_command").is_none(), "{v}");
+    let loaded = load_repo(&dir).unwrap();
+    let cmds: Vec<String> = loaded
+        .repo
+        .commands
+        .test
+        .iter()
+        .map(|c| {
+            serde_json::to_value(c)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(cmds, ["python3 -m unittest"]);
+}
+
 #[test]
 fn gitignore_lines_are_appended_only_when_missing() {
     let (_tmp, dir) = build(&s(&["main.py"]), &[]);

@@ -7,13 +7,13 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::check::{escape_invisible, one_line};
-use crate::git;
 use crate::model::{Loaded, Role};
 use crate::next::{self, Briefs, NextReport};
 use crate::output::{Global, Human, emit, not_implemented};
 use crate::route::Router;
 use crate::submit::{ShownFinding, TASK_CHANGE_CAP, UnitVerdict};
 use crate::workspace::{Repo, here, safe_path};
+use crate::{brief, git};
 
 const TASK_HINT: &str = "pass `--task \"<what you changed and why>\"`: the reviewer checks that every changed line traces to the request";
 /// Where `review --task` keeps the request for the calls after it, until `review` is done.
@@ -253,22 +253,6 @@ impl Human for Review {
     }
 }
 
-/// The unit and role of the brief whose result file has stem `stem` (`brief::rel_path`'s names):
-/// `review`, `architect`, `<unit>-<role>`, or `<unit>-developer-<n>`.
-fn job_of(stem: &str) -> (Option<String>, Option<Role>) {
-    if stem == "review" {
-        return (None, Some(Role::Reviewer));
-    }
-    let stem = match stem.rsplit_once('-') {
-        Some((s, n)) if n.parse::<usize>().is_ok() => s,
-        _ => stem,
-    };
-    match stem.rsplit_once('-') {
-        Some((unit, role)) => (Some(unit.to_string()), role.parse().ok()),
-        None => (None, stem.parse().ok()),
-    }
-}
-
 /// Reads the result files in `repo`'s `.stewards/briefs/`, in name order, into `c`, at most
 /// `RESULTS_PER_CALL` per call. A file git tracks or that is not a regular file is reported as
 /// not a result and left in place; any other bad file is reported as such, never aborting.
@@ -289,8 +273,11 @@ fn collect<'a>(repo: &'a Repo, loaded: &Loaded, c: &mut Collected<'a>) -> Result
     let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
     for name in names {
         let rel = format!(".stewards/briefs/{name}");
-        let (unit, role) = job_of(name.trim_end_matches(".result.json"));
-        let unit = unit.filter(|u| loaded.units.iter().any(|d| &d.name == u));
+        let job = brief::job_of(&name);
+        let role = job.as_ref().map(|j| j.role);
+        let unit = job
+            .and_then(|j| j.unit)
+            .filter(|u| loaded.units.iter().any(|d| &d.name == u));
         let mut r = Reported::new(&name, role, unit);
         let regular = safe_path(&repo.root, &rel, false)
             .and_then(|p| Ok(std::fs::symlink_metadata(p)?))
@@ -440,25 +427,6 @@ pub fn run(g: &Global, task: Option<&str>, roles: bool, pr: Option<u64>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::brief;
-
-    #[test]
-    fn job_of_reads_every_brief_name() {
-        for (stem, unit, role) in [
-            ("review", None, Role::Reviewer),
-            ("architect", None, Role::Architect),
-            ("api-tester", Some("api"), Role::Tester),
-            ("my-api-maintainer", Some("my-api"), Role::Maintainer),
-            ("my-api-developer-2", Some("my-api"), Role::Developer),
-        ] {
-            assert_eq!(job_of(stem), (unit.map(String::from), Some(role)), "{stem}");
-            let rel = brief::rel_path(unit, role, (role == Role::Developer).then_some(2));
-            assert_eq!(
-                brief::result_rel(&rel),
-                format!(".stewards/briefs/{stem}.result.json")
-            );
-        }
-    }
 
     #[test]
     fn shown_flattens_escapes_and_caps_every_text() {

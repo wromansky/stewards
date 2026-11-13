@@ -11,6 +11,13 @@ units = "full-units.toml"
 unowned = [".gitignore", "AGENTS.md"]
 tests = ["api/test_*.py", "client/*.test.ts", "cli/tests/**"]
 
+# Each unit's own test command, run from the repo root as the fixture's tests are: `init` finds
+# only cli's (its Cargo manifest), and the root has no toolchain, so no repo-wide command.
+[source.test_commands]
+api = "python3 -m unittest discover -s api"
+client = "node --test client/"
+cli = "cargo test --manifest-path cli/Cargo.toml"
+
 [[task]]
 number = 1
 

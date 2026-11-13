@@ -1,5 +1,6 @@
 // A suite manifest, `evals/suites/<name>.toml`: what the runner copies for each arm and which
 // tasks it runs.
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -20,6 +21,19 @@ pub struct Suite {
     pub session_minutes: u64,
     #[serde(rename = "task")]
     pub tasks: Vec<SuiteTask>,
+    /// Probes of a `repo` suite: text each edit task would add, which must not be in the tree
+    /// yet, else that task is already done there.
+    #[serde(default, rename = "absent")]
+    pub absent: Vec<Absent>,
+}
+
+/// A literal `text` that must not occur in `file` (repo-relative) of the tree at setup.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Absent {
+    pub task: u32,
+    pub file: String,
+    pub text: String,
 }
 
 /// Where each arm's copy comes from.
@@ -37,11 +51,17 @@ pub enum Source {
         unowned: Vec<String>,
         /// Globs where adoption may add new files (a tester may add tests).
         tests: Vec<String>,
+        /// Each hand-set unit's test command, run from the copy's root, written to its test card
+        /// (`init` finds none for a unit with no manifest).
+        #[serde(default)]
+        test_commands: BTreeMap<String, String>,
     },
     /// The repository holding `evals/`, cloned at `commit`, already adopted: the `full` arm is
     /// that tree with the current AGENTS.md block, no adoption session. Every arm's history is
     /// one root commit.
     Repo {
+        /// `HEAD`, the commit that checkout is on when the eval starts (so the sessions work on
+        /// the source the binary was built from), or a literal commit for a rerun.
         commit: String,
         /// Run once per invocation in a clone at `commit`; its `target/` is copied into every
         /// run copy.
@@ -109,6 +129,14 @@ impl Suite {
                     valid.join(", ")
                 )))
             }
+        }
+    }
+
+    /// The hand-set units' test commands of a `fixture` suite.
+    pub fn test_commands(&self) -> BTreeMap<String, String> {
+        match &self.source {
+            Source::Fixture { test_commands, .. } => test_commands.clone(),
+            Source::Repo { .. } => BTreeMap::new(),
         }
     }
 

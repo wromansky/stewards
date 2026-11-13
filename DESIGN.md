@@ -10,7 +10,10 @@ Five, all primary, in the author's words:
 1. Same behavior across harnesses. The whole contract with a harness is
    that its agent can start a subagent and give it one sentence; stewards
    never starts a session itself and holds no harness's command line, so
-   it works the same in a harness it has never heard of.
+   it works the same in a harness it has never heard of. The block lives
+   in `AGENTS.md` only; a harness that reads another file is pointed at
+   `AGENTS.md` by the user, and the tool does not know which harness is
+   in use.
 2. Reviewed changes and a repository memory at a small, measured overhead:
    one review subagent per change, not a token saving.
 3. Maximum code cleanliness.
@@ -69,7 +72,15 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   A harness that reads instructions from its own workspace rather than the
   repo gets the same block there. `init` places the block at the top of
   `AGENTS.md`, because some harnesses truncate project docs or take only
-  the first matching file.
+  the first matching file. The block is written to `AGENTS.md` only, and no
+  other instruction file is written or named by the tool. Some harnesses do
+  not read `AGENTS.md` (checked 2026-11-13: one widely used harness version
+  reads only its own file, and a one-line import of `AGENTS.md` in that file
+  works). So `init` and `guide` say plainly that the block is in `AGENTS.md`
+  and that such a harness needs one line in its own instruction file
+  pointing at it (a line telling the agent to read `AGENTS.md`, or that
+  harness's import syntax); the user lists that file in `instruction_files`
+  of `repo.toml`, and `check` warns while it does not point at `AGENTS.md`.
 - **Overhead:** each agent gets the exact context its job needs, no more,
   no less, and a change costs one review job, not one per unit and role.
   Eval runs and telemetry measure the overhead; nothing promises a saving.
@@ -108,8 +119,10 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   directory name can end the span or add an instruction), and the agent
   passes that sentence unchanged as the whole task of a general-purpose
   subagent that can run shell and write files. The brief carries the role
-  text, so every harness, known or not, gets the same guidance; `guide`
-  adds for a known harness only the name of its subagent tool. A harness
+  text, so every harness, known or not, gets the same guidance, word for
+  word: `guide` names no harness's subagent tool (a name is wrong as soon as
+  a harness renames it; checked 2026-11-13, one harness's tool had two names
+  across versions). A harness
   with a file format for a reusable role (a **rendered** harness) could
   later get one file per role from `render`, which is not built; no
   guidance depends on it.
@@ -377,6 +390,7 @@ schema = 1
 name = "backend"
 test_roots = ["tests"]
 docs_path = "docs/units"
+instruction_files = []                   # other instruction files a harness reads, repo-relative
 [commands]
 test = ["pytest", "cargo test"]          # allowlist prefixes: repro, step checks, scenarios
 lint = ["ruff check"]
@@ -510,7 +524,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | Command | Does |
 |---|---|
 | `guide [--harness h] [--all] [--errors] [--glossary]` | prints the ritual, the handoff, roles, editing rules, adoption, delegation text for the detected or named harness (the generic paragraph for one not in the table), error codes, glossary |
-| `init [--draft] [--hooks] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts and writes the AGENTS.md block; `--draft` briefs the naming and card drafting, prints each brief's handoff, and says to start those subagents, then run `review --roles` until it exits 0; `--hooks` installs the pre-push hook; `--ci` writes the CI template |
+| `init [--draft] [--hooks] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts, writes the AGENTS.md block, and says (`note`) that a harness not reading `AGENTS.md` needs a line pointing at it; `--draft` briefs the naming and card drafting, prints each brief's handoff, and says to start those subagents, then run `review --roles` until it exits 0; `--hooks` installs the pre-push hook; `--ci` writes the CI template |
 | `status [--telemetry]` | units, freshness, coverage, gaps, across the workspace; uninitialized repos |
 | `route <path>...` | owning unit per path, `null` when none; no LLM: an unowned path goes to the architect |
 | `pack [unit] --role <r> [--diff] [--task t]` | the context pack; no unit for the architect or the reviewer (the reviewer's is every due unit's section and the next-round names) |
@@ -518,7 +532,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update and what it printed to `<job>.result.json`; an approving maintainer review, or a reviewer's approved unit, stamps |
 | `stamp <unit>` | records `[reviewed]` at the current snapshot; the human override |
 | `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check` and plan step checks, writes the review brief (with `--roles`, the per-role briefs), prints the jobs, each with its handoff |
-| `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files |
+| `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files, `instruction_files` entries that do not point at `AGENTS.md` |
 | `validate [--report <f>] [--export]` | `--report` records a bug on its unit's card, runs the repro through the allowlist, writes the validator brief; `--export` files an issue for every judged bug that has none |
 | `review [--task t] [--roles]` | reports, as what subagents reported (not verified), and removes the result files the last round's submits wrote, at most 20 per call, then lists what `next` (`next --roles`) lists for the task in force (`--task`, else the one the last `--task` stored), each job with its handoff, and one `then` line; never starts a session; exit 0 only when no job is listed, no finding is reported, and no result file is left |
 | `review --pr <n>` | maintainer review briefs on a PR or MR diff; findings posted as review comments |
@@ -598,6 +612,17 @@ Repo-relative forward-slash paths matched with `globset`
 (`literal_separator(true)`). Specificity: longest literal prefix, then fewest
 `*`/`**`; remaining tie → first unit in `units.toml`, and `check` warns on
 two units matching the same tracked file at equal specificity.
+
+### check
+
+Each `instruction_files` entry of `repo.toml` is a repo-relative path of
+plain names (no absolute path, `..`, or `.`), refused on load with
+`unsafe_path` otherwise. `check` adds a warning of kind
+`instructions_unlinked`, never a failure, for each listed file that is
+missing, is not a regular file or is a link (never followed), is over
+1 MiB, or does not contain the text `AGENTS.md`; its message names the
+file and says it should point at `AGENTS.md`. `next` and `review` carry it
+with the rest of the check's warnings.
 
 ### next
 
@@ -1098,16 +1123,17 @@ purpose, paths[]}`. A validation error names the field path, or
 roles, the editing rules, the hygiene rules, adoption (`stewards init`,
 correct `units.toml`, `stewards init --draft` and one subagent per handoff
 it prints, then `stewards review --roles` until it exits 0), and the
-delegation paragraph; `--harness <name>` names a harness instead of the
+delegation paragraph, and the sentence `init` also prints (the block is in
+`AGENTS.md`; a harness that does not read it needs one line in its own
+instruction file pointing at it, listed as `instruction_files`);
+`--harness <name>` names a harness instead of the
 one detected from env, `--all` prints every variant. Every harness, known
 or not (an unknown one is the normal case, not an error), gets the same
 generic paragraph: start a fresh-context, general-purpose subagent that
 can run shell and write files, give it the handoff stewards printed
 (``Read `<absolute brief path>` and follow it.``) unchanged as its whole
-task, and wait for its reply: what `submit` printed. A harness in the
-`harness.rs` table adds only one sentence naming its subagent tool, `In
-<harness> that is the `<tool>` tool.`, when it has one (the entries are
-in Facts).
+task, and wait for its reply: what `submit` printed. Nothing is added
+for a harness in the `harness.rs` table.
 
 ## Docs templates
 
@@ -1955,12 +1981,7 @@ a Hermes eval driver if briefed-harness performance needs measuring.
 
 `guide` prints the same generic delegation paragraph for every harness
 (see `guide` under Agent-facing contracts), in or out of this table, the
-latter the normal case rather than an error. A harness in the table adds
-only one sentence, `In <harness> that is the `<tool>` tool.`, with the
-tool `src/harness.rs` names: `Agent` (Claude Code), `Task` (Cursor,
-OpenCode), `runSubagent` (Copilot), `subagent` (Pi), `delegate_task`
-(Hermes), `spawn_subagent` (ZeroClaw), `spawn_agent` (Borg); none for
-Codex CLI and Gemini CLI, whose entries above are not a tool name. No
+latter the normal case rather than an error. No
 harness gets a template sentence of its own, extra arguments, or a step
 that depends on `render`. Facts for the agent's own judgment, not
 printed: Hermes children run in the background by default (wait for the

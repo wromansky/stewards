@@ -200,16 +200,12 @@ fn unsafe_path(message: String, at: &Path) -> anyhow::Error {
     .into()
 }
 
-/// `root/rel` once `rel` is made only of plain names and no existing component below `root`,
-/// the last included, is a symlink. With `create_dirs`, missing parents are made one level at a
-/// time, each checked to be a real directory. The one path check for reads and writes in a repo.
-pub(crate) fn safe_path(root: &Path, rel: &str, create_dirs: bool) -> anyhow::Result<PathBuf> {
-    let parts: Vec<&str> = rel.split('/').collect();
-    for part in &parts {
+/// `Ok` when every `/`-separated part of `rel` is a plain name: no `.`, `..`, empty part, or root.
+pub(crate) fn plain_names(rel: &str) -> anyhow::Result<()> {
+    for part in rel.split('/') {
         let mut c = Path::new(part).components();
         // split on '/' keeps `.` and empty parts that Path::components would drop
-        let plain =
-            matches!((c.next(), c.next()), (Some(Component::Normal(n)), None) if n == *part);
+        let plain = matches!((c.next(), c.next()), (Some(Component::Normal(n)), None) if n == part);
         if !plain {
             return Err(unsafe_path(
                 format!("`{rel}` has component `{part}`, which is not a plain name"),
@@ -217,6 +213,15 @@ pub(crate) fn safe_path(root: &Path, rel: &str, create_dirs: bool) -> anyhow::Re
             ));
         }
     }
+    Ok(())
+}
+
+/// `root/rel` once `rel` is made only of plain names and no existing component below `root`,
+/// the last included, is a symlink. With `create_dirs`, missing parents are made one level at a
+/// time, each checked to be a real directory. The one path check for reads and writes in a repo.
+pub(crate) fn safe_path(root: &Path, rel: &str, create_dirs: bool) -> anyhow::Result<PathBuf> {
+    plain_names(rel)?;
+    let parts: Vec<&str> = rel.split('/').collect();
     let mut full = root.to_path_buf();
     for (i, part) in parts.iter().enumerate() {
         full.push(part);

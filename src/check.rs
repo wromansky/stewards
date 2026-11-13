@@ -13,6 +13,9 @@ use crate::output::{Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, here};
 
+/// Most bytes read of a listed instruction file.
+const INSTRUCTION_CAP: u64 = 1 << 20;
+
 /// Files or interface ids named in one `unowned` or `uncovered_interface` finding.
 const LISTED: usize = 10;
 
@@ -296,6 +299,24 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
                         listed(&uncovered)
                     ),
                 ));
+            }
+        }
+
+        // A missing, linked, or oversize file reads as an error and warns like one without the text.
+        for file in &loaded.repo.instruction_files {
+            let points = repo
+                .read(file, INSTRUCTION_CAP)
+                .is_ok_and(|b| String::from_utf8_lossy(&b).contains("AGENTS.md"));
+            if !points {
+                report.warnings.push(Finding {
+                    kind: "instructions_unlinked",
+                    unit: None,
+                    path: Some(file.clone()),
+                    anchor: None,
+                    message: format!(
+                        "{file} is missing or does not mention AGENTS.md; it should point at AGENTS.md"
+                    ),
+                });
             }
         }
 

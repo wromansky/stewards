@@ -453,3 +453,76 @@ fn anchor_into_an_untracked_file_that_is_not_ignored_resolves() {
     fs::write(repo.path().join("notes.cfg"), "api_key = x\n").unwrap();
     assert!(dead_anchors_after_adding(repo.path(), "notes.cfg", "api_key").is_empty());
 }
+
+/// The `instructions_unlinked` warning paths after `files` are listed as `instruction_files`.
+fn unlinked(repo: &Path, files: &str) -> Vec<String> {
+    edit(
+        &repo.join(".stewards/repo.toml"),
+        "docs_path = \"docs/units\"\n",
+        &format!("docs_path = \"docs/units\"\ninstruction_files = {files}\n"),
+    );
+    let (code, v) = run(repo, &["check"]);
+    assert_eq!(
+        code, 1,
+        "unstamped units still fail; the warning never does"
+    );
+    v["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["kind"] == "instructions_unlinked")
+        .map(|w| {
+            let msg = w["message"].as_str().unwrap();
+            assert!(msg.contains("AGENTS.md"), "{msg}");
+            w["path"].as_str().unwrap().to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn a_listed_instruction_file_without_agents_md_warns() {
+    let repo = fixture("single");
+    fs::write(repo.path().join("OTHER.md"), "rules\n").unwrap();
+    assert_eq!(unlinked(repo.path(), "[\"OTHER.md\"]"), ["OTHER.md"]);
+}
+
+#[test]
+fn a_listed_instruction_file_that_mentions_agents_md_does_not_warn() {
+    let repo = fixture("single");
+    fs::write(repo.path().join("OTHER.md"), "@AGENTS.md\n").unwrap();
+    assert!(unlinked(repo.path(), "[\"OTHER.md\"]").is_empty());
+}
+
+#[test]
+fn a_missing_listed_instruction_file_warns() {
+    let repo = fixture("single");
+    assert_eq!(
+        unlinked(repo.path(), "[\"nope/OTHER.md\"]"),
+        ["nope/OTHER.md"]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_listed_instruction_file_is_not_followed() {
+    let repo = fixture("single");
+    let outside = tempfile::TempDir::new().unwrap();
+    fs::write(outside.path().join("t.md"), "read AGENTS.md\n").unwrap();
+    std::os::unix::fs::symlink(outside.path().join("t.md"), repo.path().join("OTHER.md")).unwrap();
+    assert_eq!(unlinked(repo.path(), "[\"OTHER.md\"]"), ["OTHER.md"]);
+}
+
+#[test]
+fn an_unsafe_instruction_file_path_is_rejected_on_load() {
+    for bad in ["/etc/passwd", "../x.md", "a/../x.md", "./x.md"] {
+        let repo = fixture("single");
+        edit(
+            &repo.path().join(".stewards/repo.toml"),
+            "docs_path = \"docs/units\"\n",
+            &format!("docs_path = \"docs/units\"\ninstruction_files = [\"{bad}\"]\n"),
+        );
+        let (code, v) = run(repo.path(), &["check"]);
+        assert_eq!(code, 2, "{bad}");
+        assert_eq!(v["error"]["code"], "unsafe_path", "{bad}");
+    }
+}

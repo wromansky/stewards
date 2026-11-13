@@ -37,6 +37,9 @@ Hygiene: branch off `main`; commit only when asked; lint touched files clean, no
 `stewards guide` prints the long form, including how to delegate in this harness. No `stewards` on PATH: install with `cargo install stewards` and follow the rules above meanwhile.
 <!-- stewards:end -->"##;
 
+/// Said by `init` and `guide`: the block is in `AGENTS.md` only, and stewards knows no harness.
+pub const AGENTS_ONLY: &str = "The stewards block is in `AGENTS.md`; a harness that does not read `AGENTS.md` needs one line in its own instruction file pointing at it (a line telling the agent to read AGENTS.md, or that harness's import syntax), and listing that file as `instruction_files` in `.stewards/repo.toml` makes `stewards check` warn when the line is missing.";
+
 /// The AGENTS.md block, markers included.
 pub fn block() -> &'static str {
     BLOCK
@@ -96,6 +99,7 @@ struct Guide {
     editing: &'static str,
     hygiene: &'static str,
     adoption: &'static str,
+    instructions: &'static str,
     delegation: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     all_delegations: Option<Vec<Delegation>>,
@@ -108,13 +112,14 @@ struct Guide {
 impl Human for Guide {
     fn render(&self) -> String {
         let mut out = format!(
-            "# stewards guide\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n## Adoption\n\n{}\n\n## Delegation ({})\n\n{}\n",
+            "# stewards guide\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n## Adoption\n\n{}\n\n{}\n\n## Delegation ({})\n\n{}\n",
             self.ritual,
             self.handoff,
             self.roles,
             self.editing,
             self.hygiene,
             self.adoption,
+            self.instructions,
             self.harness.unwrap_or("generic"),
             self.delegation
         );
@@ -159,13 +164,14 @@ pub fn run(
         editing: parts[4],
         hygiene: parts[5],
         adoption: ADOPTION,
-        delegation: harness::delegation(chosen),
+        instructions: AGENTS_ONLY,
+        delegation: harness::delegation().to_string(),
         all_delegations: all.then(|| {
             HARNESSES
                 .iter()
                 .map(|h| Delegation {
                     harness: h.name,
-                    text: harness::delegation(Some(h)),
+                    text: harness::delegation().to_string(),
                 })
                 .collect()
         }),

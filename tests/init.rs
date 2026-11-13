@@ -286,6 +286,17 @@ fn agents_md_gets_the_block() {
 }
 
 #[test]
+fn init_says_the_block_is_in_agents_md_only_in_json_and_human_output() {
+    let (_tmp, dir) = build(&s(&["main.py"]), &[]);
+    let v = init(&dir);
+    assert_eq!(v["note"], guide::AGENTS_ONLY);
+    assert!(guide::AGENTS_ONLY.contains("instruction_files"));
+    let (_tmp, dir) = build(&s(&["main.py"]), &[]);
+    let human = String::from_utf8(stewards(&dir, &["--human", "init"]).stdout).unwrap();
+    assert!(human.contains(guide::AGENTS_ONLY), "{human}");
+}
+
+#[test]
 fn a_second_init_refuses_and_changes_nothing() {
     let (_tmp, dir) = build(&s(&["main.py"]), &[]);
     init(&dir);

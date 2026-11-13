@@ -19,6 +19,7 @@ use crate::output::{CliError, Global, emit, not_implemented};
 
 pub mod claude;
 pub mod grade;
+pub mod hermes;
 pub mod pi;
 pub mod suite;
 
@@ -145,12 +146,16 @@ pub struct Run {
     /// Cache refreshes over the tree, which do not enter model context: not in the token sums
     /// above; their cost is in `cost_usd`.
     pub cache_warming: Tokens,
-    /// The largest `Tokens::context` of any one main-session response.
-    pub peak_main_context: u64,
+    /// The largest `Tokens::context` of any one main-session response; `None` when the
+    /// transcript has no per-response usage (a Hermes session without its `agent.log` lines).
+    pub peak_main_context: Option<u64>,
     /// Tool names called in the main session, in order.
     pub tool_calls: Vec<String>,
-    /// Distinct repo-relative paths the main session opened (see `pi::parse` for what counts;
-    /// the runner then keeps only `existing_files`).
+    /// Distinct repo-relative paths the main session opened: a file counts when its content was
+    /// read or searched (a read tool, a content search given its path, a `shell_reads` command);
+    /// a listing never counts, whatever produced it (`ls`, `find`, Claude Code's `Glob`, Hermes's
+    /// `search_files` with `target: files`). Each driver's `files_opened` names its tools; the
+    /// runner then keeps only `existing_files`.
     pub files_opened: Vec<String>,
     /// The same over the whole session tree.
     pub files_opened_tree: Vec<String>,
@@ -661,7 +666,8 @@ fn run_session(cmd: &mut Command, limit: Duration) -> Result<(Status, f64)> {
 }
 
 /// Kills the session's whole process group, then the child itself; the runner then kills what
-/// left the group (harnesses start shell commands and background subagents in their own groups).
+/// left the group (harnesses start shell commands, background subagents, and Hermes its gateway
+/// daemon in their own groups).
 fn kill(child: &mut Child) {
     let _ = Command::new("kill")
         .args(["-KILL", &format!("-{}", child.id())])
@@ -1538,13 +1544,25 @@ pub fn next_check(stewards: &Path, dir: &Path) -> Result<NextCheck> {
     })
 }
 
-/// Kills every process whose working directory is under `dir` (from Linux `/proc/<pid>/cwd`),
-/// again until none is left or 10 s pass. `None` where there is no `/proc`.
+/// Kills every process whose working directory is under `dir`, or whose environment has a value
+/// that is a path under it (a daemon a session started elsewhere, such as Hermes's gateway with
+/// the session's `HERMES_HOME`), from Linux `/proc/<pid>/cwd` and `/proc/<pid>/environ`, again
+/// until none is left or 10 s pass. `None` where there is no `/proc`.
 pub fn kill_leftovers(dir: &Path) -> Result<Option<Leftovers>> {
+    use std::os::unix::ffi::OsStrExt;
     if !Path::new("/proc/self/cwd").exists() {
         return Ok(None);
     }
     let dir = dir.canonicalize()?;
+    let in_env = |pid: u32| {
+        std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| {
+            env.split(|b| *b == 0).any(|kv| {
+                kv.splitn(2, |b| *b == b'=')
+                    .nth(1)
+                    .is_some_and(|v| Path::new(OsStr::from_bytes(v)).starts_with(&dir))
+            })
+        })
+    };
     let me = std::process::id();
     let mut killed = HashSet::new();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1556,7 +1574,7 @@ pub fn kill_leftovers(dir: &Path) -> Result<Option<Leftovers>> {
             .filter(|&pid| {
                 pid != me
                     && std::fs::read_link(format!("/proc/{pid}/cwd"))
-                        .is_ok_and(|cwd| cwd.starts_with(&dir))
+                        .is_ok_and(|cwd| cwd.starts_with(&dir) || in_env(pid))
             })
             .collect();
         if pids.is_empty() || Instant::now() >= deadline {
@@ -1888,12 +1906,18 @@ pub struct Flags<'a> {
 
 pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
     let h = harness::by_name(f.harness.unwrap_or("pi"))?;
-    if !matches!(h.name, "pi" | "claude-code") {
+    if !matches!(h.name, "pi" | "claude-code" | "hermes") {
         return not_implemented(&format!("eval --harness {}", h.name));
     }
-    if h.name == "claude-code" && f.max_cost.is_some() {
+    if h.name != "pi" && f.max_cost.is_some() {
+        return Err(usage(format!(
+            "--max-cost needs a cost figure, and {}'s is not used (its cost_usd is null)",
+            h.name
+        )));
+    }
+    if h.name == "hermes" && !f.model.is_some_and(|m| m.contains('/')) {
         return Err(usage(
-            "--max-cost needs a cost figure, and Claude Code's is not used (its cost_usd is null)"
+            "--harness hermes needs --model <provider>/<model>, such as deepseek/deepseek-flash"
                 .into(),
         ));
     }
@@ -1946,6 +1970,10 @@ pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
         let mut pi = pi::Pi::find(&path, limit)?;
         let note = pi.isolate(&work.join("a"), f.thinking)?;
         (Box::new(pi), note, f.thinking)
+    } else if h.name == "hermes" {
+        let mut hermes = hermes::Hermes::find(&path, limit)?;
+        let note = hermes.isolate(&work.join("a"))?;
+        (Box::new(hermes), note, f.thinking)
     } else {
         let mut claude = claude::ClaudeCode::find(&path, limit)?;
         let note = claude.isolate(&work.join("a"))?;

@@ -81,7 +81,7 @@ pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
         total_tokens: median_of(runs, |r| r.total_tokens.map(|t| t.sum() as f64)),
         files_opened: median_of(runs, |r| Some(r.files_opened.len() as f64)),
         files_opened_tree: median_of(runs, |r| Some(r.files_opened_tree.len() as f64)),
-        peak_main_context: median_of(runs, |r| Some(r.peak_main_context as f64)),
+        peak_main_context: median_of(runs, |r| r.peak_main_context.map(|p| p as f64)),
         cost_usd: median_of(runs, |r| r.cost_usd),
         subagent_sessions: runs
             .iter()
@@ -490,7 +490,7 @@ pub fn summarize(
 }
 
 /// The summary's sentence on comparing harnesses when thinking was not `off` throughout: Claude
-/// Code sessions run with thinking off, Pi's at its `--thinking` level.
+/// Code sessions run with thinking off, Pi's and Hermes's at their `--thinking` level.
 fn thinking_comparison(requested: &str, records: &[RunRecord]) -> Option<String> {
     let recorded: BTreeSet<&str> = records
         .iter()
@@ -502,7 +502,7 @@ fn thinking_comparison(requested: &str, records: &[RunRecord]) -> Option<String>
     }
     let recorded: Vec<&str> = recorded.into_iter().collect();
     Some(format!(
-        "Thinking was not off in every session (requested {requested}; recorded {}), and Claude Code sessions run with thinking off: two harnesses' results compare only at the same setting, so run each driver with thinking off (Pi with `--thinking off`) before comparing them.",
+        "Thinking was not off in every session (requested {requested}; recorded {}), and Claude Code sessions run with thinking off: two harnesses' results compare only at the same setting, so run each driver with thinking off (Pi and Hermes with `--thinking off`) before comparing them.",
         if recorded.is_empty() {
             "none".to_string()
         } else {

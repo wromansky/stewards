@@ -8,6 +8,7 @@ use std::time::Duration;
 use common::copy_dir;
 use stewards::eval::claude::{ClaudeCode, config_dir, parse as claude_parse};
 use stewards::eval::grade::{grade_task, median, overhead_medians, render, summarize};
+use stewards::eval::hermes::{Hermes, fingerprint, parse as hermes_parse, template};
 use stewards::eval::pi::{Pi, agent_dir, parse};
 use stewards::eval::{
     ADOPT_PROMPT, Action, Arm, Driver, Plan, RITUAL_STEPS, ReviewedUnit, RitualSteps, Run,
@@ -77,7 +78,7 @@ fn pi_sample_counts_child_tokens_in_total_and_not_in_main() {
     assert!((run.cost_usd.unwrap() - (0.00113712 + 0.0009244)).abs() < 1e-6);
     assert_eq!(run.duration_s, 1.5);
     assert_eq!(run.ritual_steps, steps(&[]));
-    assert_eq!(run.peak_main_context, 15564);
+    assert_eq!(run.peak_main_context, Some(15564));
     assert_eq!(run.cache_warming, Tokens::default());
     assert_eq!(run.stop_reason.as_deref(), Some("stop"));
     assert!(run.failed_children.is_empty());
@@ -171,7 +172,7 @@ fn pi_ritual_sample_shows_the_real_adoption_steps_across_parent_and_children() {
     };
     assert_eq!(run.main_tokens.unwrap(), main);
     assert_eq!(run.total_tokens.unwrap().sum(), 96167 + 100879 + 49497);
-    assert_eq!(run.peak_main_context, 18243);
+    assert_eq!(run.peak_main_context, Some(18243));
     assert!((run.cost_usd.unwrap() - 0.01398651).abs() < 1e-9);
     assert_eq!(run.cache_warming, Tokens::default());
     assert_eq!(run.thinking_levels, ["high", "medium"]);
@@ -566,7 +567,7 @@ fn run_with(main: u64, total: u64, files: usize, ritual: RitualSteps) -> Run {
         main_tokens: Some(t(main)),
         total_tokens: Some(t(total)),
         cache_warming: Tokens::default(),
-        peak_main_context: main / 2,
+        peak_main_context: Some(main / 2),
         tool_calls: vec![],
         files_opened: files.clone(),
         files_opened_tree: files,
@@ -2056,7 +2057,7 @@ fn claude_sample_counts_child_tokens_in_total_and_not_in_main() {
     assert!(run.sessions_without_thinking.is_empty());
     assert_eq!(run.cost_usd, None);
     assert_eq!(run.harness_reported_cost_usd, Some(0.07842855));
-    assert_eq!(run.peak_main_context, 20838 + 131 + 2);
+    assert_eq!(run.peak_main_context, Some(20838 + 131 + 2));
     assert_eq!(run.ritual_steps, steps(&[]));
     assert_eq!(run.stop_reason, None);
     assert!(run.failed_children.is_empty() && run.reviews.is_empty());
@@ -2073,7 +2074,7 @@ fn claude_plain_sample_has_main_equal_to_total() {
         claude_tokens(&claude_result("plain")["usage"])
     );
     // the larger of its two responses' input and cache counts
-    assert_eq!(run.peak_main_context, 2 + 21022 + 404);
+    assert_eq!(run.peak_main_context, Some(2 + 21022 + 404));
     assert_eq!(run.tool_calls, ["Bash"]);
     assert_eq!(
         run.shell_commands,
@@ -2118,7 +2119,7 @@ fn a_claude_session_without_a_result_line_has_null_tokens() {
     let run = claude_parse(&main_file(tmp.path()), 0.0, true).unwrap();
     assert_eq!((run.main_tokens, run.total_tokens), (None, None));
     assert_eq!(run.harness_reported_cost_usd, None);
-    assert_eq!(run.peak_main_context, 20838 + 131 + 2);
+    assert_eq!(run.peak_main_context, Some(20838 + 131 + 2));
     assert_eq!(run.subagent_sessions, 1);
     assert_eq!(run.tool_calls, ["Task"]);
 }
@@ -2263,12 +2264,12 @@ fn replaced(dir: &Path, transcript: &Path, replace: &[(&str, &str)]) -> (TempDir
     (tmp, t)
 }
 
-/// The same assertions over both drivers' recorded subagent samples, so their mapping into `Run`
+/// The same assertions over every driver's recorded subagent sample, so their mapping into `Run`
 /// and the harness-neutral `Action`s cannot drift: child tokens are in total and not in main, the
 /// launch is a `Dispatch` with the child's task (exact handoff or not), a shell command is a
 /// `Shell` in the session that ran it, and the gate passes on those runs unchanged.
 #[test]
-fn both_drivers_map_their_subagent_samples_the_same_way() {
+fn every_driver_maps_its_subagent_sample_the_same_way() {
     let pi = Pi {
         bin: PathBuf::new(),
         limit: Duration::from_secs(1),
@@ -2280,25 +2281,41 @@ fn both_drivers_map_their_subagent_samples_the_same_way() {
         config_dir: None,
         default_model: None,
     };
-    // driver, sample, the child's task, a shell command it ran, whether a child ran it
-    let cases: [(&dyn Driver, PathBuf, &str, &str, bool); 2] = [
+    let hermes = Hermes {
+        bin: PathBuf::new(),
+        limit: Duration::from_secs(1),
+        template: None,
+        installs: vec![],
+    };
+    // driver, sample, the child's whole task as the transcript holds it, a shell command it ran
+    // with the text around it (`{}` for the command), whether a child ran it
+    type Case<'a> = (&'a dyn Driver, PathBuf, &'a str, [&'a str; 2], bool);
+    let cases: [Case; 3] = [
         (
             &pi,
             sample("subagent"),
             "Reply with the word ok and nothing else.",
-            r#""command":"echo probe""#,
+            [r#""command":"echo probe""#, r#""command":"{}""#],
             false,
         ),
         (
             &claude,
             claude_sample("subagent"),
             "Run `echo child` with the Bash tool and reply with one word.",
-            r#""command":"echo child""#,
+            [r#""command":"echo child""#, r#""command":"{}""#],
+            true,
+        ),
+        // Hermes's arguments are a JSON string: the child's goal and its context, escaped
+        (
+            &hermes,
+            hermes_sample("subagent"),
+            r#"Run `echo child` in the terminal and reply with one word.\", \"context\": \"You have a terminal tool. Execute the shell command `echo child` and then reply with its output as a single word."#,
+            [r#"\"command\": \"echo child\""#, r#"\"command\": \"{}\""#],
             true,
         ),
     ];
     let parse = |d: &dyn Driver, t: &Path| d.parse(t, 1.0, false).unwrap();
-    for (driver, dir, task, command, by_child) in cases {
+    for (driver, dir, task, [command, around], by_child) in cases {
         let name = dir.display().to_string();
         let transcript = main_file(&dir);
         let run = parse(driver, &transcript);
@@ -2310,9 +2327,9 @@ fn both_drivers_map_their_subagent_samples_the_same_way() {
         );
         assert_eq!(run.ritual_steps, steps(&[]), "{name}");
 
-        let review = r#""command":"stewards review --task 'x'""#;
-        let submit = r#""command":"stewards submit --role reviewer --file a.json""#;
-        let (_t, t) = replaced(&dir, &transcript, &[(task, HANDOFF), (command, review)]);
+        let review = around.replace("{}", "stewards review --task 'x'");
+        let submit = around.replace("{}", "stewards submit --role reviewer --file a.json");
+        let (_t, t) = replaced(&dir, &transcript, &[(task, HANDOFF), (command, &review)]);
         let run = parse(driver, &t);
         assert_eq!(
             run.ritual_steps,
@@ -2320,7 +2337,7 @@ fn both_drivers_map_their_subagent_samples_the_same_way() {
             "{name}"
         );
         let added = format!("{HANDOFF} Then summarize.");
-        let (_t, t) = replaced(&dir, &transcript, &[(task, &added), (command, submit)]);
+        let (_t, t) = replaced(&dir, &transcript, &[(task, &added), (command, &submit)]);
         let run = parse(driver, &t);
         let mut expected = vec!["handoff"];
         if by_child {
@@ -2329,7 +2346,7 @@ fn both_drivers_map_their_subagent_samples_the_same_way() {
         assert_eq!(run.ritual_steps, steps(&expected), "{name}");
 
         // the gate reads only the `Run`: three full runs with these steps pass it
-        let (_t, t) = replaced(&dir, &transcript, &[(task, HANDOFF), (command, review)]);
+        let (_t, t) = replaced(&dir, &transcript, &[(task, HANDOFF), (command, &review)]);
         let mut recs = vec![];
         for n in 1..=3 {
             let mut full = parse(driver, &t);
@@ -2434,11 +2451,11 @@ fn tool_use(id: &str, name: &str, input: serde_json::Value) -> serde_json::Value
     serde_json::json!({"type": "tool_use", "id": id, "name": name, "input": input})
 }
 
-/// Files opened on Claude Code: `Read`'s file, `Grep`'s path, the files a `Glob` result lists
-/// (none when its result is missing), and shell reads resolved against each record's own `cwd`,
-/// which a `cd` in an earlier `Bash` call moved.
+/// Files opened on Claude Code: `Read`'s file, `Grep`'s path, and shell reads resolved against
+/// each record's own `cwd`, which a `cd` in an earlier `Bash` call moved; a `Glob` listing opens
+/// nothing.
 #[test]
-fn claude_files_opened_count_grep_and_glob_and_follow_each_records_cwd() {
+fn claude_files_opened_count_read_and_grep_and_follow_each_records_cwd() {
     let tmp = TempDir::new().unwrap();
     let t = claude_session(
         tmp.path(),
@@ -2477,15 +2494,7 @@ fn claude_files_opened_count_grep_and_glob_and_follow_each_records_cwd() {
     let run = claude_parse(&t, 0.0, false).unwrap();
     assert_eq!(
         run.files_opened,
-        [
-            "a.py",
-            "b.py",
-            "c/d.ts",
-            "c/e.ts",
-            "api/items.py",
-            "README.md",
-            "api/x.py"
-        ]
+        ["a.py", "b.py", "api/items.py", "README.md", "api/x.py"]
     );
     assert_eq!(run.files_opened_tree, run.files_opened);
 }
@@ -2656,8 +2665,472 @@ fn the_summary_names_a_thinking_setting_another_harness_cannot_match() {
     let line = summary.thinking_comparison.unwrap();
     assert!(
         line.ends_with(
-            "so run each driver with thinking off (Pi with `--thinking off`) before comparing them."
+            "so run each driver with thinking off (Pi and Hermes with `--thinking off`) before comparing them."
         ),
         "{line}"
     );
+}
+
+fn hermes_sample(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/transcripts/hermes")
+        .join(name)
+}
+
+/// The stream's `result` line of a recorded Hermes sample.
+fn hermes_result(name: &str) -> serde_json::Value {
+    std::fs::read_to_string(hermes_sample(name).join("stdout.log"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|v| v["type"] == "result")
+        .unwrap()
+}
+
+/// The trimmed real deepseek-flash run where the parent started one child with `delegate_task`
+/// and the child ran `echo child`. The stream's `result.tokens` is the parent alone, its `input`
+/// with the cache reads; the child's counts are its own exported session.
+#[test]
+fn hermes_sample_counts_child_tokens_in_total_and_not_in_main() {
+    let run = hermes_parse(&main_file(&hermes_sample("subagent")), 2.0, false).unwrap();
+    let main = Tokens {
+        input: 13198,
+        output: 95,
+        cache_read: 12672,
+        cache_write: 0,
+    };
+    assert_eq!(run.main_tokens.unwrap(), main);
+    let stream = &hermes_result("subagent")["tokens"];
+    assert_eq!(stream["input"], main.input + main.cache_read);
+    assert_eq!(stream["output"], main.output);
+    let child = Tokens {
+        input: 9251,
+        output: 102,
+        cache_read: 9728,
+        cache_write: 0,
+    };
+    let mut total = main;
+    total.add(child);
+    assert_eq!(run.total_tokens.unwrap(), total);
+    assert_eq!(run.tool_calls, ["delegate_task"]);
+    assert!(run.shell_commands.is_empty());
+    assert_eq!(run.subagent_sessions, 1);
+    assert_eq!(run.model.as_deref(), Some("deepseek/deepseek-flash"));
+    assert_eq!(run.models, ["deepseek/deepseek-flash"]);
+    // the parent's reasoning is a lone space, the child reasoned
+    assert_eq!(run.thinking_levels, ["off", "on"]);
+    assert!(run.sessions_without_thinking.is_empty());
+    // Hermes's own figure, at DeepSeek's off-peak rates
+    assert_eq!(run.cost_usd, None);
+    let cost = run.harness_reported_cost_usd.unwrap();
+    assert!((cost - (0.002074716 + 0.001478034)).abs() < 1e-12, "{cost}");
+    // the larger of the parent's two prompts in agent.log, not the child's
+    assert_eq!(run.peak_main_context, Some(13154));
+    assert_eq!(run.ritual_steps, steps(&[]));
+    assert_eq!(run.stop_reason.as_deref(), Some("stop"));
+    assert!(run.failed_children.is_empty() && run.reviews.is_empty());
+    assert_eq!(run.duration_s, 2.0);
+}
+
+/// The trimmed real run that ran `pwd` and wrote `made.txt` (relative) with `write_file`: both
+/// acted in the `--in` directory.
+#[test]
+fn hermes_plain_sample_has_main_equal_to_total() {
+    let dir = hermes_sample("plain");
+    let run = hermes_parse(&main_file(&dir), 0.0, false).unwrap();
+    assert_eq!(run.main_tokens, run.total_tokens);
+    let stream = &hermes_result("plain")["tokens"];
+    let main = run.main_tokens.unwrap();
+    assert_eq!(stream["input"], main.input + main.cache_read);
+    assert_eq!(run.tool_calls, ["terminal", "write_file"]);
+    assert_eq!(run.shell_commands, ["pwd"]);
+    assert_eq!(run.subagent_sessions, 0);
+    assert!(run.files_opened.is_empty());
+    assert_eq!(run.thinking_levels, ["off"]);
+    assert_eq!(run.peak_main_context, Some(12890));
+    let text = std::fs::read_to_string(dir.join("stdout.log")).unwrap();
+    assert!(text.contains(r#"\"output\": \"/work/1/repo\""#), "{text}");
+    assert!(
+        text.contains(r#"\"resolved_path\": \"/work/1/repo/made.txt\""#),
+        "{text}"
+    );
+
+    // without agent.log lines there is no per-response usage: the peak is unknown, not 0
+    let tmp = TempDir::new().unwrap();
+    copy_dir(&dir, tmp.path());
+    std::fs::remove_file(tmp.path().join("agent.log")).unwrap();
+    let run = hermes_parse(&main_file(tmp.path()), 0.0, false).unwrap();
+    assert_eq!(run.peak_main_context, None);
+}
+
+/// A child Hermes reports as not completed is a failed child; a stream whose `result` carries a
+/// nonzero `exit_code` is a main session stopped with `error`.
+#[test]
+fn a_hermes_child_reported_failed_and_a_failed_stream_are_failures() {
+    let dir = hermes_sample("subagent");
+    let (_t, t) = replaced(
+        &dir,
+        &main_file(&dir),
+        &[(r#"\"status\": \"completed\""#, r#"\"status\": \"failed\""#)],
+    );
+    let run = hermes_parse(&t, 0.0, false).unwrap();
+    assert_eq!(
+        run.failed_children,
+        ["task 0 of delegate_task call_00_ET_4wtYf4Se5710IvmxH2hc7650 ended `failed`"]
+    );
+    let (_t, t) = replaced(
+        &dir,
+        &main_file(&dir),
+        &[(r#""exit_code": 0"#, r#""exit_code": 1"#)],
+    );
+    let run = hermes_parse(&t, 0.0, false).unwrap();
+    assert_eq!(run.stop_reason.as_deref(), Some("error"));
+}
+
+/// One exported Hermes session at cwd `/r` whose assistant makes `calls` (`(id, tool, arguments)`)
+/// and whose tool messages answer `(id, content)`, and its path.
+fn hermes_session(
+    tmp: &Path,
+    calls: &[(&str, &str, serde_json::Value)],
+    results: &[(&str, serde_json::Value)],
+) -> PathBuf {
+    let calls: Vec<serde_json::Value> = calls
+        .iter()
+        .map(|(id, name, args)| {
+            serde_json::json!({"id": id, "type": "function",
+                "function": {"name": name, "arguments": args.to_string()}})
+        })
+        .collect();
+    let mut messages = vec![serde_json::json!({"role": "assistant", "content": "",
+        "tool_calls": calls, "finish_reason": "tool_calls", "timestamp": 1.0})];
+    messages.extend(results.iter().map(|(id, content)| {
+        serde_json::json!({"role": "tool", "tool_call_id": id, "content": content.to_string(),
+            "timestamp": 2.0})
+    }));
+    let session = serde_json::json!({"id": "s", "parent_session_id": null, "cwd": "/r",
+        "model": "m", "billing_provider": "p", "input_tokens": 1, "messages": messages});
+    let path = tmp.join("transcript.jsonl");
+    std::fs::write(&path, format!("{session}\n")).unwrap();
+    path
+}
+
+/// Files opened on Hermes: `read_file`'s path, a content `search_files`'s path, and shell reads,
+/// relative to the session's cwd; a `target: files` listing opens nothing.
+#[test]
+fn hermes_files_opened_count_read_and_content_search_and_shell_reads() {
+    let tmp = TempDir::new().unwrap();
+    let t = hermes_session(
+        tmp.path(),
+        &[
+            ("1", "read_file", serde_json::json!({"path": "/r/a.py"})),
+            (
+                "2",
+                "search_files",
+                serde_json::json!({"pattern": "x", "path": "b.py"}),
+            ),
+            (
+                "3",
+                "search_files",
+                serde_json::json!({"pattern": "*.ts", "target": "files", "path": "/r"}),
+            ),
+            ("4", "terminal", serde_json::json!({"command": "cat e.py"})),
+            (
+                "5",
+                "write_file",
+                serde_json::json!({"path": "f.py", "content": ""}),
+            ),
+        ],
+        &[(
+            "3",
+            serde_json::json!({"total_count": 1, "files": ["/r/c/d.ts"]}),
+        )],
+    );
+    let run = hermes_parse(&t, 0.0, false).unwrap();
+    assert_eq!(run.files_opened, ["a.py", "b.py", "e.py"]);
+    assert_eq!(run.files_opened_tree, run.files_opened);
+    assert_eq!(run.shell_commands, ["cat e.py"]);
+    assert_eq!(run.model.as_deref(), Some("p/m"));
+    // a response with no reasoning at all
+    assert_eq!(run.thinking_levels, ["off"]);
+}
+
+#[test]
+fn every_missing_harness_binary_is_the_same_harness_missing_error() {
+    let empty = TempDir::new().unwrap();
+    let path = empty.path().as_os_str();
+    let limit = Duration::from_secs(1);
+    for err in [
+        Pi::find(path, limit).err().unwrap(),
+        ClaudeCode::find(path, limit).err().unwrap(),
+        Hermes::find(path, limit).err().unwrap(),
+    ] {
+        let err = err.downcast_ref::<CliError>().unwrap();
+        assert_eq!(err.code, "harness_missing");
+    }
+    let err = Hermes::find(path, limit).err().unwrap();
+    assert!(
+        err.downcast_ref::<CliError>()
+            .unwrap()
+            .fix
+            .contains("Hermes Agent")
+    );
+}
+
+/// A fake `hermes`: `sessions list` builds an `installs/`; `chat` records its argv and env,
+/// starts a detached "daemon" named in `$HERMES_HOME/gateway.pid`, logs one API call, and hangs;
+/// `sessions export` writes one session to its last argument.
+const FAKE_HERMES: &str = r#"#!/bin/sh
+case "$1" in
+sessions)
+  if [ "$2" = list ]; then mkdir -p "$HERMES_HOME/installs/e"; echo x > "$HERMES_HOME/installs/e/f"; exit 0; fi
+  for a; do out=$a; done
+  echo '{"id":"s","parent_session_id":null,"cwd":"/r","messages":[]}' > "$out" ;;
+chat)
+  printf '%s\n' "$@" > ../args
+  env > ../env
+  setsid sleep 300 >/dev/null 2>&1 &
+  echo "{\"pid\": $!}" > "$HERMES_HOME/gateway.pid"
+  echo $! > ../daemon
+  mkdir -p "$HERMES_HOME/logs"
+  echo 'x [s] a: API call #1: in=7 out=1' > "$HERMES_HOME/logs/agent.log"
+  exec sleep 30 ;;
+esac
+"#;
+
+fn alive(pid: &str) -> bool {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).is_ok()
+}
+
+#[test]
+fn hermes_driver_runs_each_session_in_its_own_home_and_kills_the_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    let bin = tmp.path().join("hermes");
+    std::fs::write(&bin, FAKE_HERMES).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let user = tmp.path().join("user");
+    std::fs::create_dir_all(user.join("memories")).unwrap();
+    std::fs::write(user.join(".env"), "KEY=v\n").unwrap();
+    std::fs::write(user.join("SOUL.md"), "personal").unwrap();
+    std::fs::write(user.join("config.yaml"), "model: {}\n").unwrap();
+    let a = tmp.path().join("a");
+    let (note, installs) = template(&bin, &user, &a).unwrap();
+    assert!(note.contains("subagent_auto_approve"), "{note}");
+    assert!(note.contains("not the task directory"), "{note}");
+    assert_eq!(installs, fingerprint(&a.join("installs")).unwrap());
+    assert_eq!(installs.len(), 2);
+    assert_eq!(
+        std::fs::read_to_string(a.join("config.yaml")).unwrap(),
+        "delegation:\n  subagent_auto_approve: true\n"
+    );
+    assert_eq!(
+        std::fs::read_link(a.join(".env")).unwrap(),
+        user.join(".env")
+    );
+    for absent in ["SOUL.md", "memories"] {
+        assert!(!a.join(absent).exists(), "{absent}");
+    }
+
+    let hermes = Hermes {
+        bin,
+        limit: Duration::from_secs(1),
+        template: Some(a.clone()),
+        installs,
+    };
+    std::fs::create_dir_all(tmp.path().join("run/repo")).unwrap();
+    let root = tmp.path().join("run").canonicalize().unwrap();
+    let dir = root.join("repo");
+    let sessions = tmp.path().join("sessions");
+    let env = [
+        ("PATH", std::env::var_os("PATH").unwrap()),
+        ("AI_AGENT", "pi".into()),
+    ];
+    let s = hermes
+        .start(
+            &dir,
+            "-hi",
+            Some("deepseek/deepseek-flash"),
+            "off",
+            &sessions,
+            &env,
+        )
+        .unwrap();
+    assert_eq!(s.status, Status::TimedOut);
+    assert_eq!(s.transcript, Some(sessions.join("transcript.jsonl")));
+    assert!(sessions.join("agent.log").is_file());
+    let args = std::fs::read_to_string(root.join("args")).unwrap();
+    let dir_line = format!("--in\n{}\n", dir.display());
+    assert!(
+        args.starts_with("chat\n--query=-hi\n--oneshot\n--yolo\n"),
+        "{args}"
+    );
+    assert!(args.contains(&dir_line), "{args}");
+    assert!(
+        args.ends_with(
+            "--format\nstream-json\n--reasoning\nnone\n--provider\ndeepseek\n-m\ndeepseek-flash\n"
+        ),
+        "{args}"
+    );
+    let vars = std::fs::read_to_string(root.join("env")).unwrap();
+    let home = root.join("h");
+    assert!(
+        vars.contains(&format!("HERMES_HOME={}\n", home.display())),
+        "{vars}"
+    );
+    assert!(!vars.contains("AI_AGENT="), "{vars}");
+    // the session's home: the template's config, .env and installs linked, nothing else of the user's
+    assert_eq!(
+        std::fs::read_link(home.join(".env")).unwrap(),
+        user.join(".env")
+    );
+    assert_eq!(
+        std::fs::read_link(home.join("installs")).unwrap(),
+        a.join("installs")
+    );
+    assert!(home.join("config.yaml").is_file() && !home.join("SOUL.md").exists());
+    // the detached daemon is killed by the driver, not left to the sweep
+    let daemon = std::fs::read_to_string(root.join("daemon")).unwrap();
+    let daemon = daemon.trim();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while alive(daemon) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive(daemon), "daemon {daemon} survived");
+
+    // a session wrote into the shared dependency environment: no later session starts on it
+    std::fs::create_dir_all(a.join("installs/.leases")).unwrap();
+    std::fs::write(a.join("installs/.leases/l"), "").unwrap();
+    // a second session in the same directory (a task after its setup task) gets a new home
+    std::fs::write(home.join("left.txt"), "").unwrap();
+    hermes
+        .start(&dir, "hi", None, "low", &sessions, &env)
+        .unwrap();
+    assert!(home.join("config.yaml").is_file() && !home.join("left.txt").exists());
+    std::fs::write(a.join("installs/e/g"), "pip").unwrap();
+    let err = hermes
+        .start(&dir, "hi", None, "low", &sessions, &env)
+        .err()
+        .unwrap();
+    assert!(
+        format!("{err:#}").contains("changed after the eval built it"),
+        "{err:#}"
+    );
+}
+
+/// A daemon a session started elsewhere is found by the run directory its environment names.
+#[test]
+fn kill_leftovers_kills_a_process_whose_environment_names_the_run_directory() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("run");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut daemon = std::process::Command::new("sleep")
+        .arg("300")
+        .current_dir(tmp.path())
+        .env("HERMES_HOME", root.join("h"))
+        .spawn()
+        .unwrap();
+    let left = kill_leftovers(&root).unwrap().unwrap();
+    assert_eq!(left.killed, 1);
+    assert!(left.survived.is_empty());
+    assert!(!daemon.wait().unwrap().success());
+}
+
+/// `--max-cost` needs a cost figure, and Hermes's `--model` names its provider.
+#[test]
+fn hermes_refuses_max_cost_and_a_model_without_a_provider() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (args, says) in [
+        (
+            &["eval", "--harness", "hermes", "--max-cost", "1"][..],
+            "cost_usd is null",
+        ),
+        (
+            &["eval", "--harness", "hermes"][..],
+            "--model <provider>/<model>",
+        ),
+        (
+            &["eval", "--harness", "hermes", "--model", "deepseek-flash"][..],
+            "--model <provider>/<model>",
+        ),
+    ] {
+        let (code, v) = common::run(root, args);
+        assert_eq!(
+            (code, v["error"]["code"].as_str()),
+            (2, Some("usage")),
+            "{v}"
+        );
+        assert!(
+            v["error"]["message"].as_str().unwrap().contains(says),
+            "{v}"
+        );
+    }
+}
+
+/// One rule on every driver: a listing (`ls`, `find`, Claude Code's `Glob`, Hermes's
+/// `search_files` with `target: files`) opens no file, even when its result names files.
+#[test]
+fn a_listing_opens_no_file_on_any_driver() {
+    let tmp = TempDir::new().unwrap();
+    let listing = "ls api && find . -name '*.py'";
+    let dirs: Vec<PathBuf> = ["pi", "claude", "hermes"]
+        .iter()
+        .map(|d| tmp.path().join(d))
+        .collect();
+    for d in &dirs {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let pi_session = [
+        serde_json::json!({"type": "session", "id": "h", "timestamp": "t0", "cwd": "/r"}),
+        serde_json::json!({"type": "message", "id": "m", "timestamp": "t1", "message": {
+            "role": "assistant", "content": [{"type": "toolCall", "id": "c", "name": "bash",
+            "arguments": {"command": listing}}]}}),
+    ];
+    let pi_file = dirs[0].join("s.jsonl");
+    std::fs::write(
+        &pi_file,
+        pi_session.map(|r| r.to_string()).join("\n") + "\n",
+    )
+    .unwrap();
+    let claude_file = claude_session(
+        &dirs[1],
+        &[(
+            "/r",
+            serde_json::json!([
+                tool_use("1", "Glob", serde_json::json!({"pattern": "**/*.py"})),
+                tool_use("2", "Bash", serde_json::json!({"command": listing})),
+            ]),
+        )],
+        &[(
+            "1",
+            serde_json::json!({"filenames": ["/r/api/a.py"], "numFiles": 1}),
+        )],
+    );
+    let hermes_file = hermes_session(
+        &dirs[2],
+        &[
+            (
+                "1",
+                "search_files",
+                serde_json::json!({"pattern": "*.py", "target": "files", "path": "/r"}),
+            ),
+            ("2", "terminal", serde_json::json!({"command": listing})),
+        ],
+        &[(
+            "1",
+            serde_json::json!({"total_count": 1, "files": ["/r/api/a.py"]}),
+        )],
+    );
+    for run in [
+        parse(&pi_file, 0.0, false).unwrap(),
+        claude_parse(&claude_file, 0.0, false).unwrap(),
+        hermes_parse(&hermes_file, 0.0, false).unwrap(),
+    ] {
+        assert_eq!(run.shell_commands, [listing]);
+        assert!(run.files_opened.is_empty(), "{:?}", run.files_opened);
+        assert!(
+            run.files_opened_tree.is_empty(),
+            "{:?}",
+            run.files_opened_tree
+        );
+    }
 }

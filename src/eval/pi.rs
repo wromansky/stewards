@@ -331,7 +331,6 @@ fn actions(records: &[&Value], child: bool) -> Vec<Action> {
     tool_calls(records)
         .filter_map(|b| match b["name"].as_str() {
             Some("subagent") => Some(Action::Dispatch {
-                texts: strings(&b["arguments"]),
                 tasks: tasks(&b["arguments"]),
             }),
             Some("bash") => Some(Action::Shell {
@@ -358,16 +357,6 @@ fn tasks(v: &Value) -> Vec<String> {
                 _ => tasks(v),
             })
             .collect(),
-        _ => vec![],
-    }
-}
-
-/// Every string value in `v`, at any depth.
-fn strings(v: &Value) -> Vec<String> {
-    match v {
-        Value::String(s) => vec![s.clone()],
-        Value::Array(a) => a.iter().flat_map(strings).collect(),
-        Value::Object(o) => o.values().flat_map(strings).collect(),
         _ => vec![],
     }
 }

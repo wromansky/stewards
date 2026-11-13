@@ -240,7 +240,6 @@ fn child_shell(command: &str) -> Action {
 /// A pi-subagents launch whose child gets `task`, beside the agent name.
 fn dispatch(task: &str) -> Action {
     Action::Dispatch {
-        texts: vec!["worker".into(), task.into()],
         tasks: vec![task.into()],
     }
 }
@@ -256,17 +255,12 @@ fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
         (&["review"], vec![shell("stewards review --task 'x'")]),
         // any brief's handoff, its path with a space, passed as the whole task
         (&["handoff", "handoff_exact"], vec![dispatch(HANDOFF)]),
-        // the handoff inside the agent's own wording, or given beside another task: handed off,
-        // not exactly
+        // the handoff inside the agent's own wording: handed off, not exactly
         (
             &["handoff"],
             vec![
                 dispatch(HANDOFF),
                 dispatch(&format!("{HANDOFF} Return a short summary of findings.")),
-                Action::Dispatch {
-                    texts: vec![HANDOFF.into(), "review it".into()],
-                    tasks: vec!["review it".into()],
-                },
             ],
         ),
         (

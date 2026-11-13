@@ -36,6 +36,7 @@ Start from the anchor for the behavior you want: load_repo or the type definitio
 | user-memory | Reads memory.toml \[\[entry\]\] items from the user dir; missing file is empty; malformed is invalid\_toml with file\:line. Never writes. | [src/user.rs\:\:load\_memory\_from](../../src/user.rs#L51) |
 | memory-for | Entries whose roles (absent = all) include role and whose languages (absent = all) share one with \`languages\`, in file order, stopping before the first entry that pushes total text bytes past budget\_bytes. | [src/user.rs\:\:memory\_for](../../src/user.rs#L65) |
 | loaded-card | Loaded\:\:card(unit) returns a clone of the unit's card, or an empty card (unit set, reviewed None, no interface, anchors, gaps, or doc) when it has none yet. The one lookup submit and check use instead of their own copies. | [src/model.rs\:\:card](../../src/model.rs#L342) |
+| repo-read | Repo\:\:read(rel, cap) returns the bytes of the regular file rel through safe\_path, opened with no link followed and without blocking on a FIFO (unix), its type checked on the open handle; a non-regular file or one over cap bytes is an error. | [src/workspace.rs\:\:read](../../src/workspace.rs#L307) |
 
 ## Scenarios
 
@@ -58,4 +59,4 @@ Start from the anchor for the behavior you want: load_repo or the type definitio
 
 ## Last reviewed
 
-2d972b0896b3296afa9472532b7f9f0cf954c19e
+7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51

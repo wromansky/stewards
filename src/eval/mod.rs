@@ -232,12 +232,8 @@ pub enum Action {
         /// Run by a child session, not the main one.
         child: bool,
     },
-    /// A subagent launch; `texts` are the string values of its arguments, `tasks` those each
-    /// child is given as its task.
-    Dispatch {
-        texts: Vec<String>,
-        tasks: Vec<String>,
-    },
+    /// A subagent launch; `tasks` are what each child is given as its task.
+    Dispatch { tasks: Vec<String> },
 }
 
 /// Whether `text` is exactly a handoff (`brief::handoff`) of a brief under `.stewards/briefs/`.
@@ -291,16 +287,15 @@ pub fn ritual_steps(actions: &[Action]) -> RitualSteps {
                     }
                 }
             }
-            Action::Dispatch { texts, tasks } => {
-                if texts.iter().any(|t| holds_handoff(t)) {
+            Action::Dispatch { tasks } => {
+                if tasks.iter().any(|t| holds_handoff(t)) {
                     steps.insert("handoff", true);
-                    exact &= !tasks.is_empty() && tasks.iter().all(|t| is_handoff(t));
+                    exact &= tasks.iter().all(|t| is_handoff(t));
                 }
             }
         }
     }
-    let handed_off = steps["handoff"];
-    steps.insert("handoff_exact", handed_off && exact);
+    steps.insert("handoff_exact", steps["handoff"] && exact);
     steps
 }
 

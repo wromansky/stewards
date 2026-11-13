@@ -105,7 +105,7 @@ fn documenter() -> Value {
 
 /// The documenter jobs `next` lists, as `(unit, reasons)`.
 fn documenter_jobs(dir: &Path) -> Vec<(String, Value)> {
-    let (_, v) = run(dir, &["next"]);
+    let (_, v) = run(dir, &["next", "--roles"]);
     v["jobs"]
         .as_array()
         .unwrap()
@@ -169,6 +169,14 @@ fn draft_on_a_fresh_repo_writes_step_1_and_the_architect_and_first_review_briefs
     assert_eq!(
         jobs(&v),
         pairs(&[("", "architect"), ("a", "maintainer"), ("b", "maintainer")])
+    );
+    // adoption finishes in the per-role flow
+    assert!(
+        v["then"]
+            .as_str()
+            .unwrap()
+            .contains("`stewards next --roles`"),
+        "{v}"
     );
     assert_eq!(
         v["jobs"][0]["task"],
@@ -372,7 +380,8 @@ fn a_scripted_draft_run_ends_with_a_green_check_and_no_jobs() {
         let anchor = format!("src/{unit}/f0.py::thing0");
         submit(&dir, Some(unit), "maintainer", &approve(Some(&anchor)));
     }
-    let (code, v) = run(&dir, &["next"]);
+    // adoption runs the per-role flow
+    let (code, v) = run(&dir, &["next", "--roles"]);
     assert_eq!(code, 1, "{v}");
     assert_eq!(jobs(&v), pairs(&[("a", "documenter"), ("b", "documenter")]));
     for unit in ["a", "b"] {
@@ -380,6 +389,9 @@ fn a_scripted_draft_run_ends_with_a_green_check_and_no_jobs() {
     }
     let (code, v) = run(&dir, &["check"]);
     assert_eq!(code, 0, "{v}");
+    let (code, v) = run(&dir, &["next", "--roles"]);
+    assert_eq!((code, jobs(&v)), (0, vec![]), "{v}");
+    // after adoption, the plain per-change review has nothing to do either
     let (code, v) = run(&dir, &["next"]);
     assert_eq!((code, jobs(&v)), (0, vec![]), "{v}");
 }

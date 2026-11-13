@@ -353,7 +353,7 @@ fn diff_after_a_stamp_shows_hunks_restricts_anchors_and_lists_other_units_files(
 
 /// The files `next` reports as changed for `unit`'s maintainer job.
 fn next_changed(dir: &Path, unit: &str) -> Value {
-    let (_, v) = run(dir, &["next", "--no-brief"]);
+    let (_, v) = run(dir, &["next", "--roles", "--no-brief"]);
     let jobs = v["jobs"].as_array().unwrap();
     let job = jobs
         .iter()

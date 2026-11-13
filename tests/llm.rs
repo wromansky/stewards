@@ -8,7 +8,7 @@ use stewards::model::Role;
 use stewards::output::CliError;
 use tempfile::TempDir;
 
-const SHAPES: [(Role, Mode); 7] = [
+const SHAPES: [(Role, Mode); 8] = [
     (Role::Maintainer, Mode::Review),
     (Role::Maintainer, Mode::Explain),
     (Role::Developer, Mode::Review),
@@ -16,6 +16,7 @@ const SHAPES: [(Role, Mode); 7] = [
     (Role::Documenter, Mode::Review),
     (Role::Validator, Mode::Review),
     (Role::Architect, Mode::Review),
+    (Role::Reviewer, Mode::Review),
 ];
 
 fn with_common(mut v: Value) -> Value {
@@ -69,6 +70,21 @@ fn architect() -> Value {
     }))
 }
 
+fn reviewer() -> Value {
+    with_common(json!({
+        "snapshot": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "units": [{
+            "unit": "api", "verdict": "approve", "findings": [], "card_patch": null,
+            "check": {"command": "cargo test", "pass": true, "output": "ok"},
+            "scenario_patch": null, "bugs": null, "doc": null
+        }, {
+            "unit": "store", "verdict": "changes",
+            "findings": [{"file": "src/s.rs", "line": 1, "rung": "no_check", "cut": "c", "replace_with": "r"}],
+            "check": {"command": "cargo test", "pass": false, "output": "boom"}
+        }]
+    }))
+}
+
 fn errors(role: Role, mode: Mode, text: &str) -> Vec<FieldError> {
     parse(role, mode, text).expect_err("answer should be rejected")
 }
@@ -92,6 +108,7 @@ fn every_answer_shape_parses() {
         documenter(),
         validator(),
         architect(),
+        reviewer(),
     ];
     for ((role, mode), answer) in SHAPES.into_iter().zip(answers) {
         let parsed = parse(role, mode, &answer.to_string());
@@ -208,7 +225,7 @@ fn text_after_the_json_is_rejected() {
 #[test]
 fn output_format_names_every_field() {
     let common = ["pulled_anchors:", "notes:"];
-    let fields: [&[&str]; 7] = [
+    let fields: [&[&str]; 8] = [
         &[
             "verdict:",
             "findings:",
@@ -281,6 +298,19 @@ fn output_format_names_every_field() {
             "paths:",
             "explanation:",
         ],
+        &[
+            "units:",
+            "unit:",
+            "verdict:",
+            "findings:",
+            "card_patch:",
+            "check:",
+            "pass:",
+            "scenario_patch:",
+            "bugs:",
+            "doc:",
+            "how_to_change:",
+        ],
     ];
     for ((role, mode), fields) in SHAPES.into_iter().zip(fields) {
         let text = output_format(role, mode);
@@ -335,6 +365,9 @@ fn every_role_schema_states_the_caps_submit_enforces() {
         (Role::Documenter, Mode::Review, "how_to_change", PROSE_CAP),
         (Role::Validator, Mode::Review, "reason", PROSE_CAP),
         (Role::Architect, Mode::Review, "entry", LINE_CAP),
+        (Role::Reviewer, Mode::Review, "unit", ID_CAP),
+        (Role::Reviewer, Mode::Review, "units", LIST_CAP),
+        (Role::Reviewer, Mode::Review, "output", PROSE_CAP),
     ];
     for (role, mode, field, cap) in cases {
         assert_eq!(
@@ -374,6 +407,7 @@ fn role_text_is_the_design_text() {
         "Documenter:",
         "Validator:",
         "Architect:",
+        "Reviewer:",
     ];
     for ((role, mode), label) in SHAPES.into_iter().zip(labels) {
         let quoted: Vec<&str> = section
@@ -440,6 +474,7 @@ fn every_enum_value_in_the_schema_text_parses() {
             "/card_patch/gaps/0/kind",
         ),
         (validator(), Role::Validator, "severity", "/severity"),
+        (reviewer(), Role::Reviewer, "verdict", "/units/0/verdict"),
     ];
     for (answer, role, field, pointer) in cases {
         let values = schema_values(output_format(role, Mode::Review), field);

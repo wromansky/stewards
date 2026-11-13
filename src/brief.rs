@@ -10,8 +10,9 @@ use crate::git;
 use crate::guide;
 use crate::llm::{self, Mode};
 use crate::model::Role;
+use crate::next;
 use crate::output::{CliError, Global, Human, emit};
-use crate::pack::{self, Pack};
+use crate::pack::{self, Pack, ReviewPack};
 use crate::route::Router;
 use crate::submit;
 use crate::user::{self, Entry};
@@ -36,6 +37,9 @@ pub struct Header {
     pub n: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lane: Option<Vec<String>>,
+    /// The units a reviewer job covers; other roles omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub units: Option<Vec<String>>,
 }
 
 pub fn read_header(path: &Path) -> Result<Header> {
@@ -57,8 +61,11 @@ pub fn read_header(path: &Path) -> Result<Header> {
 }
 
 /// The repo-relative brief of the job: `.stewards/briefs/<unit>-<role>.md`, with `-<n>` for
-/// developer task `n`, or `architect.md`.
+/// developer task `n`, or `architect.md`, or `review.md` for the reviewer.
 pub fn rel_path(unit: Option<&str>, role: Role, n: Option<usize>) -> String {
+    if role == Role::Reviewer {
+        return ".stewards/briefs/review.md".into();
+    }
     let role = role.as_str();
     match (unit, n) {
         (Some(u), Some(n)) => format!(".stewards/briefs/{u}-{role}-{n}.md"),
@@ -134,9 +141,17 @@ fn code(text: &str) -> String {
     format!("{fence}{pad}{text}{pad}{fence}")
 }
 
-/// The brief text, frame items 1 to 7 of DESIGN.md's 'Role prompts'; `root` is the repo's
-/// absolute root, so the answer path and submit command work from any directory.
-pub fn render(header: &Header, pack: &Pack, memory: &[&Entry], root: &Path) -> String {
+/// The brief text, frame items 1 to 7 of DESIGN.md's 'Role prompts', around the rendered
+/// `pack_text` packed for `task` under `budget`; `root` is the repo's absolute root, so the answer
+/// path and submit command work from any directory.
+fn render(
+    header: &Header,
+    task: &str,
+    budget: usize,
+    pack_text: &str,
+    memory: &[&Entry],
+    root: &Path,
+) -> String {
     let unit = header.unit.as_deref();
     let role = header.role.as_str();
     let role_line = match unit {
@@ -154,7 +169,16 @@ pub fn render(header: &Header, pack: &Pack, memory: &[&Entry], root: &Path) -> S
         .nth(1)
         .and_then(|s| s.split("\n\n").next())
         .expect("the AGENTS.md block has Editing lines");
-    let role_text = llm::role_text(header.role, header.mode).replace("<unit>", unit.unwrap_or(""));
+    let mut role_text = llm::role_text(header.role, header.mode)
+        .trim_end()
+        .replace("<unit>", unit.unwrap_or(""));
+    if let Some(units) = &header.units {
+        let names: Vec<String> = units.iter().map(|u| code(u)).collect();
+        role_text += &format!(
+            "\n\nThe units under review, each exactly once in `units` and no other: {}.",
+            names.join(", ")
+        );
+    }
     let mut out = format!(
         "{HEADER_START}{header_json}{HEADER_END}\n{role_line}\nTask: {task}\n\nRules:\n{rules}\n\n\
          Pack budget: {budget} bytes; this pack is {bytes} bytes. You start with the pack below. \
@@ -166,11 +190,10 @@ pub fn render(header: &Header, pack: &Pack, memory: &[&Entry], root: &Path) -> S
          and an invisible character as `\\u{{XXXX}}`: these are escapes, not broken code.\n\
          <<<DATA\n{pack}\nDATA>>>\n",
         // the task may be a commit subject, so it cannot write a marker either
-        task = data(&one_line(&pack.task)),
-        budget = pack.budget,
-        bytes = pack.bytes,
+        task = data(&one_line(task)),
+        bytes = header.bytes,
         role_text = role_text.trim(),
-        pack = data(pack.render().trim_end()),
+        pack = data(pack_text.trim_end()),
     );
     if !memory.is_empty() {
         let lines: Vec<String> = memory
@@ -186,8 +209,16 @@ pub fn render(header: &Header, pack: &Pack, memory: &[&Entry], root: &Path) -> S
         Some(u) => format!("stewards -C {root} submit {u} --role {role} --file {file}"),
         None => format!("stewards -C {root} submit --role {role} --file {file}"),
     };
+    // the reviewer copies it, so an answer to an older review brief is refused
+    let snapshot = match header.role {
+        Role::Reviewer => format!(
+            "Set `snapshot` in your answer to {}.\n\n",
+            code(&header.snapshot)
+        ),
+        _ => String::new(),
+    };
     out += &format!(
-        "\n{schema}\n\nWrite your answer to {answer}. Run {submit}. If it reports an error, \
+        "\n{schema}\n\n{snapshot}Write your answer to {answer}. Run {submit}. If it reports an error, \
          fix the file and run it again; after the third failure reply with the errors verbatim. \
          A field over its stated cap is rejected: stay under it, do not aim at the limit. \
          Reply to your caller with exactly what submit prints, nothing else.\n\n{role_line}\n",
@@ -224,15 +255,48 @@ pub fn build(
     frame(repo, &pack, mode, snapshot, None)
 }
 
-/// The brief around `pack`; `job` is a developer's task number and lane.
-fn frame(
+/// The review brief of the `due` units (units.toml order) and its pack: the units that fit the
+/// review budget are covered, the rest named as next round.
+pub fn build_review(
     repo: &Repo,
-    pack: &Pack,
-    mode: Mode,
+    due: &[next::DueUnit],
+    task: &str,
     snapshot: &str,
-    job: Option<(usize, &[String])>,
-) -> Result<String> {
-    let (unit, role) = (pack.unit.as_deref(), pack.role);
+) -> Result<(String, ReviewPack)> {
+    check_root(&repo.root)?;
+    let pack = pack::review(repo, due, task, snapshot)?;
+    let header = Header {
+        unit: None,
+        role: Role::Reviewer,
+        mode: Mode::Review,
+        snapshot: snapshot.to_string(),
+        task: task.to_string(),
+        bytes: pack.bytes,
+        anchors: pack
+            .units
+            .iter()
+            .map(|p| p.anchors.as_ref().map_or(0, Vec::len))
+            .sum(),
+        bug: None,
+        n: None,
+        lane: None,
+        units: Some(pack.units.iter().filter_map(|p| p.unit.clone()).collect()),
+    };
+    let memory = memory(repo, None, Role::Reviewer, snapshot)?;
+    let text = render(
+        &header,
+        task,
+        pack.budget,
+        &pack.render(),
+        &memory.iter().collect::<Vec<_>>(),
+        &repo.root,
+    );
+    Ok((text, pack))
+}
+
+/// The user memory entries for `role`, matched on the languages of the files `unit` owns (every
+/// file with no unit) in `snapshot`.
+fn memory(repo: &Repo, unit: Option<&str>, role: Role, snapshot: &str) -> Result<Vec<Entry>> {
     let loaded = repo.loaded()?;
     let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
     let mut languages: Vec<String> = git::ls_tree(&repo.root, snapshot)?
@@ -250,6 +314,19 @@ fn frame(
         &languages,
         loaded.repo.budgets.memory,
     );
+    Ok(memory.into_iter().cloned().collect())
+}
+
+/// The brief around `pack`; `job` is a developer's task number and lane.
+fn frame(
+    repo: &Repo,
+    pack: &Pack,
+    mode: Mode,
+    snapshot: &str,
+    job: Option<(usize, &[String])>,
+) -> Result<String> {
+    let (unit, role) = (pack.unit.as_deref(), pack.role);
+    let memory = memory(repo, unit, role, snapshot)?;
     let header = Header {
         unit: unit.map(String::from),
         role,
@@ -261,8 +338,17 @@ fn frame(
         bug: pack.bug.as_ref().map(|g| g.title.clone()),
         n: job.map(|(n, _)| n),
         lane: job.map(|(_, lane)| lane.to_vec()),
+        units: None,
     };
-    Ok(render(&header, pack, &memory, &repo.root))
+    let memory: Vec<&Entry> = memory.iter().collect();
+    Ok(render(
+        &header,
+        &pack.task,
+        pack.budget,
+        &pack.render(),
+        &memory,
+        &repo.root,
+    ))
 }
 
 /// Writes the brief `text` built for the job to its path, removing a stale answer; returns the
@@ -431,6 +517,9 @@ pub fn run(
 ) -> anyhow::Result<ExitCode> {
     let (cwd, ws) = here(g)?;
     let repo = ws.current_repo(&cwd)?;
+    if role == Role::Reviewer {
+        return reviewer(g, repo, unit, task, stdout);
+    }
     let snapshot = git::snapshot(&repo.root)?;
     let task = match task {
         Some(t) => t.to_string(),
@@ -451,6 +540,40 @@ pub fn run(
         return Ok(ExitCode::SUCCESS);
     }
     let (path, bytes) = write(repo, unit, role, mode, &task, &snapshot)?;
+    emit(&Written { path, bytes }, g.human);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `brief --role reviewer`: rebuilds the review brief `next` writes, for the units due now.
+fn reviewer(
+    g: &Global,
+    repo: &Repo,
+    unit: Option<&str>,
+    task: Option<&str>,
+    stdout: bool,
+) -> Result<ExitCode> {
+    if let Some(u) = unit {
+        bail!(CliError::new(
+            "usage",
+            format!("brief --role reviewer takes no unit, got `{u}`"),
+            "stewards brief --role reviewer",
+        ));
+    }
+    let (snapshot, task, due) = next::review_due(repo, task)?;
+    if due.is_empty() {
+        bail!(CliError::new(
+            "usage",
+            "no reviewed unit has changed since its review",
+            "run `stewards next`; a never-reviewed unit gets its maintainer's first review",
+        ));
+    }
+    let (text, _) = build_review(repo, &due, &task, &snapshot)?;
+    if stdout {
+        emit(&BriefText(text), true);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let bytes = text.len();
+    let path = write_text(repo, None, Role::Reviewer, &text)?;
     emit(&Written { path, bytes }, g.human);
     Ok(ExitCode::SUCCESS)
 }

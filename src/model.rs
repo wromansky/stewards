@@ -278,6 +278,7 @@ pub enum Role {
     Documenter,
     Validator,
     Architect,
+    Reviewer,
 }
 
 impl Role {
@@ -289,6 +290,7 @@ impl Role {
             Role::Documenter => "documenter",
             Role::Validator => "validator",
             Role::Architect => "architect",
+            Role::Reviewer => "reviewer",
         }
     }
 }
@@ -303,11 +305,12 @@ impl FromStr for Role {
             "documenter" => Role::Documenter,
             "validator" => Role::Validator,
             "architect" => Role::Architect,
+            "reviewer" => Role::Reviewer,
             _ => {
                 return Err(CliError::new(
                     "unknown_role",
                     format!("unknown role `{s}`"),
-                    "one of developer, maintainer, tester, documenter, validator, architect",
+                    "one of developer, maintainer, tester, documenter, validator, architect, reviewer",
                 ));
             }
         })

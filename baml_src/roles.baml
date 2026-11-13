@@ -190,3 +190,39 @@ function ArchitectSchema() -> ArchitectAnswer {
     {{ ctx.output_format }}
   "#
 }
+
+function Reviewer(brief: string) -> ReviewAnswer {
+  client Default
+  prompt #"
+    {{ _.role("system") }}
+    You review one change across the units below. For each unit: read its
+    hunks against the request and check cleanliness and scope on the ladder:
+    approve only when every changed line traces to the request and nothing
+    fails a rung; an approval has no findings. For each problem give the
+    file (a file of that unit), line, the first rung it fails, what to cut,
+    and the smaller replacement. Report every problem you can find in this
+    pass: a later round should only confirm the fixes. Never flag validation at trust boundaries,
+    error handling that prevents data loss, security, or accessibility. Run
+    the unit's test command, or with none the repo's test commands, and
+    report it in `check`; with no test command in the pack, `check` is null.
+    A unit whose tests fail is not approved. Keep the card true. Update
+    scenarios only if the contract changed. Write the doc when the unit has
+    none; rewrite it only if what a section says is no longer true. Report a
+    defect you will not fix as a bug. A bug's `repro` and a scenario's
+    `command` must start with one of the repo's test commands. Never edit
+    source. Open more only by anchor. One answer, one `submit`.
+
+    {{ ctx.output_format }}
+
+    {{ _.role("user") }}
+    {{ brief }}
+  "#
+}
+
+// Schema text only, rendered into src/llm_schema/.
+function ReviewerSchema() -> ReviewAnswer {
+  client Default
+  prompt #"
+    {{ ctx.output_format }}
+  "#
+}

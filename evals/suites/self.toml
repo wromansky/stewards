@@ -1,0 +1,29 @@
+# The stewards repository itself at a pinned commit (about 8,500 lines of Rust,
+# nine adopted units, cards, and docs), where reading is expensive enough for
+# delegation to pay. Cloned from the checkout holding `evals/`; already adopted,
+# so the `full` arm has no adoption session.
+tasks_dir = "suites/self/tasks"
+session_minutes = 60
+
+[source]
+kind = "repo"
+# on main, where `stewards next` lists no jobs
+commit = "bcfccf0"
+# clippy too, so every arm starts with a warm lint cache
+build = ["sh", "-c", "cargo build --all-targets && cargo clippy --all-targets"]
+
+[[task]]
+number = 1
+
+[[task]]
+number = 2
+read_only = true
+
+[[task]]
+number = 3
+
+[[task]]
+number = 4
+read_only = true
+setup = 3
+files_opened_vs_bare = 2

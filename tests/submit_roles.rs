@@ -120,7 +120,7 @@ fn architect(flows: Value, decisions: Value, proposals: Value, plan: Value) -> V
 
 /// The jobs `next` lists for api, as role names.
 fn api_jobs(dir: &Path) -> Vec<String> {
-    let (_, v) = run(dir, &["next", "--no-brief", "--task", "t"]);
+    let (_, v) = run(dir, &["next", "--roles", "--no-brief", "--task", "t"]);
     v["jobs"]
         .as_array()
         .unwrap()

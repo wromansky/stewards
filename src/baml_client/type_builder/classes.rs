@@ -1014,6 +1014,65 @@ impl PlanStepClassBuilder {
     }
 }
 
+/// Wrapper for the `ReviewAnswer` class builder.
+///
+/// Provides type-safe method access to fields defined in the schema.
+/// Access fields via methods: `builder.field_name()`
+
+pub struct ReviewAnswerClassBuilder {
+    inner: ::baml::ClassBuilder,
+}
+
+impl ReviewAnswerClassBuilder {
+    /// Create wrapper from runtime ClassBuilder.
+    pub(crate) fn new(inner: ::baml::ClassBuilder) -> Self {
+        Self { inner }
+    }
+
+    /// Get the underlying ClassBuilder.
+    pub fn inner(&self) -> &::baml::ClassBuilder {
+        &self.inner
+    }
+
+    /// Get the class as a type definition.
+    pub fn r#type(&self) -> ::baml::TypeDef {
+        self.inner
+            .as_type()
+            .expect("ReviewAnswer is statically defined in .baml and should always have a type")
+    }
+
+    // =========================================================================
+    // Field Accessors (1:1 with schema field names)
+    // =========================================================================
+
+    /// Access the `snapshot` field builder.
+    pub fn property_snapshot(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("snapshot").expect(
+            "ReviewAnswer.snapshot is statically defined in .baml and should always be present",
+        )
+    }
+
+    /// Access the `units` field builder.
+    pub fn property_units(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("units").expect(
+            "ReviewAnswer.units is statically defined in .baml and should always be present",
+        )
+    }
+
+    /// Access the `pulled_anchors` field builder.
+    pub fn property_pulled_anchors(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("pulled_anchors")
+            .expect("ReviewAnswer.pulled_anchors is statically defined in .baml and should always be present")
+    }
+
+    /// Access the `notes` field builder.
+    pub fn property_notes(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("notes").expect(
+            "ReviewAnswer.notes is statically defined in .baml and should always be present",
+        )
+    }
+}
+
 /// Wrapper for the `Scenario` class builder.
 ///
 /// Provides type-safe method access to fields defined in the schema.
@@ -1322,6 +1381,94 @@ impl UnitProposalClassBuilder {
         self.inner.get_property("paths").expect(
             "UnitProposal.paths is statically defined in .baml and should always be present",
         )
+    }
+}
+
+/// Wrapper for the `UnitReview` class builder.
+///
+/// Provides type-safe method access to fields defined in the schema.
+/// Access fields via methods: `builder.field_name()`
+
+pub struct UnitReviewClassBuilder {
+    inner: ::baml::ClassBuilder,
+}
+
+impl UnitReviewClassBuilder {
+    /// Create wrapper from runtime ClassBuilder.
+    pub(crate) fn new(inner: ::baml::ClassBuilder) -> Self {
+        Self { inner }
+    }
+
+    /// Get the underlying ClassBuilder.
+    pub fn inner(&self) -> &::baml::ClassBuilder {
+        &self.inner
+    }
+
+    /// Get the class as a type definition.
+    pub fn r#type(&self) -> ::baml::TypeDef {
+        self.inner
+            .as_type()
+            .expect("UnitReview is statically defined in .baml and should always have a type")
+    }
+
+    // =========================================================================
+    // Field Accessors (1:1 with schema field names)
+    // =========================================================================
+
+    /// Access the `unit` field builder.
+    pub fn property_unit(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner
+            .get_property("unit")
+            .expect("UnitReview.unit is statically defined in .baml and should always be present")
+    }
+
+    /// Access the `verdict` field builder.
+    pub fn property_verdict(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("verdict").expect(
+            "UnitReview.verdict is statically defined in .baml and should always be present",
+        )
+    }
+
+    /// Access the `findings` field builder.
+    pub fn property_findings(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("findings").expect(
+            "UnitReview.findings is statically defined in .baml and should always be present",
+        )
+    }
+
+    /// Access the `card_patch` field builder.
+    pub fn property_card_patch(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("card_patch").expect(
+            "UnitReview.card_patch is statically defined in .baml and should always be present",
+        )
+    }
+
+    /// Access the `check` field builder.
+    pub fn property_check(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner
+            .get_property("check")
+            .expect("UnitReview.check is statically defined in .baml and should always be present")
+    }
+
+    /// Access the `scenario_patch` field builder.
+    pub fn property_scenario_patch(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("scenario_patch").expect(
+            "UnitReview.scenario_patch is statically defined in .baml and should always be present",
+        )
+    }
+
+    /// Access the `bugs` field builder.
+    pub fn property_bugs(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner
+            .get_property("bugs")
+            .expect("UnitReview.bugs is statically defined in .baml and should always be present")
+    }
+
+    /// Access the `doc` field builder.
+    pub fn property_doc(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner
+            .get_property("doc")
+            .expect("UnitReview.doc is statically defined in .baml and should always be present")
     }
 }
 

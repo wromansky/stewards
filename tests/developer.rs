@@ -51,7 +51,7 @@ fn plan(dir: &Path, tasks: Value) -> (i32, Value) {
 
 /// Writes the api maintainer's review brief with `next` and submits `findings`.
 fn review(dir: &Path, verdict: &str, findings: Value) -> (i32, Value) {
-    run(dir, &["next", "--task", "t", "--no-run"]);
+    run(dir, &["next", "--roles", "--task", "t", "--no-run"]);
     assert!(dir.join(".stewards/briefs/api-maintainer.md").is_file());
     let answer = json!({"verdict": verdict, "findings": findings, "card_patch": null,
                         "tester_needed": false, "pulled_anchors": [], "notes": ""});
@@ -443,7 +443,7 @@ fn after_a_developer_change_next_lists_the_maintainer_review() {
     );
     let (code, v) = run(
         dir.path(),
-        &["next", "--task", "t", "--no-run", "--no-brief"],
+        &["next", "--roles", "--task", "t", "--no-run", "--no-brief"],
     );
     assert_eq!(code, 1, "{v}");
     let jobs: Vec<(&Value, &Value)> = v["jobs"]

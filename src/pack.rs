@@ -7,12 +7,14 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 
 use crate::anchors::{self, Resolution};
-use crate::check::{in_snapshot, one_line, stale_files};
+use crate::check::{changed_since, in_snapshot, one_line, stale_files};
 use crate::git;
 use crate::llm::types::Task;
 use crate::model::{
-    Anchor, CommandEntry, Decision, Doc, Flow, Gap, GapKind, Interface, Role, Scenario,
+    Anchor, CommandEntry, Commands, Decision, Doc, Flow, Gap, GapKind, Interface, Loaded, Role,
+    Scenario,
 };
+use crate::next::DueUnit;
 use crate::output::{CliError, Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, here};
@@ -23,12 +25,16 @@ const HUNK_LINES: usize = 40;
 const HALVED: &str = "source windows halved";
 /// Owned files rendered in a first review's list; the JSON carries them all.
 const OWNED_SHOWN: usize = 200;
+/// Bytes of the whole review pack, every unit's section together.
+pub const REVIEW_BUDGET: usize = 48_000;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Pack {
     pub unit: Option<String>,
     pub role: Role,
     pub task: String,
+    /// Why the review brief covers the unit: the reasons of its jobs `next --roles` lists.
+    pub due_because: Option<Vec<String>>,
     pub budget: usize,
     pub bytes: usize,
     pub over_budget: bool,
@@ -190,6 +196,7 @@ fn assemble(
         Role::Documenter => b.documenter,
         Role::Validator => b.validator,
         Role::Architect => b.architect,
+        Role::Reviewer => REVIEW_BUDGET,
     };
     let mut exclude = GlobSetBuilder::new();
     for g in &loaded.repo.pack.exclude {
@@ -207,6 +214,7 @@ fn assemble(
         unit: unit.map(String::from),
         role,
         task: task.to_string(),
+        due_because: None,
         budget,
         bytes: 0,
         over_budget: false,
@@ -299,10 +307,17 @@ fn assemble(
                     .collect(),
             )
         }
-        Role::Maintainer => {
+        Role::Maintainer | Role::Reviewer => {
             p.purpose = Some(def.purpose.clone());
             p.gaps = Some(card.map_or(vec![], |c| c.gaps.clone()));
             p.flows = Some(flows);
+            // the reviewer also sees what the tester and documenter would
+            if role == Role::Reviewer {
+                p.scenarios = Some(test.map_or(vec![], |t| t.scenarios.clone()));
+                p.test_command = test_command;
+                p.test_commands = Some(test_commands(&loaded.repo.commands));
+                p.doc = Some(card.and_then(|c| c.doc.clone()).unwrap_or_default());
+            }
             Some(card.map_or(vec![], |c| c.anchors.clone()))
         }
         Role::Tester => {
@@ -332,17 +347,7 @@ fn assemble(
             p.purpose = Some(def.purpose.clone());
             p.primary_paths = Some(primary_paths);
             p.test_command = test_command;
-            p.test_commands = Some(
-                loaded
-                    .repo
-                    .commands
-                    .test
-                    .iter()
-                    .map(|c| match c {
-                        CommandEntry::Plain(cmd) | CommandEntry::Timed { cmd, .. } => cmd.clone(),
-                    })
-                    .collect(),
-            );
+            p.test_commands = Some(test_commands(&loaded.repo.commands));
             p.bug = card
                 .and_then(|c| {
                     c.gaps
@@ -360,14 +365,34 @@ fn assemble(
         .and_then(|c| c.reviewed.as_ref())
         .filter(|r| git::has_object(root, &r.tree));
     if diff
-        && matches!(role, Role::Maintainer | Role::Tester)
+        && matches!(role, Role::Maintainer | Role::Tester | Role::Reviewer)
         && let Some(reviewed) = stamped
     {
-        let tree = reviewed.tree.as_str();
         let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
         let entries = git::ls_tree(root, snapshot)?;
-        let owned = stale_files(root, snapshot, &entries, &router, name, Some(reviewed))?
+        let mut tree = reviewed.tree.as_str();
+        let mut owned = stale_files(root, snapshot, &entries, &router, name, Some(reviewed))?
             .unwrap_or_default();
+        if role == Role::Reviewer {
+            // From the oldest of the stamp and the role marks, so a unit due only because a mark
+            // is behind shows the change that mark has not seen.
+            // simplified: a tree has no time, so the oldest is the one the most owned files
+            // changed since; a revert can fool it. Record each mark's time if that shows up.
+            let marks = [reviewed.tester.as_deref(), reviewed.documenter.as_deref()];
+            for mark in marks.into_iter().flatten() {
+                if !git::has_object(root, mark) {
+                    continue;
+                }
+                let since: Vec<String> =
+                    changed_since(root, snapshot, &entries, &router, name, Some(mark))?
+                        .into_iter()
+                        .filter(|p| router.owner(p) == Some(name))
+                        .collect();
+                if since.len() > owned.len() {
+                    (tree, owned) = (mark, since);
+                }
+            }
+        }
         if let Some(specs) = &mut anchor_specs {
             specs.retain(|a| owned.contains(&a.path));
         }
@@ -387,20 +412,12 @@ fn assemble(
         }
         p.hunks = Some(hunks);
         p.changed_files = Some(owned);
+        // the review brief lists them once, for every unit
         if role == Role::Maintainer {
-            // Each other unit measured from its own stamp; fresh units contribute nothing.
-            let mut other = Vec::new();
-            for u in loaded.units.iter().filter(|u| u.name != name) {
-                let reviewed = loaded.cards.get(&u.name).and_then(|c| c.reviewed.as_ref());
-                other.extend(
-                    stale_files(root, snapshot, &entries, &router, &u.name, reviewed)?
-                        .unwrap_or_default(),
-                );
-            }
-            other.sort();
+            let other = other_changed(root, snapshot, &entries, &router, loaded, &[name])?;
             p.other_changed_files = Some(other);
         }
-    } else if diff && role == Role::Maintainer {
+    } else if diff && matches!(role, Role::Maintainer | Role::Reviewer) {
         // A first review: every file the unit owns, as `next` lists for a never-stamped unit.
         let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
         let entries = git::ls_tree(root, snapshot)?;
@@ -418,8 +435,129 @@ fn assemble(
                 .collect(),
         );
     }
-    p.fit(budget);
+    // `review` fits the review pack's units together
+    if role != Role::Reviewer {
+        p.fit(budget);
+    }
     Ok(p)
+}
+
+/// The repo's `commands.test` entries.
+fn test_commands(commands: &Commands) -> Vec<String> {
+    commands
+        .test
+        .iter()
+        .map(|c| match c {
+            CommandEntry::Plain(cmd) | CommandEntry::Timed { cmd, .. } => cmd.clone(),
+        })
+        .collect()
+}
+
+/// The files of every unit but `skip` changed since that unit's own stamp; fresh units contribute
+/// nothing.
+fn other_changed(
+    root: &Path,
+    snapshot: &str,
+    entries: &[(String, String)],
+    router: &Router,
+    loaded: &Loaded,
+    skip: &[&str],
+) -> Result<Vec<String>> {
+    let mut other = Vec::new();
+    for u in loaded
+        .units
+        .iter()
+        .filter(|u| !skip.contains(&u.name.as_str()))
+    {
+        let reviewed = loaded.cards.get(&u.name).and_then(|c| c.reviewed.as_ref());
+        other.extend(
+            stale_files(root, snapshot, entries, router, &u.name, reviewed)?.unwrap_or_default(),
+        );
+    }
+    other.sort();
+    Ok(other)
+}
+
+/// The review brief's pack: the reviewer's section of each unit of `due` (in units.toml order),
+/// added while the whole rendering fits `REVIEW_BUDGET`. The first unit is always in; alone over
+/// the budget, it is shrunk by `squeeze` and no other unit joins it. From the first unit that
+/// does not fit on, the units are `next_round`. The files changed in units not due are listed
+/// once.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewPack {
+    pub budget: usize,
+    pub bytes: usize,
+    pub units: Vec<Pack>,
+    pub other_changed_files: Vec<String>,
+    pub next_round: Vec<String>,
+}
+
+pub fn review(repo: &Repo, due: &[DueUnit], task: &str, snapshot: &str) -> Result<ReviewPack> {
+    let loaded = repo.loaded()?;
+    let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+    let entries = git::ls_tree(&repo.root, snapshot)?;
+    let names: Vec<&str> = due.iter().map(|(u, _)| u.as_str()).collect();
+    let other = other_changed(&repo.root, snapshot, &entries, &router, loaded, &names)?;
+    let mut r = ReviewPack {
+        budget: REVIEW_BUDGET,
+        bytes: 0,
+        units: vec![],
+        other_changed_files: other,
+        next_round: vec![],
+    };
+    // what a unit section may take: the budget less the rest and the newline joining them
+    let room = |r: &ReviewPack| REVIEW_BUDGET.saturating_sub(r.render().len() + 1);
+    for (i, (unit, reasons)) in due.iter().enumerate() {
+        let mut p = assemble(repo, Some(unit), Role::Reviewer, task, true, snapshot, None)?;
+        p.due_because = Some(reasons.clone());
+        p.bytes = p.render().len();
+        if p.bytes <= room(&r) {
+            r.units.push(p);
+            continue;
+        }
+        let alone = r.units.is_empty();
+        r.next_round = names[i + usize::from(alone)..]
+            .iter()
+            .map(|u| u.to_string())
+            .collect();
+        if alone {
+            p.squeeze(room(&r));
+            r.units.push(p);
+        }
+        break;
+    }
+    // the next-round line may push the last units out
+    while r.render().len() > REVIEW_BUDGET && r.units.len() > 1 {
+        let last = r.units.pop().and_then(|p| p.unit).unwrap_or_default();
+        r.next_round.insert(0, last);
+    }
+    r.bytes = r.render().len();
+    Ok(r)
+}
+
+impl ReviewPack {
+    pub fn render(&self) -> String {
+        let mut out: Vec<String> = self.units.iter().map(Pack::render).collect();
+        if !self.other_changed_files.is_empty() {
+            out.push(format!(
+                "# Other changed files\n\nIn units not under review:\n\n{}",
+                paths_table(&self.other_changed_files)
+            ));
+        }
+        if !self.next_round.is_empty() {
+            out.push(format!(
+                "# Next round\n\nDue, but over this pack's budget; not in this review: {}\n",
+                one_line(&self.next_round.join(", "))
+            ));
+        }
+        out.join("\n")
+    }
+}
+
+impl Human for ReviewPack {
+    fn render(&self) -> String {
+        ReviewPack::render(self)
+    }
 }
 
 /// The window around the match at file line `line`, cut to half its reach on each side.
@@ -482,6 +620,12 @@ impl Pack {
             self.role.as_str(),
             one_line(&self.task)
         );
+        if let Some(reasons) = &self.due_because {
+            out += &format!("Due because: {}\n", one_line(&reasons.join("; ")));
+        }
+        if self.role == Role::Reviewer && !self.dropped.is_empty() {
+            out += &format!("Left out to fit: {}\n", one_line(&self.dropped.join("; ")));
+        }
         let mut section = |title: &str, body: String| {
             out += &format!("\n## {title}\n\n{body}");
         };
@@ -733,6 +877,49 @@ impl Pack {
         self.bytes = self.render().len();
         self.over_budget = self.bytes > budget;
     }
+
+    /// `fit`, then the review pack's last cuts until the rendering fits `budget`: the doc, the
+    /// scenarios, then every fenced body left (purpose, sources, hunks) cut to one length.
+    fn squeeze(&mut self, budget: usize) {
+        self.fit(budget);
+        let fits = |p: &Pack| p.render().len() <= budget;
+        if !fits(self) && self.doc.take().is_some() {
+            self.dropped.push("doc".into());
+        }
+        if !fits(self) && self.scenarios.take().is_some() {
+            self.dropped.push("scenarios".into());
+        }
+        if !fits(self) {
+            let start = self.bodies().map(|b| b.len()).max().unwrap_or(0);
+            let mut cap = start;
+            while !fits(self) && cap > 0 {
+                cap /= 2;
+                for body in self.bodies() {
+                    let mut end = cap.min(body.len());
+                    while !body.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    body.truncate(end);
+                }
+            }
+            if cap < start {
+                self.dropped
+                    .push(format!("fenced bodies cut to {cap} bytes"));
+            }
+        }
+        self.bytes = self.render().len();
+        self.over_budget = self.bytes > budget;
+    }
+
+    /// The fenced bodies a cut can shorten: the purpose, anchor sources, and hunks.
+    fn bodies(&mut self) -> impl Iterator<Item = &mut String> {
+        let sources = self.anchors.iter_mut().flatten();
+        let hunks = self.hunks.iter_mut().flatten();
+        self.purpose
+            .iter_mut()
+            .chain(sources.filter_map(|a| a.source.as_mut()))
+            .chain(hunks.filter_map(|h| h.diff.as_mut()))
+    }
 }
 
 impl Human for Pack {
@@ -754,6 +941,17 @@ pub fn run(
         Some(t) => t.to_string(),
         None => git::task_text(&repo.root)?,
     };
+    if role == Role::Reviewer {
+        if let Some(u) = unit {
+            bail!(usage(
+                format!("the reviewer's pack takes no unit, got `{u}`"),
+                "stewards pack --role reviewer",
+            ));
+        }
+        let (snapshot, task, due) = crate::next::review_due(repo, Some(&task))?;
+        emit(&review(repo, &due, &task, &snapshot)?, g.human);
+        return Ok(ExitCode::SUCCESS);
+    }
     let snapshot = git::snapshot(&repo.root)?;
     emit(&pack(repo, unit, role, &task, diff, &snapshot)?, g.human);
     Ok(ExitCode::SUCCESS)

@@ -8,7 +8,7 @@ The model unit is how stewards learns what a repo says about itself and where it
 
 ## How it works
 
-Loading starts in src/workspace.rs. discover looks for a stewards.toml at or above the cwd; one found wins over a nearer .git and lists the workspace's repos. Otherwise it takes the enclosing git root, or fails with not_a_git_repo. A repo without .stewards/repo.toml loads as None, and `only` narrows a workspace to one repo or fails with unknown_repo. current_repo picks the repo containing the cwd, else the lone repo, else not_in_repo. repo_containing gives the repo with the deepest root containing a path. loaded_repos pairs each repo with its Loaded, skipping uninitialized siblings in an unselected workspace (otherwise no_stewards_dir). Parsing is load_repo in src/model.rs: it reads .stewards/ under the git root, checks the schema version first (schema_too_new), then parses fully, reporting invalid_toml with file:line (also for a duplicate unit name). A missing units.toml, card or test card is fine. Anchor::parse splits `path::name` at the first `::`, both sides non-empty. Roles parse from six lowercase names, else unknown_role; Loaded::unit gives the unit or unknown_unit, and Loaded::card gives a unit's card, or an empty card for that unit when it has none yet. All repo file access goes through safe_path: root/rel only when each part is a plain name and no existing component below root is a symlink, else unsafe_path. write renames a unique temp file over the target, so a planted link is replaced, never followed; it keeps permissions. append and remove act only on regular files and refuse symlinked paths; removing a missing file is Ok. In src/user.rs, load_config_from reads config.toml from $STEWARDS_HOME or ~/.stewards; Config::model(harness, role) gives the pinned alias or None. load_memory_from reads memory.toml [[entry]] items (missing is empty, malformed is invalid_toml with file:line). memory_for keeps entries matching the role and languages (absent means all), in file order, stopping before the first entry that pushes text past budget_bytes.
+Loading starts in src/workspace.rs. discover looks for a stewards.toml at or above the cwd; one found wins over a nearer .git and lists the workspace's repos. Otherwise it takes the enclosing git root, or fails with not_a_git_repo. A repo without .stewards/repo.toml loads as None, and `only` narrows a workspace to one repo or fails with unknown_repo. current_repo picks the repo containing the cwd, else the lone repo, else not_in_repo. repo_containing gives the repo with the deepest root containing a path. loaded_repos pairs each repo with its Loaded, skipping uninitialized siblings in an unselected workspace (otherwise no_stewards_dir). Parsing is load_repo in src/model.rs: it reads .stewards/ under the git root, checks the schema version first (schema_too_new), then parses fully, reporting invalid_toml with file:line (also for a duplicate unit name). A missing units.toml, card or test card is fine. Anchor::parse splits `path::name` at the first `::`, both sides non-empty. Roles parse from seven lowercase names, else unknown_role; Loaded::unit gives the unit or unknown_unit, and Loaded::card gives a unit's card, or an empty card for that unit when it has none yet. All repo file access goes through safe_path: root/rel only when each part is a plain name and no existing component below root is a symlink, else unsafe_path. write renames a unique temp file over the target, so a planted link is replaced, never followed; it keeps permissions. append and remove act only on regular files and refuse symlinked paths; removing a missing file is Ok. In src/user.rs, load_config_from reads config.toml from $STEWARDS_HOME or ~/.stewards; Config::model(harness, role) gives the pinned alias or None. load_memory_from reads memory.toml [[entry]] items (missing is empty, malformed is invalid_toml with file:line). memory_for keeps entries matching the role and languages (absent means all), in file order, stopping before the first entry that pushes text past budget_bytes.
 
 ## How to change it
 
@@ -18,11 +18,11 @@ Start from the anchor for the behavior you want: load_repo or the type definitio
 
 | id | contract | anchor |
 |---|---|---|
-| load-repo | Reads .stewards/ under git root into Loaded. Errors\: not\_a\_git\_repo, no\_stewards\_dir, schema\_too\_new (checked before the full parse), invalid\_toml with file\:line (also duplicate unit name), unsafe\_path for a symlinked file or dir. A missing units.toml, card, or test card is fine. | [src/model.rs\:\:load\_repo](../../src/model.rs#L353) |
+| load-repo | Reads .stewards/ under git root into Loaded. Errors\: not\_a\_git\_repo, no\_stewards\_dir, schema\_too\_new (checked before the full parse), invalid\_toml with file\:line (also duplicate unit name), unsafe\_path for a symlinked file or dir. A missing units.toml, card, or test card is fine. | [src/model.rs\:\:load\_repo](../../src/model.rs#L356) |
 | unit-name | A unit name in units.toml must match \[a-z0-9\]\[a-z0-9\_-\]\*, else deserialization fails. | [src/model.rs\:\:unit\_name](../../src/model.rs#L145) |
 | anchor-parse | Anchor\:\:parse splits \`path\:\:name\` at the first \`\:\:\`; both sides non-empty, else an error. | [src/model.rs\:\:parse](../../src/model.rs#L200) |
 | loaded-unit | Loaded\:\:unit(name) returns the unit or unknown\_unit listing every unit name. | [src/model.rs\:\:unit](../../src/model.rs#L162) |
-| role-from-str | Parses the six lowercase role names; anything else is unknown\_role. | [src/model.rs\:\:from\_str](../../src/model.rs#L298) |
+| role-from-str | Parses the seven lowercase role names (developer, maintainer, tester, documenter, validator, architect, reviewer); anything else is unknown\_role. | [src/model.rs\:\:from\_str](../../src/model.rs#L300) |
 | discover | A stewards.toml at or above cwd wins over the nearer .git and lists repos (workspace\_repo\_missing for a non-dir entry); else the enclosing git root, or not\_a\_git\_repo. A repo without .stewards/repo.toml loads as None. \`only\` keeps one repo by name, else unknown\_repo listing names. | [src/workspace.rs\:\:discover](../../src/workspace.rs#L33) |
 | repo-containing | The repo with the deepest root containing canonical \`path\`, so a nested repo owns its files; None when none contains it. | [src/workspace.rs\:\:repo\_containing](../../src/workspace.rs#L139) |
 | current-repo | The repo containing cwd, else the lone repo, else not\_in\_repo. | [src/workspace.rs\:\:current\_repo](../../src/workspace.rs#L152) |
@@ -35,10 +35,13 @@ Start from the anchor for the behavior you want: load_repo or the type definitio
 | user-config | Reads config.toml from the user dir (\$STEWARDS\_HOME, else \~/.stewards); missing file is an empty Config; Config\:\:model(harness, role) is the pinned alias or None. Never writes. | [src/user.rs\:\:load\_config\_from](../../src/user.rs#L47) |
 | user-memory | Reads memory.toml \[\[entry\]\] items from the user dir; missing file is empty; malformed is invalid\_toml with file\:line. Never writes. | [src/user.rs\:\:load\_memory\_from](../../src/user.rs#L51) |
 | memory-for | Entries whose roles (absent = all) include role and whose languages (absent = all) share one with \`languages\`, in file order, stopping before the first entry that pushes total text bytes past budget\_bytes. | [src/user.rs\:\:memory\_for](../../src/user.rs#L65) |
+| loaded-card | Loaded\:\:card(unit) returns a clone of the unit's card, or an empty card (unit set, reviewed None, no interface, anchors, gaps, or doc) when it has none yet. The one lookup submit and check use instead of their own copies. | [src/model.rs\:\:card](../../src/model.rs#L342) |
 
 ## Scenarios
 
-_None._
+| id | interface | given | expect | level |
+|---|---|---|---|---|
+| loaded-card-empty-when-missing | loaded-unit | a loaded repo where unit api has a card file and unit store has none | Loaded\:\:card("api") returns the stored card; Loaded\:\:card("store") returns an empty card named store (no stamp, interface, anchors, gaps or doc) without adding it to Loaded.cards | integration |
 
 ## Flows
 
@@ -55,4 +58,4 @@ _None._
 
 ## Last reviewed
 
-ccd203c122f389e6b86c83753295c84769496a3e
+2d972b0896b3296afa9472532b7f9f0cf954c19e

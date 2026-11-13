@@ -1,0 +1,5 @@
+Explain how creating an item works end to end in this project.
+
+Cover what happens when a user runs the CLI create command, how the
+TypeScript client calls the API, and where the item ends up. Point to the
+specific files and functions involved.

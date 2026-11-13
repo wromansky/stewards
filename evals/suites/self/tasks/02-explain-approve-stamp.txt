@@ -1,0 +1,5 @@
+Explain what happens when a maintainer's approving review is submitted.
+
+Cover how `stewards submit` decides to stamp the unit, what it writes and
+where, and how `stewards next` then knows the unit is fresh. Point to the
+specific files and functions involved.

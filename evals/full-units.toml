@@ -1,0 +1,22 @@
+# Units of the eval's `full` arm, set by hand. On this fixture `stewards init`
+# proposes one unit, `cli` (the only manifest root), and leaves `api/` and
+# `client/` unowned. `stewards eval` copies this file over
+# `.stewards/units.toml` after `stewards init` and before the adoption session.
+# Each unit's tests sit inside its directory. The root `.gitignore` and
+# `AGENTS.md` stay unowned (`unowned` in evals/suites/fixture.toml); the test
+# files adoption may add are its `tests`.
+
+[[unit]]
+name = "api"
+purpose = ""
+paths = ["api/**"]
+
+[[unit]]
+name = "client"
+purpose = ""
+paths = ["client/**"]
+
+[[unit]]
+name = "cli"
+purpose = ""
+paths = ["cli/**"]

@@ -8,15 +8,20 @@ reopen one by editing this file, not by drifting in code.
 Five, all primary, in the author's words:
 
 1. Same behavior across harnesses.
-2. Maximum token efficiency.
+2. Reviewed changes and a repository memory at a small, measured overhead:
+   one review subagent per change, not a token saving.
 3. Maximum code cleanliness.
 4. Documentation generated from code.
 5. Knowledge persists across sessions.
 
+The saving was tested and not found: four thin-eval passes on 2026-11-12
+(three on the fixture, one on this repository) cost `full` more tokens
+than `bare` on every task; see "What the thin eval showed" in the Handoff.
+
 Audience for year one: the author, across their own repos.
 
-Feel: a team to delegate to. The agent's main move is handing work to a
-specialist that already knows the area.
+Feel: a team that already knows the repo. The agent makes the change and
+hands its review to one subagent that already knows the area.
 
 What persists: structure (areas, owners, anchors), contracts (interfaces and
 expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
@@ -57,17 +62,20 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   repo gets the same block there. `init` places the block at the top of
   `AGENTS.md`, because some harnesses truncate project docs or take only
   the first matching file.
-- **Efficiency:** three numbers go down (main context per task, total tokens
-  per task, repeated work across sessions), and each agent gets the exact
-  context its job needs: no more, no less.
+- **Overhead:** each agent gets the exact context its job needs, no more,
+  no less, and a change costs one review job, not one per unit and role.
+  Eval runs and telemetry measure the overhead; nothing promises a saving.
 - **License:** MIT, no attribution section. Clean room: no text from any
   earlier private project.
 
 ### Team
 
-- **Roles, six:** four per unit and two that work across them (the
-  validator takes the bug's unit; the architect takes none, so `pack`,
-  `brief`, and `submit` omit the unit for it). Developer (implements one
+- **Roles, seven:** four per unit and three that work across them (the
+  validator takes the bug's unit; the architect and the reviewer take none,
+  so `pack`, `brief`, and `submit` omit the unit for them). Reviewer
+  (reviews one change across every unit it touched: the maintainer's review
+  of each unit's diff, its test command run, its card, scenarios, and docs
+  kept true, never edits source), developer (implements one
   task of the maintainer's plan, writes only the files in its lane, never
   stamps), maintainer (explains, plans, splits a plan into developer tasks,
   reviews the diff for cleanliness and surgical scope, keeps the card
@@ -76,6 +84,13 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   unit's card), validator (judges a bug from its reproduction, severity from
   evidence only), architect (plans changes that cross units, records flows
   and decisions, proposes unit boundaries).
+- **Two flows:** the per-change flow is the reviewer: plain `next` folds
+  every stamped unit due for a maintainer, tester, or documenter job into
+  one reviewer job. The per-role flow is for adoption (`init --draft`, then
+  `next --roles` until it lists no jobs), for `next --roles` on request or
+  before a release, and for plans (maintainer explain, developer tasks,
+  architect). A unit's first review is always its maintainer's. A unit
+  stamped through either flow is fresh for both.
 - **Team member, physically:** the same in every harness: a fresh-context
   child that reads a brief by path and runs shell. Where the harness has a
   file format for a reusable role, `render` writes one file per role from
@@ -100,7 +115,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   `stewards submit <unit> --role <r> --file <f>`, fixing and retrying up to
   three times on a validation error; the main agent receives only what
   submit prints: a one-line summary, plus the answer's `explanation` (capped
-  at 2,000 characters) for explain and plan jobs. Every LLM step uses this
+  at 2,000 characters) for explain and plan jobs, and each finding's file,
+  line, and `cut` for a reviewer's `changes`. Every LLM step uses this
   loop, including `init --draft`.
 - **Developers:** a maintainer has one developer by default and several
   when it splits its plan. Each task in the plan names its **lane**: the
@@ -110,18 +126,22 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   maintainer splits only work whose pieces build and check independently;
   anything else is one task. Reporting is by artifact, because most
   harnesses cap subagent depth at one: the maintainer's tasks become the
-  developers' briefs, their combined diff becomes the maintainer's one
-  review, and the main agent only dispatches. A developer is a fresh child
+  developers' briefs, their combined diff is reviewed once (by the
+  per-change reviewer, or with `--roles` the maintainer), and the main
+  agent only dispatches. A developer is a fresh child
   per task, not a standing process; what makes it the unit's own is its
-  pack. The main agent may make a small edit itself; the review is the same.
+  pack. A change with no maintainer plan the main agent makes itself; the
+  review is the same.
 - **Lanes, checked:** a developer's answer does not list its files; at its
   `submit` the tool diffs the brief's snapshot against the tree and reports
   any changed file the unit owns that is in no current task's lane, as
   `out of lane` in the summary. It is a report, not a rejection: the write
   has happened, and the maintainer's review sees it as untraced.
-- **Fix loop:** a review's findings are the next task. An answer file stays
+- **Fix loop:** a review's findings are the next task. A reviewer's submit
+  prints each finding's file, line, and `cut` text, so the main agent fixes
+  them itself and runs `next` again. An answer file stays
   writable after it is validated, so the tool does not read it again: at
-  the maintainer's `submit` it writes the accepted task list to its own
+  the maintainer's or reviewer's `submit` it writes the accepted task list to its own
   file, `.stewards/briefs/<unit>-tasks.json` (an explain answer's `tasks`,
   or a review's `findings` as one task whose lane is the files the findings
   name; an approval removes it), and `brief <unit> --role developer`
@@ -130,22 +150,28 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Tests, two writers in turn:** a developer writes the check for its task
   inside its lane; the tester writes scenario tests for the contract and
   may edit any test under the test roots. They never overlap: developers
-  run in the changing step, the tester in the `next` round after it.
-- **Job files:** one open job per (unit, role), or per task for developers.
-  The brief is `.stewards/briefs/<unit>-<role>.md` (`architect.md` for the
-  architect, `<unit>-developer-<n>.md` per task),
+  run in the changing step, the tester in a `next --roles` round after it.
+  The per-change reviewer writes no tests: it runs the unit's test command
+  and may upsert scenarios.
+- **Job files:** one open job per (unit, role), or per task for developers,
+  and one review per repo. The brief is `.stewards/briefs/<unit>-<role>.md`
+  (`architect.md` for the architect, `review.md` for the reviewer,
+  `<unit>-developer-<n>.md` per task),
   the answer `<same>.answer.json`; a new job overwrites both, so nothing
   accumulates. The brief's first line is a tool-owned header recording the
   mode, the snapshot it was packed from, the pack's bytes and anchor count,
-  and the bug title for a validator job; `submit` reads it. A successful
+  the bug title for a validator job, and the units a reviewer job covers;
+  `submit` reads it. A successful
   `submit` removes the answer with the brief when `--file` is that
   `.answer.json` path; a failed one leaves both for a retry.
-- **Stamp:** only a maintainer review `submit` with `verdict: approve`
-  stamps, and it stamps the brief's snapshot, not the tree at submit time,
+- **Stamp:** only an approval stamps: a maintainer review `submit` with
+  `verdict: approve`, or a reviewer's unit with `verdict: approve`. It
+  stamps the brief's snapshot, not the tree at submit time,
   so anything written since (a parallel tester's tests, an applied finding)
   is still stale and gets its own review. `approve` means no findings and
-  `changes` means at least one; `submit` rejects either verdict otherwise. Explain jobs, `changes`
-  verdicts, and the other roles never stamp. `stamp <unit>` is the human
+  `changes` means at least one; `submit` rejects either verdict otherwise.
+  A reviewer cannot approve a unit whose test command it reports failing.
+  Explain jobs, `changes` verdicts, and the other roles never stamp. `stamp <unit>` is the human
   override.
 - **Role marks:** the tester's and documenter's submits each record the
   snapshot they finished at, beside the stamp. Their jobs are due by what
@@ -154,13 +180,17 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   new tests do not call the tester back. With no mark, the stamp is used;
   when a new stamp replaces it, a role with no mark takes the old stamp as
   its mark, so a pending tester or documenter job survives the maintainer's
-  approval.
-- **Triggers:** before changing, `route` the files and brief the owning
-  maintainer to explain and plan; two or more units, or no owner, brief the
-  architect first. To change, `brief <unit> --role developer` writes one
+  approval. A reviewer's approval sets both marks to the stamp, since the
+  reviewer answered for all three roles.
+- **Triggers:** before changing, `route` the files; a change the main agent
+  cannot plan from the unit pages goes to the owning maintainer to explain
+  and plan, or, for two or more units or no owner, to the architect. To change, `brief <unit> --role developer` writes one
   brief per task of the maintainer's plan (or the unit's step of an open
-  architect plan) and the main agent dispatches them. Before reporting done, `next` finds the stale units and
-  writes the jobs: maintainer review for every stale unit; tester when a
+  architect plan) and the main agent dispatches them; a change with no plan
+  the main agent makes itself. Before reporting done, `next` finds the
+  units due and writes one review brief covering every stamped one, plus a
+  maintainer first review for each never-stamped one; `next --roles` writes
+  the per-role jobs instead: maintainer review for every stale unit; tester when a
   change since its mark touched an interface's lines or a file under
   `test_roots`; documenter when a change since its mark touched an
   interface's lines (a change only in a private helper an interface calls
@@ -168,7 +198,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   languages the line rule knows, any change to the interface's file
   counts); architect when
   two or more units changed since their stamps and no plan covers them;
-  validator for a bug with no severity. Done means `next` lists no jobs.
+  validator for a bug with no severity. Done means plain `next` lists no
+  jobs.
   `check` covers review only (stamps, anchors, scenario ids): it is what
   the hook and CI run.
 - **Modes:** `next` writes review briefs; `brief` writes explain briefs,
@@ -191,7 +222,7 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   card. Interface entries with ids live in the card; scenarios reference them.
 - **Writing knowledge:** every delegated job ends in a typed `submit` the
   tool validates and writes; `next` puts every stale unit back in front of
-  its maintainer. Agents never hand-edit cards.
+  the reviewer (its maintainer with `--roles`). Agents never hand-edit cards.
 - **Staleness:** `[reviewed]` records the stamped snapshot tree, the unit's
   fingerprint in it (sha256 over the blobs of the files it owns), and the
   commit for display. `check` fails when a unit's current fingerprint
@@ -216,15 +247,17 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   fresh again; a closed plan is deleted (git history keeps it).
 - **Debt:** `simplified:` comments are computed on demand by `debt` and
   attached to the owning unit by route; never stored.
-- **Bugs:** a tester's `bugs[]` and `validate --report` both land on the
-  owning card as `[[gap]] kind = "bug"` with the repro, keyed by title; a
+- **Bugs:** a tester's or reviewer's `bugs[]` and `validate --report` both
+  land on the owning card as `[[gap]] kind = "bug"` with the repro, keyed by title; a
   tester's bug that names an interface takes that interface's anchor as its
   `anchor`, and one that names none keeps the anchor it had. The
   validator's submit sets `severity`, or removes a bug it judges not real;
   the maintainer closes a fixed one like any gap.
-- **Docs:** `docs/units/<unit>.md` is rendered from the card; the documenter
-  writes only the prose sections; `docs/units/README.md` is the human index
-  with flows and decisions.
+- **Docs:** `docs/units/<unit>.md` is rendered from the card; the
+  documenter, or the reviewer through a unit's `doc`, writes only the prose
+  sections; a reviewer's submit renders the page again for every unit whose
+  card or test card it wrote and which has docs; `docs/units/README.md` is
+  the human index with flows and decisions.
 - **Memory:** `~/.stewards/memory.toml`, hand-edited one-liners with optional
   language or role filters; roles never write it; matching entries are
   packed into every brief under a byte budget.
@@ -265,7 +298,7 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   remote host picks `gh` or `glab`.
 - **Telemetry:** `.stewards/telemetry/<yyyy-mm>.jsonl`, gitignored, one line
   per submit: unit, role, task, pack bytes and anchor count, pulled anchors,
-  harness, timestamp. Token counts come from eval transcripts, never from
+  harness, timestamp, and for a reviewer the number of units it covered. Token counts come from eval transcripts, never from
   what a subagent says about itself.
 - **Evals:** `stewards eval` drives Claude Code, Codex, and Pi over a
   purpose-built fixture, three arms, graders for all five goals; on demand
@@ -307,7 +340,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **stamp**: recording that a unit was reviewed at a snapshot.
 - **fingerprint**: sha256 over the blobs of the files a unit owns in a
   snapshot; **stale**: the current fingerprint differs from the stamped one.
-- **job**: one (unit, role) task `next` decides is due.
+- **job**: one task `next` decides is due: one review covering every unit a
+  change touched, or with `--roles` one per (unit, role).
 - **plan**: an architect's ordered steps across units, tracked by `next`.
 - **ritual**: entering → before change → before done.
 - **arm**: an eval configuration (`bare`, `block-only`, `full`).
@@ -365,7 +399,7 @@ unit = "api"
 commit = "f0b4435"                       # informational
 fingerprint = "sha256:..."               # what check compares
 tree = "<snapshot tree sha>"             # the snapshot stamped; the review diff starts here
-tester = "<snapshot tree sha>"           # role marks: where the tester and documenter last finished
+tester = "<snapshot tree sha>"           # role marks: where the tester and documenter last finished; a reviewer's approval sets both to its stamp
 documenter = "<snapshot tree sha>"
 [[interface]]
 id = "create-item"
@@ -454,21 +488,21 @@ never routed, never reported as unowned, so no unit ever owns them.
 | Command | Does |
 |---|---|
 | `guide [--harness h] [--all] [--errors] [--glossary]` | prints the ritual, roles, editing rules, delegation text for the detected harness, error codes, glossary |
-| `init [--draft] [--hooks] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts and writes the AGENTS.md block; `--draft` briefs the naming and card drafting; `--hooks` installs the pre-push hook; `--ci` writes the CI template |
+| `init [--draft] [--hooks] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts and writes the AGENTS.md block; `--draft` briefs the naming and card drafting and says to finish with `next --roles`; `--hooks` installs the pre-push hook; `--ci` writes the CI template |
 | `status [--telemetry]` | units, freshness, coverage, gaps, across the workspace; uninitialized repos |
 | `route <path>...` | owning unit per path, `null` when none; no LLM: an unowned path goes to the architect |
-| `pack [unit] --role <r> [--diff] [--task t]` | the context pack; no unit for the architect |
-| `brief [unit] --role <r> [--task t] [--stdout]` | writes an explain brief, prints its path and size |
-| `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update; an approving maintainer review stamps |
+| `pack [unit] --role <r> [--diff] [--task t]` | the context pack; no unit for the architect or the reviewer (the reviewer's is every due unit's section and the next-round names) |
+| `brief [unit] --role <r> [--task t] [--stdout]` | writes an explain brief (the review brief for the reviewer, a `usage` error when no stamped unit is due), prints its path and size |
+| `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update; an approving maintainer review, or a reviewer's approved unit, stamps |
 | `stamp <unit>` | records `[reviewed]` at the current snapshot; the human override |
-| `next [--task t] [--no-brief] [--no-run] [--pr n]` | finds the stale units, runs `check` and plan step checks, writes the review briefs, prints the jobs |
+| `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check` and plan step checks, writes the review brief (with `--roles`, the per-role briefs), prints the jobs |
 | `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files |
 | `validate [--report <f>] [--export]` | `--report` records a bug on its unit's card, runs the repro through the allowlist, writes the validator brief; `--export` files an issue for every judged bug that has none |
 | `review --pr <n>` | maintainer review briefs on a PR or MR diff; findings posted as review comments |
 | `debt` | `simplified:` comments attached to units |
 | `docs [unit]` | renders `docs/units/<unit>.md` and the index |
-| `render --harness <h> [--repo-level]` | writes the six native role agents |
-| `eval [--harness h] [--arm a] [--task n] [--max-cost usd]` | runs the eval suite |
+| `render --harness <h> [--repo-level]` | writes the seven native role agents |
+| `eval [--harness h] [--suite s] [--arm a] [--task n]... [--runs n] [--max-cost usd] [--no-developers] [--model id] [--thinking level] [--setup-dir d] [--keep-work]` | runs the eval suite; exit 0 when the suite passes, 1 otherwise |
 | `completions <shell>` | shell completions |
 
 Global flags: `--human`, `--repo <name>`, `-C <dir>`, `--direct`. JSON by
@@ -508,12 +542,28 @@ hunks are truncated.
 | validator | purpose, paths, interface, primary_paths, the bug, test_command, commands.test, repro_result |
 | architect | every unit's purpose, interface ids, paths, and owned-file count, all flows, all decisions; no anchors, no source |
 | developer | purpose, paths, interface, its task (change, lane, check), anchors (+source) in its lane, gaps, flows |
+| reviewer | per covered unit: why it is due, the maintainer's `--diff` sections (hunks from the oldest of its stamp and role marks) plus scenarios, test_command, commands.test, and doc prose; once for the brief, the files changed in units not due |
 
+The reviewer's pack is one section per unit it covers, under one budget of
+48,000 bytes for them all (a constant, not a `[budgets]` key). Units join
+in `units.toml` order while the total fits; from the first that does not
+fit on, units are listed as next round: named in the brief and in the job's
+reasons, not covered by this job, and still due, so the next `next` lists
+them. The first unit always joins; alone over the budget, it is shrunk as
+any pack is (below), then loses its doc, then its scenarios, then has every
+fenced body left (purpose, sources, hunks) cut to one length until it fits,
+each cut named on its section's "Left out to fit" line, and no other unit
+joins it. Each unit's section opens with a "Due because" line: the reasons
+of its jobs. Its hunks run from the oldest of its stamp, tester mark, and
+documenter mark whose tree exists (a tree has no time, so the oldest is the
+one the most of its files changed since), so a unit due only because a
+mark is behind its stamp shows the change that mark has not seen.
 Source windows are 20 lines before and after the match (the definition span
 with tree-sitter). Budget is bytes of the `--human` rendering. Shrink order:
 halve every source window once; drop windows last-listed first; drop gaps;
 drop flows; truncate hunks to their first 40 lines each. Purpose, interface,
-scenarios, and `other_changed_files` are never dropped. If still over,
+scenarios, and `other_changed_files` are never dropped (but for the review
+pack's last cuts above). If still over,
 `over_budget = true` with the size and no further truncation. Every removal
 is listed in `dropped`. Files matching `[pack] exclude` are named, never
 inlined.
@@ -534,7 +584,7 @@ files are `git diff --name-only <stamped tree> <snapshot>` restricted to the
 files it owns; with no stamp, or a stamped tree git has pruned, every owned
 file counts as changed and the pack has no hunks. There is no base ref:
 committed, staged, unstaged, and untracked changes are all just distance
-from the stamp. Jobs:
+from the stamp. The per-role jobs, which `next --roles` lists:
 
 - every stale unit → maintainer review
 - a change since the tester's mark touches an interface's lines, or a file
@@ -583,6 +633,17 @@ from the stamp. Jobs:
   allowlist (unless `--no-run`); a failure is reported against the flow
 - `check` failures are included; `next` exits 0 only with no jobs, a green
   `check`, and passing flow checks; otherwise 1
+
+Plain `next` lists, per repo, one `reviewer` job folding every stamped unit
+that has a maintainer (stale), tester, or documenter job above: its reasons
+are each of those jobs' reasons led by the unit's name (`api: stale`, `api:
+interface changed: src/api.rs::create_item`), its changed files and debt
+are theirs, and units past the review budget add one reason, `next round,
+over the review budget: <units>`. Its brief is `.stewards/briefs/review.md`
+and its command `stewards brief --role reviewer`. Each never-stamped unit
+keeps its maintainer job (a first review). Nothing else: no architect,
+tester, documenter, or validator job. A validator job for a bug the
+reviewer reports is a `--roles` job.
 
 ### Debt
 
@@ -689,7 +750,7 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `schema_too_new` | `repo.toml` schema > tool's | upgrade stewards (`cargo install stewards`) |
 | `invalid_toml` | parse failure, with file and line | fix the file at `<path>:<line>` |
 | `unknown_unit` | unit name not in `units.toml` | one of the listed units |
-| `unknown_role` | role not in the six | one of developer, maintainer, tester, documenter, validator, architect |
+| `unknown_role` | role not in the seven | one of developer, maintainer, tester, documenter, validator, architect, reviewer |
 | `answer_parse_failed` | `submit` can't parse the file | the field errors listed; rerun submit |
 | `answer_dead_anchor` | a patch names an anchor that doesn't resolve | correct the anchor or drop it |
 | `answer_too_long` | field over cap | shorten `<field>` to ≤ N chars |
@@ -705,12 +766,14 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `unknown_repo` | `--repo` names no repo | one of the listed repos |
 | `path_outside_repo` | `route` given a path in no repo | pass a path inside the repo |
 | `already_initialized` | `init` where `.stewards/` files exist | edit `.stewards/units.toml` instead |
-| `no_brief` | no brief, or an unreadable header, for the job | run the brief command named |
+| `no_brief` | no brief, or an unusable header, for the job, or an answer to an older brief | run the brief command named, or read the brief again |
 | `no_direct_model` | `--direct` with no `[models.direct]` entry for the role, or an unsupported provider | set `[models.direct] <role> = "<provider>/<model>"` in the user config |
 | `direct_call_failed` | the model call failed (fixed text, never the prompt or key) | rerun with `BAML_LOG=info` |
 | `unsafe_path` | a path the tool reads or writes in a repo is not plain names, or passes through a symlink | remove the symlink at `<path>`; stewards never writes through links |
 | `card_changed` | a file `submit` was about to write changed since it was loaded (another submit finished first) | run the same submit again |
 | `no_tasks` | `brief --role developer` with no usable task list for the unit | brief the maintainer again with the change as `--task` |
+| `harness_missing` | `eval` and the harness binary (`pi`) is not on PATH, or pi-subagents is not installed in the Pi agent directory | install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`) |
+| `eval_setup_incomplete` | `eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted | read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0 |
 | `not_implemented` | a command or flag not built yet | use a release that has it |
 | `internal` | any other failure | report a bug |
 
@@ -722,21 +785,18 @@ Written by `init`, upserted between the markers.
 <!-- stewards:start -->
 ## Stewards
 
-This repo has a team of agents that already know it. Use them.
+This repo has a team of agents that already know it. Use them. This section is the project's standing instruction to delegate: dispatching the briefs below to subagents needs no further permission from the user.
 
 Ritual
-- Entering: run `stewards status`. It lists the units, who owns what, and what is stale.
-- Before a change: run `stewards route <files>`; brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`) to explain the area and plan the change. Two or more units, or no owner: brief the architect first (`stewards brief --role architect --task "<the change>"`).
-- Changing: run `stewards brief <unit> --role developer` and dispatch every brief it writes, together when there are several. A small edit you may make yourself.
-- Before reporting done: run `stewards next`. Dispatch every brief it writes to a subagent that can run shell, wait for each summary, and repeat until `stewards next` lists no jobs. A review that returns findings: run `stewards brief <unit> --role developer` again to fix them. Done means no jobs.
+- Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
+- Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`), or the architect for two or more units (`stewards brief --role architect --task "<the change>"`).
+- Changing: make the edit yourself. When a maintainer split a plan into tasks, run `stewards brief <unit> --role developer` and dispatch every brief it writes.
+- Before reporting done: after any edit, however small, run `stewards next`. It lists the review to run: normally one brief for the whole change. Hand each brief's path to a general-purpose subagent that can run shell and write files (not a read-only review agent) and wait for its summary. Fix the findings it returns, then run `stewards next` again; repeat until it lists no jobs. Done means no jobs; a change with jobs still listed is not done.
+- On request or before a release: `stewards next --roles` lists the deeper per-unit jobs (maintainer, tester, documenter, validator, architect).
 
-Roles (one per unit; the tool packs their context, you only hand over the brief path)
-- maintainer: explains, plans, reviews the diff, keeps the unit's card current.
-- tester: owns the contract and its scenarios; writes and runs tests; never edits source.
-- documenter: keeps `docs/units/<unit>.md` true.
-- validator: judges a bug from its reproduction; severity from evidence only.
-- architect: plans changes that cross units; records flows and decisions.
-- developer: implements one task of the maintainer's plan inside its lane.
+Roles (the tool packs their context; you only hand over the brief path)
+- reviewer: reviews one change across the units it touched, runs their tests, keeps cards and docs true.
+- maintainer, tester, documenter, validator, architect, developer: the per-unit specialists behind `--roles`, plans and first reviews.
 
 Editing
 - Think first: state assumptions; ask when the request has two readings.
@@ -845,6 +905,31 @@ Architect:
 > change makes a boundary wrong. For an explanation: answer from the
 > summaries; name the unit to ask for detail.
 
+Reviewer:
+
+> You review one change across the units below. For each unit: read its
+> hunks against the request and check cleanliness and scope on the ladder:
+> approve only when every changed line traces to the request and nothing
+> fails a rung; an approval has no findings. For each problem give the
+> file (a file of that unit), line, the first rung it fails, what to cut,
+> and the smaller replacement. Report every problem you can find in this
+> pass: a later round should only confirm the fixes. Never flag validation
+> at trust boundaries, error handling that prevents data loss, security, or
+> accessibility. Run
+> the unit's test command, or with none the repo's test commands, and
+> report it in `check`; with no test command in the pack, `check` is null.
+> A unit whose tests fail is not approved. Keep the card true. Update
+> scenarios only if the contract changed. Write the doc when the unit has
+> none; rewrite it only if what a section says is no longer true. Report a
+> defect you will not fix as a bug. A bug's `repro` and a scenario's
+> `command` must start with one of the repo's test commands. Never edit
+> source. Open more only by anchor. One answer, one `submit`.
+
+The reviewer's brief adds one line after the role text naming the units
+under review, each to appear exactly once in `units` and no other, and one
+before the submit instructions giving its snapshot, which the answer
+copies.
+
 Answer shapes: maintainer review `verdict approve|changes`, `findings[]
 {file, line, rung, cut, replace_with}`, `card_patch {interface[], anchors[],
 gaps[]} | null`, `tester_needed` (true makes `submit` write the tester brief
@@ -854,8 +939,35 @@ and print its path); maintainer explain `explanation`, `tasks[] {title, change, 
 {scenario, pass, output}`, `bugs[] {title, repro, evidence, interface?}`,
 `tests_written[]`; documenter `doc {overview, how_it_works, how_to_change}`;
 validator `real, severity, reason, evidence[]`; architect `plan | null,
-flows[], decisions[], unit_proposals[], explanation`. All carry
-`pulled_anchors[]` and `notes`.
+flows[], decisions[], unit_proposals[], explanation`; reviewer `snapshot`,
+`units[] {unit, verdict approve|changes, findings[], card_patch | null,
+check {command, pass, output} | null, scenario_patch[] | null, bugs[] |
+null, doc | null}`. All carry `pulled_anchors[]` and `notes`.
+
+A reviewer's answer copies the brief's `snapshot`: one that differs is
+`no_brief` (it answers an older `review.md`, which `next` rewrites), and
+the fix is to read the brief again. `submit` also refuses (`no_brief`) a
+review brief whose header lists a unit that is unknown, never stamped, or
+listed twice. The answer names every unit of its brief exactly once and no
+other, and each unit's fields pass the checks and caps the maintainer's,
+tester's, and documenter's do; a unit approved with a failing `check` is
+rejected. `check` is required when the brief shows a test command for the
+unit (its own or the repo's `commands.test`) and must be null when it shows
+none, so a repo with no test command can still be approved. `doc` is
+required when the unit, with its card patch applied, has an interface and
+no docs (otherwise `next` would list it forever), and otherwise given only
+when what a section says is no longer true. `submit` validates the whole answer first and writes nothing on
+any error. Then per unit, through the same code paths: the card patch;
+bugs as the tester's become bug gaps with no severity; the doc as the
+documenter's; scenarios as the tester's, into the test card; the page
+rendered again for every unit whose card or test card was written and
+which has docs; on `approve` the stamp at the brief's snapshot with both role
+marks set there, and the unit's task list removed; on `changes` no stamp
+and the findings as the unit's fix task. The lost-update check covers every
+file it writes, and the brief is retired, as for any role. The summary
+names each unit's verdict, card changes, and whether it was stamped, and
+`findings[] {unit, file, line, cut}` (each `cut` capped at 300 characters)
+lists what to fix.
 
 Details the shapes leave open: enum values are lowercase snake case
 (`approve|changes`, `critical|medium|low`, `gap|future|bug`, the rungs as
@@ -881,7 +993,8 @@ env; `--harness <name>` forces one, `--all` prints every variant. The
 detection rule and the paragraph text per harness come from the
 `harness.rs` table (the current entries are in Facts); the generic paragraph
 says: start a fresh-context subagent that can run shell, give it the
-absolute brief path and nothing else, wait for its one-line summary.
+absolute brief path and nothing else, wait for its reply: what `submit`
+printed.
 
 ## Docs templates
 
@@ -894,6 +1007,61 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
 
 ## Evals
 
+- **Suites:** `stewards eval --suite <name>` (default `fixture`) reads
+  `evals/suites/<name>.toml`: where each arm's copy comes from, the task
+  prompts' directory, the per-session wall-clock limit
+  (`session_minutes`), and per task whether it is `read_only`, which task
+  runs first as its `setup`, and which `bare` task its files opened are
+  compared with (`files_opened_vs_bare`). `--task` takes the suite's task
+  numbers; any other, or an unknown suite, is a `usage` error. The
+  `fixture` suite is the small fixture below. The `self` suite exists
+  because one pass on the fixture showed no delegation in `full` and more
+  tokens than `bare`: at about 400 lines, reading is too cheap for
+  delegation to pay. `self` is the stewards repository itself (about 8,500
+  lines of Rust, nine adopted units with cards and docs) at a pinned
+  `commit` (`bcfccf0`, where `next` lists no jobs), cloned from the
+  checkout holding `evals/` (no network) without its remote. Its `full`
+  arm is that tree with this binary's AGENTS.md block upserted (as `init`
+  does) and committed, and no adoption session; the runner checks
+  `stewards next --no-brief` exits 0 there before any run (else
+  `eval_setup_incomplete`). `bare` is the tree without `.stewards/`,
+  `docs/units/`, and `AGENTS.md`; `block-only` adds an `AGENTS.md` holding
+  only the block. Every arm's history is one root commit, `initial`, on
+  `main`, with no other ref and an expired reflog, so no session can
+  recover `.stewards/`, `docs/units/`, or `AGENTS.md` (or later commits of
+  the checkout) from history: `bare` and `block-only` are new repositories
+  (`git init`), with no old object at all. `full` is an orphan commit in
+  the clone and keeps the clone's object store, unpruned: a unit's stamp
+  and its tester and documenter marks are tree hashes held only as
+  unreachable objects there, and `next`, the review pack, and the
+  line-level triggers diff from them; without them every owned file would
+  count as changed and the review brief would carry whole files instead
+  of hunks. A local clone carries those objects; the runner checks each
+  one exists (`git cat-file -e`) and stops with `eval_setup_incomplete`
+  naming the unit otherwise. The old commits stay reachable to `git fsck`
+  and `git cat-file` in `full`, so those join the flagged history commands
+  (see Runner). The summary records the commit git resolved. In this
+  suite the `stewards` on `full`'s `PATH` is the eval's own binary, not
+  the pinned commit's code: a session that changes stewards itself runs
+  the older or newer binary, not its edit. Its manifest's `build` (`cargo
+  build --all-targets && cargo clippy --all-targets`, so every arm starts
+  with a warm lint cache too) runs once per invocation in the clone with
+  the user's environment; its `target/` is then moved out of the clone and
+  copied (`cp -a --reflink=auto`, sharing blocks where the filesystem can)
+  into every run copy of every arm, so no arm pays a cold build and no
+  run's in-place writes (cargo rewrites fingerprints) reach the cache.
+  Only `full` copies are cleaned (`git clean -fdX`, before the cache is
+  copied in); `bare` and `block-only` copies are not, and need not be: the
+  clone holds no ignored file once `target/` is moved out. The build's
+  seconds are setup, reported outside every ratio. Its four tasks are under
+  `evals/suites/self/tasks/`: (1) a `--unit` filter for `debt`; (2)
+  explain how an approving review is stamped (read-only); (3) an optional
+  unit `owner` end to end; (4) a second-session question about `owner`
+  after task 3 (read-only, compared with `bare` task 2). A session has 60
+  minutes. The work directory is `<tmp>`, so run it with `TMPDIR` on a disk
+  with room for a target directory per run (a reflink copy shares blocks
+  only on the cache's filesystem), since a small RAM-backed `/tmp` fills.
+  The summary names the suite, the pinned commit, and its resolved hash.
 - **Fixture, zero external deps:** `evals/fixture/` with `api/` (Python
   in-memory items store, `unittest`), `client/` (TypeScript run by Node
   directly with type stripping, Node 22.18 or newer, no `tsc`;
@@ -915,27 +1083,181 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
 - **Arms, three:** `bare` (no `.stewards/`, no block), `block-only` (block
   present, binary off PATH; ritual and persistence graders `n/a`), `full`.
 - **Runner:** `stewards eval` drives `claude -p --output-format stream-json
-  --verbose`, `codex exec --json`, `pi --mode json`; parses each transcript
-  to `Run {main_tokens {input, output, cache_read}, total_tokens,
-  tool_calls[], files_opened[], shell_commands[], ritual_steps{status,
-  route, brief, next, submit, check_green}, cost_usd?, duration_s}`.
-  Main tokens = the parent session only; total = parent + all children.
-  Ritual steps are shell commands whose argv starts with `stewards <cmd>`;
-  `brief` when a subagent is dispatched with a `.stewards/briefs/` path or a
-  `stewards submit` appears; `check_green` when `next` exits 0
-  after the last edit. `files_opened` counts distinct repo-relative paths
-  read in the main session.
-- **Pass criteria:** 3 runs per arm per task, medians compared. Tokens:
-  `full` main-context ≤ 80% of `bare` and total ≤ 110% of `bare`; task 6
-  files opened ≤ half of `bare` task 4; both token criteria failing fails
-  the task, one is a warning. Cleanliness: BAML judge, 3 votes, majority,
+  --verbose`, `codex exec --json`, `pi --mode json` (Pi is built; the
+  other two are stage 4) behind one `Driver` trait (start a session on a
+  prompt in a directory with a model and thinking level and return its
+  transcript; parse it), and parses each transcript
+  to `Run {main_tokens {input, output, cache_read, cache_write},
+  total_tokens {same}, cache_warming {same}, peak_main_context,
+  tool_calls[], files_opened[], files_opened_tree[], shell_commands[],
+  ritual_steps{status, route, next, review_dispatched, reviewer_submit,
+  check_green}, cost_usd?, duration_s, models[], thinking_levels[],
+  sessions_without_thinking[], subagent_sessions, reviews[],
+  git_history_commands[], stop_reason, failed_children[],
+  truncated_lines}`.
+  Main tokens = the parent session only; total = parent + all children;
+  the token ratios compare the sum of the four fields. For Pi the fields
+  are summed over assistant-message usage plus `compaction` and
+  `branch_summary` records (matched by record type), each record counted
+  once across the tree by `(id, timestamp)` because a fork starts as a copy
+  of its parent; `usage` records (cache refreshes, which do not enter
+  context) go to `cache_warming` instead, their cost still in `cost_usd`.
+  `cost_usd` is Pi's own `cost.total` (its price table, not a bill), `null`
+  when the transcript has none. `peak_main_context` is the largest input +
+  cache read + cache write of any one main-session response.
+  `files_opened` (main session) and `files_opened_tree` (every session)
+  count distinct paths relative to each session's cwd, from the `read` tool
+  plus simply recognised shell reads (`cat`, `head`, `tail`, `less`, `sed
+  -n`, `grep`/`rg` with a path argument; separators inside quotes do not
+  split, heredoc bodies (`<<WORD`, `<<'WORD'`, `<<-WORD` up to the line
+  equal to `WORD`) are skipped, a relative path after a leading `cd <dir>`
+  segment is taken under `<dir>`, and words with `$`, words starting with
+  `!`, and option values such as `--glob x` or `-A 3` are not paths; see
+  `shell_reads`). After the parse the runner keeps only the paths that are
+  regular files in the run's directory after the session: a glob in the
+  last path component is expanded against that directory, and
+  directories and paths that do not exist are not counted. The ritual
+  steps recorded per run are `status`, `route`, `next` (a shell command,
+  in the main session or any child, whose argv starts with `stewards
+  <cmd>`), `review_dispatched` (a subagent launch whose arguments name
+  `.stewards/briefs/review.md`), `reviewer_submit` (`stewards submit ...
+  --role reviewer` in a child session), and `check_green`, which comes
+  from the runner: after each `full` (and `full-no-developers`) session it
+  runs `stewards next --no-brief` in the run directory and records the
+  exit code and job count; green is exit 0. The runner also records
+  whether the session `changed` the run directory: any path that differs
+  from the session's starting commit (`git diff --name-only <start>`, so
+  committed changes count) or is untracked and not ignored, outside
+  `.stewards/` and `docs/units/`. The transcript steps are best-effort;
+  the summary lists the known blind spots (`timeout`/`env` prefixes,
+  `if`, `bash -c`, backticks). Each run records its count of subagent
+  sessions. Each `full` run records its review outcome, report-only, per
+  unit of each successful reviewer `submit` (from the JSON that submit
+  printed in the child's transcript): the round, the verdict, the number
+  of findings, the bug gaps the unit's card gained during the run (cards
+  read before and after), and whether the submitting child ran the
+  unit's test command (its test card's `test_command`, else one of the
+  repo's `commands.test`, as a substring of one of the child's shell
+  commands). Any session whose shell commands run `git log`, `show`,
+  `checkout`, `reflog`, `stash`, `fsck`, or `cat-file` is flagged, not
+  failed, and listed in the summary. A session whose last main response,
+  or any child's last response, stopped with `error`, `aborted`, or
+  `length` is a failed run whatever the harness's exit code; the stop
+  reason and the failed child are recorded. A session directory with more
+  than one top-level session file fails the parse; an unparseable line is
+  tolerated only as the last line of a file from a failed or timed-out
+  session (counted in `truncated_lines`). A run whose transcript cannot be
+  parsed has an unknown cost: after one, `--max-cost` stops the eval, as it
+  can no longer bound the spend, and the summary says so. Every arm gets
+  the same model (`--model`, else the harness default) and thinking level
+  (`--thinking`, default `medium`), the task file verbatim as the prompt,
+  and the same parsing; every model used in a session tree is recorded and
+  a run where any differs from the requested one (or the main session's) is
+  flagged, not failed (the main agent may pass `model` per subagent).
+  Children get the thinking level too: for Pi the eval's settings set
+  pi-subagents' `subagents.defaultThinking` and `maxThinking` to it and an
+  `agentOverrides.<name>.thinking` for each bundled agent (`defaultThinking`
+  does not override an agent's own frontmatter, such as `worker`'s `high`,
+  and `maxThinking` fails a launch above it rather than lowering it). Every
+  session's level is recorded from its `thinking_level_change` records and
+  each assistant message's `thinkingLevel`; a run where any differs from
+  the requested one is flagged, not failed (the main agent may still ask a
+  child for a lower level), and so is a session with neither.
+  Sessions run without the user's personal harness setup: for Pi, one agent
+  directory per invocation (`PI_CODING_AGENT_DIR`) holds a `settings.json`
+  listing only `npm:pi-subagents` (plus the user's `defaultProvider`/
+  `defaultModel`, and `~/.agents/skills` excluded), `auth.json` and the
+  `npm/` package store linked to the user's (a linked `auth.json` shares
+  OAuth refreshes instead of rotating the user's token away), and a copied
+  `models-store.json`; no global `AGENTS.md`, other extensions, or skills
+  beyond pi-subagents'; the summary records it. Each session gets its own
+  `CARGO_INSTALL_ROOT` (never on `PATH`), each `full` session its own
+  `STEWARDS_HOME` (the other arms none, so the environment names no
+  stewards), and every other harness env prefix is stripped. Runs are sequential, each in a
+  fresh copy (made by `evals/arms.sh` from the fixture suite's source
+  directory) at `<tmp>/w-<random>/<n>/repo`, a
+  path naming no arm, `stewards`, or `eval` (the run record keeps the
+  mapping); `bare` and `block-only` run with `stewards` off `PATH` (each
+  `PATH` directory holding it is replaced by a mirror without it), `full`
+  with the running binary first on `PATH`. `full` copies one adopted
+  fixture per invocation: `stewards init`, then hand-set units from
+  `evals/full-units.toml` (`api`, `client`, `cli`; `init` proposes only the
+  `cli` manifest root on the fixture; the root `.gitignore` and `AGENTS.md`
+  stay unowned, anything else unowned stops the eval; the summary says so
+  in plain words), then an adoption session on the same model that runs
+  `stewards init --draft` and dispatches until `stewards next --roles`
+  lists no jobs, recorded as a `setup` run. The runner then diffs the adopted state
+  against the `fixture: initial` commit: a changed, deleted, or added file
+  outside `.stewards/`, `docs/units/`, `AGENTS.md`, and `.gitignore` stops
+  the eval with `eval_setup_incomplete` naming the files, except a newly
+  added file under the test locations `tests` (`api/test_*.py`,
+  `client/*.test.ts`, `cli/tests/**`, beside `unowned` in
+  `evals/suites/fixture.toml`); the summary lists every added
+  path, every gap of every kind on the adopted cards, and every flow
+  adoption recorded (a task whose seeded bug or answer is listed started
+  known), plus a report-only line: adoption's total tokens as a multiple
+  of the median `bare` task total. The runner checks `stewards next`
+  exits 0 there (else `eval_setup_incomplete`, before any `full` run),
+  removes every gitignored file, and commits it; each `full` copy runs
+  `git clean -fdX` after the copy. `--setup-dir` (fixture suites only, else `usage`) reuses an adopted copy; it
+  must be a git repository with an empty `git status --porcelain` and a
+  clean `next`, and gets the same diff check. `--no-developers` is `full`
+  with the block's "Changing:" line cut to its first sentence, `- Changing:
+  make the edit yourself.`, labelled `full-no-developers`. A task with a `setup` runs in a new
+  session in the directory its setup task left: each run of fixture task 6
+  first runs task 5 there as a `setup` run. A fixture session has 30
+  minutes, then Pi's process group is killed
+  and the session recorded `timed_out`. After every session (normal exit,
+  failure, or timeout) the runner kills every process whose
+  `/proc/<pid>/cwd` is under that session's `<n>/` directory (Pi starts
+  shell commands and background subagents in their own process groups),
+  waits up to 10 s until none is left, and records how many it killed; a
+  survivor stops the eval after the run is recorded. A failed or timed-out
+  session is recorded and counted, never retried or dropped. `--max-cost`
+  stops before the next session when the spend so far plus its mean per
+  session would pass the ceiling; the first always runs. Results go to
+  `evals/results/<timestamp>/` (gitignored): `runs/*.json` (the `Run`, arm,
+  task, role, model, thinking, model and thinking mismatch flags, status,
+  failure, leftovers, `next` check, whether tracked files changed,
+  transcript path, review outcome), `sessions/` (each session's
+  transcripts, copied there after the run), `summary.json`, and
+  `summary.md`, with each task's verdict and gate count, its overhead
+  ratios, their medians across tasks, the review outcomes, the flags, and
+  costs to 4 decimals. Each run's work directory is deleted after the run unless
+  `--keep-work`. pi-subagents also leaves run state outside both, under
+  `/tmp/pi-subagents-uid-<uid>/` (`async-subagent-runs/`,
+  `async-subagent-launches/`, `async-subagent-results/`,
+  `nested-subagent-events/`, `run-fanout-budgets/`, `session-leases/`,
+  `supervisor-channels/`); the eval does not clean it.
+- **Pass criteria:** 3 runs per arm per task. The ritual is the gate, on
+  edit tasks only (read-only tasks are `n/a`): a `full` run passes when
+  the runner saw it change the run directory, `next` ran, a subagent was
+  handed `.stewards/briefs/review.md`, a child ran `stewards submit --role
+  reviewer`, and the runner's own `stewards next --no-brief` exits 0 after
+  the session (which proves the review covered the final state: a stamp
+  matches only the snapshot it was made at). `status` and `route` are
+  recorded, not gated. The task passes when every `full` run passes,
+  shown `k/n`, and fails otherwise, each failing run named with what it
+  missed (`next` ran but the review was not dispatched, and so on).
+  Overhead is reported, not judged: per task the `full`/`bare` ratios of
+  the median main tokens, total tokens, cost, and peak main context (and,
+  with `files_opened_vs_bare`, of main-session files opened against that
+  `bare` task, fixture task 6 against 4), each ratio's median across the
+  tasks that are not incomplete, and each run's count of subagent
+  sessions. Thresholds on overhead will be set by the user after the first
+  measurement with the reviewer role. A task with any compared run
+  failed, timed out, without a transcript, or not started is
+  `incomplete`: its medians are reported but given no verdict, and it
+  never passes. Cleanliness:
+  BAML judge, 3 votes, majority,
   counting rung failures, untraced lines, missing checks; pass when `full`
   has 0 untraced lines, ≤ 1 rung failure, ≥ 1 runnable check, and is ≤
   `bare` on every count. Docs accuracy: no claim in `docs/units/api.md`
   contradicted by code after task 1. Bug tasks: the tester's repro
   reproduces and the validator's severity equals the seeded one. Task 5: a
-  plan exists and closes. Ritual: all six steps appear in `full`. The suite
-  fails when any task fails; warnings are listed.
+  plan exists and closes. The suite fails when any task fails, is
+  incomplete when any task is, and passes otherwise: every edit task's
+  gate passed and no run is incomplete (exit code 0 only then).
 - **Cadence:** on demand and in CI on release tags; `--max-cost` ceiling.
 
 ## Release and versioning
@@ -960,8 +1282,10 @@ build time. Checklist in `RELEASING.md`.
    `guide`, memory, telemetry. Dogfood from here.
    **2b. Proof** (`feat/stage-2b-proof`): the eval fixture, the runner, the
    Pi driver, and the token and ritual graders, run on tasks 1, 3, 4, and 6.
-   Stage 3 starts only when `full` main context is on track for the 80%
-   criterion; otherwise risk 3's kill criterion applies here.
+   The 2026-11-12 decision replaced the token-saving gate (see Handoff,
+   "What the thin eval showed"): stage 3 starts when an agent completes the
+   one-job ritual (one review brief per change) unprompted in the eval and
+   the user accepts its measured overhead.
 3. **Depth** (`feat/stage-3-depth`): architect and plans in `next`;
    `validate` and export (GitHub, then GitLab, Jira, Linear); tree-sitter static
    grammars, then runtime extras; `render` for six harnesses.
@@ -1154,7 +1478,7 @@ the JSON error; anything else is `internal`.
 
 ```rust
 // model.rs: the schemas as serde types, plus
-pub enum Role { Developer, Maintainer, Tester, Documenter, Validator, Architect }  // FromStr, as_str
+pub enum Role { Developer, Maintainer, Tester, Documenter, Validator, Architect, Reviewer }  // FromStr, as_str
 impl Anchor { pub fn parse(s: &str) -> Result<Anchor> }
 pub fn load_repo(root: &Path) -> Result<Loaded>     // checks .git and .stewards for the root it is given
 
@@ -1218,7 +1542,8 @@ impl Pack { pub fn render(&self) -> String; pub fn fit(&mut self, budget: usize)
 // next.rs
 pub struct Job { unit, role, task, snapshot, reasons, changed, brief_path, command, debt_added }
 pub struct NextReport { jobs, architect, flow_checks, check }
-pub fn next(ws: &Workspace, task: Option<&str>) -> Result<NextReport>
+pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool, roles: bool) -> Result<NextReport>
+pub fn review_due(repo: &Repo, task: Option<&str>) -> Result<(String, String, Vec<String>)>  // snapshot, task, units
 
 // debt.rs
 pub fn is_debt_line(line: &str) -> bool
@@ -1256,7 +1581,7 @@ helpers in `tests/common`. One behavior per test.
 |---|---|---|---|---|
 | 1 | BAML Rust client immature | `cargo update` breaks the generated client; runtime download fails | Pin `baml` and `baml-sys` exactly; validation is serde on the generated types, so only `--direct` touches the native lib; vendor the lib in releases; every LLM step behind `llm.rs` so templates + serde is a one-module swap | Two consecutive BAML releases break the client with no fix in 30 days → templates + serde |
 | 2 | Harness drift across the supported harnesses | Agent dirs, subagent tools, or env vars change | Per-harness facts in one `harness.rs` table with a last-verified date; evals on three; spot-check list for the rest per release | A harness drops repo AGENTS.md or shell → drop it |
-| 3 | Subagents ignore the pack | `pulled_anchors` large; tokens per job far above pack size | Pull rule stated twice; budget shown; token grader | Two prompt-tuning rounds after the first eval; still missing the 20% main-context criterion → reopen delegation before stage 3 starts |
+| 3 | Subagents ignore the pack | `pulled_anchors` large; tokens per job far above pack size | Pull rule stated twice; budget shown; token grader | Replaced by the 2026-11-12 decision, which dropped the main-context saving criterion: the stage-3 gate is now an agent completing the one-job ritual unprompted in the eval, with a measured overhead the user accepts; missing it → reopen delegation before stage 3 starts |
 | 4 | Cards rot despite `check` | Many `card_patch: null` while anchors drift; prose contradicts code | Fingerprint staleness; docs-accuracy grader; `next` re-reviews every stale unit | Docs-accuracy fails two releases running → regen-only cards |
 | 5 | Prompt injection through cards or reports | A brief makes a subagent act outside its role | Data fencing, caps, allowlist, writes boundary; a hostile fixture card in the Rust tests (fence breakout, control characters, over-cap fields) | Any confirmed escape → stop-ship until fixed |
 | 6 | Scope for one builder | Stages slip; no dogfood by stage 2 | Each stage usable alone; cut order above | Stage 2 not dogfooding in its window → freeze at stages 1–2 |
@@ -1285,41 +1610,30 @@ Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
 ```
 > stewards status
 { units: [api, client, cli], stale: [], warnings: [] }
+> cat docs/units/api.md                                                   # how api works, before its source
 > stewards route api/items.py
 { unit: "api" }
-> stewards brief api --role maintainer --task "add a count endpoint"
-{ path: ".stewards/briefs/api-maintainer.md", bytes: 6120 }
-[Agent] read .stewards/briefs/api-maintainer.md and do what it says
-  └ subagent: reads brief, opens api/items.py::list_items, writes answer,
-    runs `stewards submit api --role maintainer --file ...`
-    → "api maintainer: explained; card unchanged" and the plan, ≤ 2,000 chars
-> stewards brief api --role developer
-{ jobs: [ { task: 1, brief_path: ".stewards/briefs/api-developer-1.md" } ] }
-[Agent] developer: edits api/items.py, api/store.py, api/tests/test_items.py
-    → "api developer 1: 3 files; check pass"
+[Agent] edits api/items.py, api/store.py, api/tests/test_items.py itself  # plannable from the unit page
 > stewards next
-{ jobs: [
-    { unit: api, role: maintainer, brief_path: ".stewards/briefs/api-maintainer.md" },
-    { unit: api, role: tester,     brief_path: ".stewards/briefs/api-tester.md" },
-    { unit: api, role: documenter, brief_path: ".stewards/briefs/api-documenter.md" } ],
+{ jobs: [ { unit: "", role: reviewer, brief_path: ".stewards/briefs/review.md",
+            reasons: ["api: stale", "api: interface changed: api/items.py::list_items"] } ],
   architect: false, check: { failures: [api stale], warnings: [] } }
-[Agent ×3] each reads its brief, works, submits
-  → maintainer: "changes; 1 finding (rung: one line, api/store.py:41); card_patch: +interface count-items"
-  → tester: "scenario count-ok added, 4/4 pass; unit test_command pass"   # marks its snapshot
-  → documenter: "doc updated"                                             # marks its snapshot
-> stewards brief api --role developer                                     # the finding is the task; lane: api/store.py
-[Agent] developer: "api developer 1: 1 file; check pass"
+[Agent] read .stewards/briefs/review.md and do what it says
+  └ subagent: reads the hunks, runs `python -m unittest` in api, writes the answer,
+    runs `stewards submit --role reviewer --file ...`
+    → "reviewer: api changes (1 finding; card: +interface count-items; 1 scenario upserted; not stamped)"
+      "- api api/store.py:41: cut the hand-rolled loop"
+[Agent] fixes api/store.py:41 itself
 > stewards next
-{ jobs: [ { unit: api, role: maintainer, ... } ], check: { failures: [api stale] } }   # api/store.py touches no interface's lines and no test file: no tester, no documenter
-[Agent] maintainer: "approve; stamped 8b1e044"
+{ jobs: [ { unit: "", role: reviewer, reasons: ["api: stale"] } ], ... }
+[Agent] reviewer: "reviewer: api approve (card unchanged; stamped 8b1e044)"   # sets the tester and documenter marks too
 > stewards next
 { jobs: [], check: { failures: [], warnings: [] } }   exit 0
 ```
 
-The main agent never reads a brief, a card, or source; every brief path is one line;
-the finding goes back to a developer, not to the main agent; the second
-round is the maintainer alone because the fix touched no interface's
-lines and no test file; done is a `next` with no jobs.
+The main agent never reads a brief or a card; every brief path is one line;
+it makes the change and the fix itself, and one subagent per round reviews
+every unit the change touched; done is a `next` with no jobs.
 
 ## Handoff (for a new session)
 
@@ -1328,7 +1642,8 @@ Read this section, then the Build order, then start.
 **State (2026-11-12).** Stages 1 and 2 are built. `main` has stage 1.
 `feat/stage-2-roles` adds the harness table and `guide`, user config and
 memory, `docs`, `init` and `init --draft`, the BAML schemas with `llm.rs`,
-`brief`, `submit` for all six roles, the developer loop, and telemetry:
+`brief`, `submit` for all six roles (the reviewer, a seventh, came after
+the thin eval), the developer loop, and telemetry:
 about 500 tests. Stewards is adopted on this repository: nine units, their
 cards and test cards, `docs/units/`, and the `AGENTS.md` block are
 committed, written through the tool by role subagents handed only a brief
@@ -1336,9 +1651,40 @@ path. `feat/stage-2b-proof` holds the eval fixture. CI runs on every push
 to a stage branch. Repo `wromansky/stewards` (public since 2026-11-12),
 auto-delete of merged branches on.
 
-**Next action.** Stage 2b: the eval runner and Pi driver, then the thin
-eval and its go or no-go before any stage 3 work. The task list in the
-build session is the plan; Build cycle says how waves run.
+**Next action.** Stage 2b's runner, Pi driver, and thin eval are built and
+ran (below); the per-change ritual is now one review job. A separate task
+changes the eval graders to match. The task list in the build session is
+the plan; Build cycle says how waves run.
+
+**What the thin eval showed (2026-11-12).** Four passes, one run per arm
+per task, Pi on `anthropic/claude-sonnet-5-5` at medium thinking: three on
+the fixture (tasks 1, 3, 4, 6) and one on this repository's `self` suite
+(tasks 1 to 4). `full`/`bare` ratios of median main-session tokens (equal
+to total tokens: no `full` task session started a subagent), then of cost:
+
+| pass | task 1 | task 3 | task 4 | task 6 | cost, tasks 1/3/4/6 |
+|---|---|---|---|---|---|
+| fixture 1 | 1.14 | 1.36 | 1.17 | 1.39 | 1.02, 1.23, 1.13, 0.89 |
+| fixture 2 | 1.14 | 1.87 | 1.23 | 1.60 | 1.14, 1.52, 1.24, 1.23 |
+| fixture 3 | 1.25 | 1.32 | 1.34 | 1.56 | 1.25, 1.54, 1.40, 1.16 |
+
+| pass | task 1 | task 2 | task 3 | task 4 | cost, tasks 1/2/3/4 |
+|---|---|---|---|---|---|
+| self 1 | 1.04 | 1.04 | 1.50 | 1.04 | 0.82, 1.19, 1.26, 0.92 |
+
+- No pass saved tokens on any task: `full` ran 4% to 87% over `bare`.
+- An agent following the block ran the cheap steps (`status`, `route`,
+  `next`) and then did not dispatch the review jobs, because a small change
+  listed 7 to 13 of them (maintainer, tester, and documenter per unit, plus
+  the architect). On the change tasks no `full` run showed more than 3 of
+  the 6 ritual steps.
+- Asked directly, as in adoption, the same roles worked and found real
+  bugs: after fixture pass 1's adoption the cards held four of the five
+  seeded bugs as gaps.
+- Decision (the user's): the per-change ritual is one review job (the
+  reviewer); the per-role jobs stay for adoption and on request (`next
+  --roles`); the token-saving goal is dropped in favour of reviewed changes
+  and a repository memory at a small, measured overhead (Goals).
 
 **What dogfooding stage 2 showed (2026-11-12).** About eighty role jobs
 ran on this repository.
@@ -1349,6 +1695,9 @@ ran on this repository.
   escaping had dropped `$`, and `origin_url` misreads an empty remote URL.
 - `init` proposes one unit for a crate whose modules sit flat in `src/`;
   the units here were drawn by hand from the table below.
+- On the eval fixture too, `init` proposes only manifest roots: one unit,
+  `cli`, with `api/` and `client/` unowned. The eval's `full` arm sets its
+  units by hand from `evals/full-units.toml`.
 - Triggers are coarse. A tester and a documenter are due whenever a file
   holding an interface anchor changes, and maintainers record most public
   functions as interfaces, so a small edit in each of eight units cost 33
@@ -1552,18 +1901,42 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   grammars from source at runtime (needs a C compiler); prebuilt grammar
   libraries load with `libloading`.
 - Drivers (verified 2026-10-20 on claude 2.1.305 and codex-cli 0.154.0; Pi
-  from docs): Claude Code `claude -p "<prompt>" --output-format stream-json
+  as dated below): Claude Code `claude -p "<prompt>" --output-format stream-json
   --verbose --model <m> --max-turns N --max-budget-usd X
   --no-session-persistence` (final `result` line carries `usage`,
   `modelUsage`, `total_cost_usd`, `subagent_stats`; `--bare` skips hooks,
   CLAUDE.md, plugins). Codex `codex exec --json --skip-git-repo-check -C
   <dir> -s workspace-write -m <model> "<prompt>"` (`turn.completed{usage}`
   summed across turns; rollout under `~/.codex/sessions/`); this machine's
-  ChatGPT-account Codex rejects the configured model ids with 400. Pi `pi
-  --mode json "<prompt>"` (`tool_execution_start/end`, `message_update.usage`;
-  session files under `~/.pi/agent/sessions/`; package
-  `@mariozechner/pi-coding-agent` 0.73.1 or `@earendil-works/pi-coding-agent`
-  1.3.0, which is current unverified).
+  ChatGPT-account Codex rejects the configured model ids with 400. Pi
+  (verified 2026-11-12 on `@earendil-works/pi-coding-agent` 1.5.2 with
+  pi-subagents 0.88.0): `pi --mode json --session-dir <d> --exclude-tools
+  subagents_enable --thinking <level> [--model <provider/id>] --
+  "<prompt>"`, stdin closed, `PI_CODING_AGENT_DIR` set to the eval's agent
+  directory (checked 2026-11-12 on `anthropic/claude-haiku-5-5`: it
+  authenticates, the first request's tools are `read`, `bash`, `edit`,
+  `write`, `subagent`, `contact_supervisor`, `bg_wait`,
+  `subagent_supervisor`, its skills only pi-subagents' `council-mode` and
+  `pi-subagents`, and no context file; Pi always scans `~/.agents/skills`,
+  so the eval's settings exclude it);
+  no cwd flag, the process cwd is the session's; AGENTS.md in the cwd is
+  loaded. JSON events go to stdout, but the transcript is the session file
+  `<d>/<timestamp>_<id>.jsonl` (`session` header with `cwd`, `model_change`,
+  `message` records with per-response `usage {input, output, cacheRead,
+  cacheWrite, cost.total}` and `stopReason`, `usage` records for cache
+  refreshes). In `--mode json` Pi exits 0 even when the final response
+  stopped with `error`, `aborted`, or `length` (only text mode sets exit
+  1), so the runner reads the stop reason from the transcript. Subagent children are
+  `<d>/<timestamp>_<id>/<runId>/run-0/session.jsonl` with `parentSession`,
+  forks `<d>/<timestamp>_<id>/forks/<id>/*.jsonl` (a copy of the parent's
+  records, same ids and timestamps, then the fork's own);
+  `<d>/subagent-artifacts/` holds copies, not sessions. Excluding
+  `subagents_enable` keeps `subagent` active from the first request. In
+  non-interactive mode subagents launch async and Pi waits for them
+  before exiting. A `PI_*` environment from an enclosing Pi session
+  (`PI_SUBAGENT_CHILD`) makes a nested `pi` start without `subagent`, so
+  the runner strips every harness's env prefix, then sets
+  `PI_CODING_AGENT_DIR` itself.
 - `claude plugin eval` exists (cases under `evals/<case>/`, six fixed grader
   types, with/without ablation, `--json`) but has no custom-code graders and
   starts in an empty workspace; stewards uses its own runner.

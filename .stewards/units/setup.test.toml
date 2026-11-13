@@ -23,3 +23,11 @@ given = "a git repo with an origin remote https://example.invalid/acme/widgets.g
 expect = "repo.toml name is widgets (origin URL last segment without .git); without an origin it falls back to the directory name"
 level = "integration"
 command = "cargo test --test init the_repo_name_is_the_origin_url_last_segment_when_there_is_an_origin"
+
+[[scenario]]
+id = "init-draft-ends-with-next-roles"
+interface = "init-draft"
+given = "a fresh git repo with two source dirs, run `init --draft`"
+expect = "jobs are the architect job and a maintainer first review per unit, and `then` names `stewards next --roles`"
+level = "integration"
+command = "cargo test --test init_draft draft_on_a_fresh_repo_writes_step_1_and_the_architect_and_first_review_briefs"

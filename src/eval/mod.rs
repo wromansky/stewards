@@ -13,6 +13,7 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use crate::harness::{self, EnvRule, HARNESSES};
+use crate::model::CommandEntry;
 use crate::output::{CliError, Global, emit, not_implemented};
 
 pub mod grade;
@@ -31,8 +32,8 @@ pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards
 /// The final stop reasons of a response that did not end normally.
 pub const FAILED_STOPS: [&str; 3] = ["error", "aborted", "length"];
 
-/// What the summary says about the transcript-derived ritual steps.
-pub const RITUAL_NOTE: &str = "check_green is the runner's own `stewards next --no-brief` after each full session (exit 0), and counts only for a session that changed tracked files (else n/a). On the read-only tasks (`read_only` in the suite manifest) route, brief, submit, and check_green are n/a; each run record still shows every step it ran. The other five steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, backticks, and lines inside heredocs are misread or missed; `status` and `route` count when only a child ran them; `brief` is a subagent launch whose arguments name `.stewards/briefs/`, or any `submit`.";
+/// What the summary says about the ritual gate and the transcript-derived steps.
+pub const RITUAL_NOTE: &str = "The gate, on each full run of an edit task (read-only tasks are n/a): the runner saw a change (`changed`: outside .stewards/ and docs/units/, against the run's starting commit, untracked files included), `next` ran somewhere in the session tree, a subagent was handed .stewards/briefs/review.md (`review_dispatched`), a child ran `stewards submit --role reviewer` (`reviewer_submit`), and the runner's own `stewards next --no-brief` exits 0 afterwards (`check_green`). `status` and `route` are recorded, not gated. Steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, and backticks are misread or missed.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -88,7 +89,7 @@ pub enum RunRole {
 
 /// Token counts. Every count is the sum of the harness's per-response `input`, `output`,
 /// `cache_read`, and `cache_write` usage fields; `sum` adds all four, and that is the number the
-/// token criteria compare, in every arm.
+/// token ratios compare, in every arm.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct Tokens {
     pub input: u64,
@@ -115,8 +116,15 @@ impl Tokens {
     }
 }
 
-/// The spec's six ritual steps, in order.
-pub const RITUAL_STEPS: [&str; 6] = ["status", "route", "brief", "next", "submit", "check_green"];
+/// The recorded ritual steps, in order; all but `status` and `route` are gated (see `RITUAL_NOTE`).
+pub const RITUAL_STEPS: [&str; 6] = [
+    "status",
+    "route",
+    "next",
+    "review_dispatched",
+    "reviewer_submit",
+    "check_green",
+];
 
 /// Each of `RITUAL_STEPS` and whether the run showed it.
 pub type RitualSteps = BTreeMap<&'static str, bool>;
@@ -135,7 +143,8 @@ pub struct Run {
     pub peak_main_context: u64,
     /// Tool names called in the main session, in order.
     pub tool_calls: Vec<String>,
-    /// Distinct repo-relative paths the main session opened (see `pi::parse` for what counts).
+    /// Distinct repo-relative paths the main session opened (see `pi::parse` for what counts;
+    /// the runner then keeps only `existing_files`).
     pub files_opened: Vec<String>,
     /// The same over the whole session tree.
     pub files_opened_tree: Vec<String>,
@@ -150,8 +159,17 @@ pub struct Run {
     pub model: Option<String>,
     /// Every `provider/model` used anywhere in the session tree, sorted.
     pub models: Vec<String>,
-    /// Every thinking level any session of the tree was set to, sorted.
+    /// Every thinking level any session of the tree was set to or ran at, sorted.
     pub thinking_levels: Vec<String>,
+    /// Sessions of the tree (`main`, or the child file relative to the tree) with no thinking
+    /// level recorded anywhere (flagged, not failed).
+    pub sessions_without_thinking: Vec<String>,
+    /// Child sessions in the tree.
+    pub subagent_sessions: usize,
+    /// Each successful `stewards submit --role reviewer` a child ran, in order.
+    pub reviews: Vec<ReviewSubmit>,
+    /// Shell commands anywhere in the tree that read git history (see `reads_git_history`).
+    pub git_history_commands: Vec<String>,
     /// The stop reason of the main session's last response.
     pub stop_reason: Option<String>,
     /// Child session files (relative to the tree) whose last response stopped with one of
@@ -161,53 +179,182 @@ pub struct Run {
     pub truncated_lines: usize,
 }
 
+/// One reviewer `submit` from its output: each unit with its verdict and findings.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewSubmit {
+    pub units: Vec<ReviewedUnit>,
+    /// The shell commands of the child that ran it.
+    pub commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReviewedUnit {
+    pub unit: String,
+    /// `approve` or `changes`.
+    pub verdict: String,
+    pub findings: usize,
+}
+
+/// The units of a reviewer `submit`'s JSON output: `summary` is `reviewer: <unit> <verdict>
+/// (<parts>), ...` and each of `findings` names its unit. `None` for any other output (an error,
+/// another role).
+/// simplified: `--human` output is not read; upgrade if reviewers start passing it.
+pub fn reviewed_units(output: &str) -> Option<Vec<ReviewedUnit>> {
+    let v: serde_json::Value = serde_json::Deserializer::from_str(&output[output.find('{')?..])
+        .into_iter()
+        .next()?
+        .ok()?;
+    let summary = v["summary"].as_str()?.strip_prefix("reviewer: ")?;
+    let findings = v["findings"].as_array().map_or(&[][..], Vec::as_slice);
+    Some(
+        summary
+            .split("), ")
+            .filter_map(|part| {
+                let mut words = part.split_whitespace();
+                let (unit, verdict) = (words.next()?, words.next()?);
+                Some(ReviewedUnit {
+                    unit: unit.to_string(),
+                    verdict: verdict.to_string(),
+                    findings: findings.iter().filter(|f| f["unit"] == unit).count(),
+                })
+            })
+            .collect(),
+    )
+}
+
 /// One thing a session did, in harness-neutral form, for `ritual_steps`.
 pub enum Action {
     Shell {
         command: String,
+        /// Run by a child session, not the main one.
+        child: bool,
     },
     /// A subagent launch; `text` is its arguments.
-    Dispatch {
-        text: String,
-    },
+    Dispatch { text: String },
 }
 
-/// The transcript-derived ritual steps: `status`, `route`, `next`, `submit` are shell commands
-/// whose argv starts with `stewards <cmd>`; `brief` is a subagent launched with a
-/// `.stewards/briefs/` path or a `stewards submit`. `check_green` is left `false` for the runner.
+/// Whether a `stewards` command (see `stewards_commands`) is `submit --role reviewer`.
+pub fn is_reviewer_submit(cmd: &[&str]) -> bool {
+    cmd.first() == Some(&"submit")
+        && (cmd.contains(&"--role=reviewer") || cmd.windows(2).any(|w| w == ["--role", "reviewer"]))
+}
+
+/// The transcript-derived ritual steps: `status`, `route`, `next` are shell commands, in any
+/// session, whose argv starts with `stewards <cmd>`; `review_dispatched` is a subagent launched
+/// with `.stewards/briefs/review.md` in its arguments; `reviewer_submit` is
+/// `is_reviewer_submit` in a child. `check_green` is left `false` for the runner.
 pub fn ritual_steps(actions: &[Action]) -> RitualSteps {
     let mut steps: RitualSteps = RITUAL_STEPS.iter().map(|&s| (s, false)).collect();
+    let review_brief = crate::brief::rel_path(None, crate::model::Role::Reviewer, None);
     for a in actions {
         match a {
-            Action::Shell { command } => {
-                for cmd in stewards_subcommands(command) {
-                    if let Some(step) = ["status", "route", "next", "submit"]
+            Action::Shell { command, child } => {
+                for cmd in stewards_commands(command) {
+                    if let Some(step) = ["status", "route", "next"]
                         .into_iter()
-                        .find(|s| *s == cmd)
+                        .find(|s| *s == cmd[0])
                     {
                         steps.insert(step, true);
                     }
+                    if *child && is_reviewer_submit(&cmd) {
+                        steps.insert("reviewer_submit", true);
+                    }
                 }
             }
-            Action::Dispatch { text } if text.contains(".stewards/briefs/") => {
-                steps.insert("brief", true);
+            Action::Dispatch { text } if text.contains(&review_brief) => {
+                steps.insert("review_dispatched", true);
             }
             _ => {}
         }
     }
-    if steps["submit"] {
-        steps.insert("brief", true);
-    }
     steps
+}
+
+/// Git subcommands that read history a run's tree should not offer (see `reads_git_history`).
+const GIT_HISTORY: [&str; 7] = [
+    "log", "show", "checkout", "reflog", "stash", "fsck", "cat-file",
+];
+
+/// Whether a shell command line runs `git` with one of `GIT_HISTORY` (after `-C dir`/`-c k=v`).
+pub fn reads_git_history(command: &str) -> bool {
+    segments(command).into_iter().any(|words| {
+        let mut words = words.into_iter();
+        if words.next().map(program) != Some("git") {
+            return false;
+        }
+        while let Some(w) = words.next() {
+            match w {
+                "-C" | "-c" => {
+                    words.next();
+                }
+                _ if w.starts_with('-') => {}
+                _ => return GIT_HISTORY.contains(&w),
+            }
+        }
+        false
+    })
+}
+
+/// The delimiter of a heredoc whose `<<` was just before `rest` (`<<WORD`, `<<'WORD'`,
+/// `<<"WORD"`, `<<-WORD`), and whether it was `<<-`.
+fn heredoc_delimiter(rest: &str) -> Option<(&str, bool)> {
+    let dash = rest.starts_with('-');
+    let rest = rest[usize::from(dash)..].trim_start_matches([' ', '\t']);
+    let word = match rest.chars().next()? {
+        q @ ('\'' | '"') => rest[1..].split(q).next()?,
+        _ => rest
+            .split(|c: char| c.is_whitespace() || ";&|()<>".contains(c))
+            .next()?,
+    };
+    let word = word.trim_start_matches('\\');
+    (!word.is_empty()).then_some((word, dash))
+}
+
+/// The offset just past the heredoc bodies starting at `from`, one per delimiter in order: each
+/// runs to the line equal to its word (leading tabs dropped after `<<-`), or to the end.
+fn heredoc_end(command: &str, from: usize, delimiters: &[(&str, bool)]) -> usize {
+    let mut at = from;
+    for &(word, dash) in delimiters {
+        while at < command.len() {
+            let end = command[at..]
+                .find('\n')
+                .map_or(command.len(), |n| at + n + 1);
+            let line = command[at..end].trim_end_matches('\n');
+            at = end;
+            if (if dash {
+                line.trim_start_matches('\t')
+            } else {
+                line
+            }) == word
+            {
+                break;
+            }
+        }
+    }
+    at
 }
 
 /// Each `;`, `&`, `|`, `(`, `)`, or newline separated segment of a command line as words, quotes
 /// trimmed, leading `VAR=value` words skipped. A separator or space inside `'...'` or `"..."`, or
-/// after a backslash outside single quotes, does not split.
+/// after a backslash outside single quotes, does not split. Heredoc bodies are skipped.
 fn segments(command: &str) -> Vec<Vec<&str>> {
     let (mut segments, mut words) = (vec![], vec![]);
     let (mut start, mut quote, mut escaped) = (None, None, false);
+    // delimiters of heredocs opened on the current line; their bodies end at `skip_to`
+    let (mut heredocs, mut skip_to) = (vec![], 0);
     for (i, c) in command.char_indices() {
+        if i < skip_to {
+            continue;
+        }
+        let rest = &command[i..];
+        if quote.is_none()
+            && !escaped
+            && rest.starts_with("<<")
+            && !rest.starts_with("<<<")
+            && !command[..i].ends_with('<')
+        {
+            heredocs.extend(heredoc_delimiter(&rest[2..]));
+        }
         // Some(true) ends the segment, Some(false) only the word
         let split = match (escaped, quote, c) {
             (true, ..) => {
@@ -243,6 +390,9 @@ fn segments(command: &str) -> Vec<Vec<&str>> {
                 if segment_end {
                     segments.push(std::mem::take(&mut words));
                 }
+                if c == '\n' && !heredocs.is_empty() {
+                    skip_to = heredoc_end(command, i + 1, &std::mem::take(&mut heredocs));
+                }
             }
         }
     }
@@ -267,9 +417,9 @@ fn program(word: &str) -> &str {
         .unwrap_or_default()
 }
 
-/// The `stewards` subcommands a shell command line runs: each segment (see `segments`) whose
-/// program is `stewards`, skipping its global flags.
-pub fn stewards_subcommands(command: &str) -> Vec<&str> {
+/// The `stewards` commands a shell command line runs: each segment (see `segments`) whose
+/// program is `stewards`, as its words from the subcommand on, global flags skipped.
+pub fn stewards_commands(command: &str) -> Vec<Vec<&str>> {
     segments(command)
         .into_iter()
         .filter_map(|words| {
@@ -283,7 +433,7 @@ pub fn stewards_subcommands(command: &str) -> Vec<&str> {
                         words.next();
                     }
                     _ if w.starts_with('-') => {}
-                    _ => return Some(w),
+                    _ => return Some(std::iter::once(w).chain(words).collect()),
                 }
             }
             None
@@ -315,16 +465,22 @@ const GREP_VALUE_FLAGS: [&str; 18] = [
 
 /// The paths a shell command line reads, recognised simply: in each segment (see `segments`)
 /// whose program is `cat`, `head`, `tail`, `less`, `sed` with `-n`, `grep`, or `rg`, every word
-/// after it that is not a flag, an option value, a number, a glob, a word with `$` or starting
-/// with `!`, or a redirection (a lone `>`/`<` operator also drops the word after it). Option
-/// values: `-n`/`-c` of `head`/`tail`, `-e`/`-f` of `sed`, `GREP_VALUE_FLAGS` of `grep`/`rg`.
-/// `sed -n` drops its script and `grep`/`rg` their pattern (the first such word) unless `-e`/`-f`
-/// gave it. Directories given to `grep`/`rg` count.
-/// simplified: a path relative to an earlier `cd`, a line of a heredoc, or a `for` list is
-/// misread; upgrade if `files_opened` disagrees with the transcripts.
-pub fn shell_reads(command: &str) -> Vec<&str> {
+/// after it that is not a flag, an option value, a number, a word with `$` or starting with `!`,
+/// or a redirection (a lone `>`/`<` operator also drops the word after it). Option values:
+/// `-n`/`-c` of `head`/`tail`, `-e`/`-f` of `sed`, `GREP_VALUE_FLAGS` of `grep`/`rg`. `sed -n`
+/// drops its script and `grep`/`rg` their pattern (the first such word) unless `-e`/`-f` gave it.
+/// Globs and directories are returned as written (`existing_files` expands and drops them). After
+/// a leading `cd <dir>` segment, a relative path is joined to `<dir>`.
+/// simplified: a later `cd`, or a `for` list, is misread; upgrade if `files_opened` disagrees with
+/// the transcripts.
+pub fn shell_reads(command: &str) -> Vec<String> {
+    let segments = segments(command);
+    let cd = match segments.first().map(Vec::as_slice) {
+        Some(["cd", dir]) if !dir.starts_with(['-', '~']) && !dir.contains('$') => Some(*dir),
+        _ => None,
+    };
     let mut out = vec![];
-    for words in segments(command) {
+    for words in segments {
         let Some((first, args)) = words.split_first() else {
             continue;
         };
@@ -346,7 +502,7 @@ pub fn shell_reads(command: &str) -> Vec<&str> {
             } else if !operator.is_empty() && operator.chars().all(|c| matches!(c, '<' | '>')) {
                 it.next();
             } else if !(w.starts_with(['-', '!'])
-                || w.contains(['<', '>', '*', '?', '$'])
+                || w.contains(['<', '>', '$'])
                 || w.chars().all(|c| c.is_ascii_digit()))
             {
                 operands.push(w);
@@ -355,8 +511,55 @@ pub fn shell_reads(command: &str) -> Vec<&str> {
         out.extend(
             operands
                 .into_iter()
-                .skip(usize::from(drop_first && !pattern_given)),
+                .skip(usize::from(drop_first && !pattern_given))
+                .map(|p| match cd {
+                    Some(dir) => Path::new(dir).join(p).display().to_string(),
+                    None => p.to_string(),
+                }),
         );
+    }
+    out
+}
+
+/// The regular files among a session's opened `paths` (relative to `dir`, the run's directory
+/// after the session), in order: a glob (`*` or `?`, in the last component only) is expanded
+/// against `dir`'s listing, a name starting with `.` matched only by a pattern that does;
+/// directories and paths that do not exist are dropped.
+pub fn existing_files(dir: &Path, paths: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for p in paths {
+        let found = if p.contains(['*', '?']) {
+            let (parent, name) = p.rsplit_once('/').unwrap_or(("", p));
+            let Ok(glob) = globset::Glob::new(name).map(|g| g.compile_matcher()) else {
+                continue;
+            };
+            if parent.contains(['*', '?']) {
+                continue;
+            }
+            let mut names: Vec<String> = std::fs::read_dir(dir.join(parent))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| glob.is_match(n) && (name.starts_with('.') || !n.starts_with('.')))
+                .map(|n| {
+                    if parent.is_empty() {
+                        n
+                    } else {
+                        format!("{parent}/{n}")
+                    }
+                })
+                .collect();
+            names.sort();
+            names
+        } else {
+            vec![p.clone()]
+        };
+        for f in found {
+            if dir.join(&f).is_file() && !out.contains(&f) {
+                out.push(f);
+            }
+        }
     }
     out
 }
@@ -456,12 +659,29 @@ pub struct RunRecord {
     pub leftovers: Option<Leftovers>,
     /// `full` arms only.
     pub next_check: Option<NextCheck>,
-    /// Whether the session left a tracked file (or the commit) different from how it started;
-    /// `check_green` counts only then.
-    pub changed_tracked_files: bool,
+    /// Whether the run's directory differs from its starting commit after the session, outside
+    /// `.stewards/` and `docs/units/` (see `changed_paths`): the gate's first fact.
+    pub changed: bool,
+    /// `full` arms: each unit of each reviewer `submit`, in order (report-only).
+    pub reviews: Vec<UnitReview>,
     pub result: Option<Run>,
     /// Why `result` is missing when the transcript could not be parsed.
     pub error: Option<String>,
+}
+
+/// One unit of one reviewer `submit` in a `full` run.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnitReview {
+    /// 1-based reviewer `submit` of the run.
+    pub round: usize,
+    pub unit: String,
+    pub verdict: String,
+    pub findings: usize,
+    /// Bug gaps on the unit's card after the run that were not there before it.
+    pub bugs: Vec<String>,
+    /// Whether the submitting child ran the unit's test command (its test card's, else one of
+    /// the repo's `commands.test`), as a substring of one of its shell commands.
+    pub tests_ran: bool,
 }
 
 /// One eval invocation.
@@ -513,6 +733,8 @@ pub struct SetupNotes {
     pub flows: Vec<String>,
     /// A `repo` suite's one build, in seconds: setup, outside every ratio.
     pub build_s: Option<f64>,
+    /// A `repo` suite's pinned commit as git resolved it in the clone.
+    pub resolved_commit: Option<String>,
 }
 
 struct Runner<'a> {
@@ -546,7 +768,8 @@ impl Runner<'_> {
         if s.arm.is_full() {
             env.push(("STEWARDS_HOME", scratch.join("h").into_os_string()));
         }
-        let before = tracked_state(&s.dir);
+        let start = git(&s.dir, &["rev-parse", "HEAD"])?;
+        let gaps_before = s.arm.is_full().then(|| card_gaps(&s.dir));
         let session = self.driver.start(
             &s.dir,
             &s.prompt,
@@ -557,7 +780,9 @@ impl Runner<'_> {
         )?;
         let root = s.dir.parent().unwrap_or(&s.dir).to_path_buf();
         let leftovers = kill_leftovers(&root)?;
-        let changed_tracked_files = tracked_state(&s.dir) != before;
+        let changed = changed_paths(&s.dir, start.trim())?
+            .iter()
+            .any(|p| !p.starts_with(".stewards/") && !p.starts_with("docs/units/"));
         let next_check = if s.arm.is_full() {
             Some(next_check(&self.plan.stewards, &s.dir)?)
         } else {
@@ -582,7 +807,13 @@ impl Runner<'_> {
         };
         let mut status = session.status;
         let mut failure = None;
+        let mut reviews = vec![];
         if let Some(r) = &mut result {
+            r.files_opened = existing_files(&s.dir, &r.files_opened);
+            r.files_opened_tree = existing_files(&s.dir, &r.files_opened_tree);
+            if let Some(before) = &gaps_before {
+                reviews = review_outcomes(&s.dir, before, &r.reviews);
+            }
             if let Some(c) = &next_check {
                 r.ritual_steps.insert("check_green", c.exit_code == Some(0));
             }
@@ -629,7 +860,8 @@ impl Runner<'_> {
             workdir: s.dir,
             leftovers,
             next_check,
-            changed_tracked_files,
+            changed,
+            reviews,
             result,
             error,
         };
@@ -701,6 +933,7 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
         } => Some((dir, units, unowned, tests)),
         Source::Repo { commit, build } => {
             notes.build_s = Some(clone_and_build(plan, commit, build, &base, &cache)?);
+            notes.resolved_commit = Some(git(&base, &["rev-parse", "HEAD"])?.trim().to_string());
             None
         }
     };
@@ -1052,12 +1285,70 @@ pub fn adopted_knowledge(dir: &Path) -> Result<(Vec<String>, Vec<String>)> {
     Ok((gaps, flows))
 }
 
-/// `HEAD` and the diff of the tracked files against it, or `None` when git cannot say.
-fn tracked_state(dir: &Path) -> Option<(String, String)> {
-    Some((
-        git(dir, &["rev-parse", "HEAD"]).ok()?,
-        git(dir, &["diff", "HEAD", "--binary"]).ok()?,
-    ))
+/// Every path in `dir` that differs from commit `start`: changed, added, or deleted against it
+/// (committed or not), plus untracked files that are not ignored.
+fn changed_paths(dir: &Path, start: &str) -> Result<Vec<String>> {
+    let diff = git(dir, &["diff", "--name-only", "--no-renames", start])?;
+    let untracked = git(dir, &["ls-files", "--others", "--exclude-standard"])?;
+    Ok(diff
+        .lines()
+        .chain(untracked.lines())
+        .map(String::from)
+        .collect())
+}
+
+/// The gaps on the cards in `dir` (see `adopted_knowledge`); none when they cannot be loaded.
+fn card_gaps(dir: &Path) -> Vec<String> {
+    adopted_knowledge(dir).map(|(g, _)| g).unwrap_or_default()
+}
+
+/// Each unit of each reviewer `submit` of a `full` run, with the bug gaps its card gained since
+/// `gaps_before` and whether the submitting child ran its test command, from the cards in `dir`.
+fn review_outcomes(
+    dir: &Path,
+    gaps_before: &[String],
+    reviews: &[ReviewSubmit],
+) -> Vec<UnitReview> {
+    let loaded = crate::model::load_repo(dir).ok();
+    let gaps_after = card_gaps(dir);
+    let mut out = vec![];
+    for (n, review) in reviews.iter().enumerate() {
+        for u in &review.units {
+            let tests: Vec<&str> = loaded.as_ref().map_or(vec![], |l| {
+                match l.tests.get(&u.unit).and_then(|t| t.test_command.as_deref()) {
+                    Some(c) => vec![c],
+                    None => l
+                        .repo
+                        .commands
+                        .test
+                        .iter()
+                        .map(|c| match c {
+                            CommandEntry::Plain(cmd) | CommandEntry::Timed { cmd, .. } => {
+                                cmd.as_str()
+                            }
+                        })
+                        .collect(),
+                }
+            });
+            let prefix = format!("{}: bug: ", u.unit);
+            out.push(UnitReview {
+                round: n + 1,
+                unit: u.unit.clone(),
+                verdict: u.verdict.clone(),
+                findings: u.findings,
+                bugs: gaps_after
+                    .iter()
+                    .filter(|g| !gaps_before.contains(g))
+                    .filter_map(|g| g.strip_prefix(&prefix).map(String::from))
+                    .collect(),
+                tests_ran: review
+                    .commands
+                    .iter()
+                    .any(|c| tests.iter().any(|t| c.contains(t))),
+            });
+        }
+    }
+    out
 }
 
 /// `stewards next --no-brief` in `dir`: its exit code and job count; writes no briefs.
@@ -1208,8 +1499,14 @@ fn clone_and_build(
     Ok(seconds)
 }
 
-/// A `repo` suite's `full` tree: `base` as it is, with this binary's AGENTS.md block upserted
-/// (as `stewards init` does) and committed.
+/// The one commit message of every `repo` suite arm's history.
+const ROOT_COMMIT: &str = "initial";
+
+/// A `repo` suite's `full` tree: `base` with this binary's AGENTS.md block upserted (as
+/// `stewards init` does), committed as the one root commit of `main`, every other ref deleted and
+/// the reflog expired. The clone's object store stays, unpruned: the units' stamp and role-mark
+/// trees are unreachable objects there, and `next` and the review pack diff from them; a unit
+/// whose tree is missing is `eval_setup_incomplete`.
 fn full_repo_tree(base: &Path, dir: &Path) -> Result<()> {
     copy_dir(base, dir)?;
     let repo = crate::workspace::Repo {
@@ -1217,8 +1514,39 @@ fn full_repo_tree(base: &Path, dir: &Path) -> Result<()> {
         root: dir.to_path_buf(),
         loaded: None,
     };
-    if crate::guide::upsert_block(&repo)? {
-        git(dir, &["commit", "-qam", "update AGENTS.md block"])?;
+    crate::guide::upsert_block(&repo)?;
+    git(dir, &["checkout", "-q", "--orphan", "root"])?;
+    git(dir, &["add", "-A"])?;
+    git(dir, &["commit", "-qm", ROOT_COMMIT])?;
+    for r in git(dir, &["for-each-ref", "--format=%(refname)"])?.lines() {
+        if r != "refs/heads/root" {
+            git(dir, &["update-ref", "-d", r])?;
+        }
+    }
+    git(dir, &["branch", "-m", "main"])?;
+    git(dir, &["reflog", "expire", "--expire=now", "--all"])?;
+    let missing: Vec<String> = crate::model::load_repo(dir)?
+        .cards
+        .values()
+        .filter(|c| {
+            c.reviewed.as_ref().is_some_and(|r| {
+                [Some(&r.tree), r.tester.as_ref(), r.documenter.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .any(|t| !crate::git::has_object(dir, t))
+            })
+        })
+        .map(|c| c.unit.clone())
+        .collect();
+    if !missing.is_empty() {
+        return Err(setup_error(
+            format!(
+                "the `full` tree at {} lacks the stamped trees of: {}",
+                dir.display(),
+                missing.join(", ")
+            ),
+            "pin a commit whose stamped trees are in the checkout holding evals/ (`git cat-file -e <tree>`)",
+        ));
     }
     Ok(())
 }
@@ -1226,44 +1554,44 @@ fn full_repo_tree(base: &Path, dir: &Path) -> Result<()> {
 /// The paths a `repo` suite's `bare` tree lacks.
 const STEWARDS_PATHS: [&str; 3] = [".stewards", "docs/units", "AGENTS.md"];
 
-/// A `repo` suite's `bare` or `block-only` run copy: `base` without `STEWARDS_PATHS`, committed;
-/// `block-only` then gets an AGENTS.md holding only the block, committed.
+/// A `repo` suite's `bare` or `block-only` run copy: `base` without `STEWARDS_PATHS` (and
+/// `block-only` with an AGENTS.md holding only the block) in a new repository whose one root
+/// commit holds it, so no history or object can bring the removed paths back.
 fn repo_arm_tree(base: &Path, dir: &Path, arm: Arm) -> Result<()> {
     copy_dir(base, dir)?;
-    for p in STEWARDS_PATHS.map(|p| dir.join(p)) {
+    for p in STEWARDS_PATHS.iter().chain([&".git"]).map(|p| dir.join(p)) {
         if p.is_dir() {
             std::fs::remove_dir_all(&p)?;
         } else if p.exists() {
             std::fs::remove_file(&p)?;
         }
     }
-    git(dir, &["add", "-A"])?;
-    git(
-        dir,
-        &["commit", "-qm", "remove .stewards, docs/units, AGENTS.md"],
-    )?;
     if arm == Arm::BlockOnly {
         std::fs::write(
             dir.join("AGENTS.md"),
             format!("{}\n", crate::guide::block()),
         )?;
-        git(dir, &["add", "AGENTS.md"])?;
-        git(dir, &["commit", "-qm", "add AGENTS.md block"])?;
     }
+    git(dir, &["init", "-q", "-b", "main"])?;
+    git(dir, &["add", "-A"])?;
+    git(dir, &["commit", "-qm", ROOT_COMMIT])?;
+    // as in `full`, which must expire the clone's
+    git(dir, &["reflog", "expire", "--expire=now", "--all"])?;
     Ok(())
 }
 
-/// `cp -al cache dir/target`: the one build's output, hard-linked so no run pays a cold build.
+/// `cp -a --reflink=auto cache dir/target`: the one build's output, copied (sharing blocks where
+/// the filesystem can) so no run pays a cold build and no run's in-place writes reach the cache.
 fn link_build_cache(cache: &Path, dir: &Path) -> Result<()> {
     let target = dir.join("target");
     let out = Command::new("cp")
-        .arg("-al")
+        .args(["-a", "--reflink=auto"])
         .arg(cache)
         .arg(&target)
         .output()?;
     ok(
         out,
-        format!("cp -al {} {}", cache.display(), target.display()),
+        format!("cp -a {} {}", cache.display(), target.display()),
     )?;
     Ok(())
 }

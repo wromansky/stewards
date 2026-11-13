@@ -10,8 +10,9 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::{
-    Action, Driver, FAILED_STOPS, Run, Session, Status, Tokens, fresh_session_env, ritual_steps,
-    shell_reads,
+    Action, Driver, FAILED_STOPS, ReviewSubmit, Run, Session, Status, Tokens, fresh_session_env,
+    is_reviewer_submit, reads_git_history, reviewed_units, ritual_steps, shell_reads,
+    stewards_commands,
 };
 use crate::output::CliError;
 
@@ -317,8 +318,16 @@ fn tool_calls<'a>(records: &[&'a Value]) -> impl Iterator<Item = &'a Value> {
         .filter(|b| b["type"] == "toolCall")
 }
 
-/// The ritual actions of one session: shell commands and subagent launches.
-fn actions(records: &[&Value]) -> Vec<Action> {
+/// The shell commands of one session's records, in order.
+fn bash_commands<'a>(records: &[&'a Value]) -> impl Iterator<Item = (&'a Value, &'a str)> {
+    tool_calls(records)
+        .filter(|b| b["name"] == "bash")
+        .map(|b| (b, b["arguments"]["command"].as_str().unwrap_or_default()))
+}
+
+/// The ritual actions of one session (a child's when `child`): shell commands and subagent
+/// launches.
+fn actions(records: &[&Value], child: bool) -> Vec<Action> {
     tool_calls(records)
         .filter_map(|b| match b["name"].as_str() {
             Some("subagent") => Some(Action::Dispatch {
@@ -329,10 +338,48 @@ fn actions(records: &[&Value]) -> Vec<Action> {
                     .as_str()
                     .unwrap_or_default()
                     .to_string(),
+                child,
             }),
             _ => None,
         })
         .collect()
+}
+
+/// Each reviewer `submit` in one session whose output `reviewed_units` reads, with the
+/// timestamp of its result.
+fn review_submits(records: &[&Value]) -> Vec<(String, ReviewSubmit)> {
+    let commands: Vec<String> = bash_commands(records).map(|(_, c)| c.to_string()).collect();
+    let mut out = vec![];
+    for (call, command) in bash_commands(records) {
+        if !stewards_commands(command)
+            .iter()
+            .any(|c| is_reviewer_submit(c))
+        {
+            continue;
+        }
+        let Some(result) = records.iter().find(|r| {
+            r["message"]["role"] == "toolResult" && r["message"]["toolCallId"] == call["id"]
+        }) else {
+            continue;
+        };
+        let text: String = result["message"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        if let Some(units) = reviewed_units(&text) {
+            let at = result["timestamp"].as_str().unwrap_or_default().to_string();
+            out.push((
+                at,
+                ReviewSubmit {
+                    units,
+                    commands: commands.clone(),
+                },
+            ));
+        }
+    }
+    out
 }
 
 /// The distinct repo-relative paths one session opened, in order: each `read` tool path and each
@@ -345,11 +392,15 @@ fn files_opened(records: &[&Value]) -> Vec<String> {
     let mut out: Vec<String> = vec![];
     for b in tool_calls(records) {
         let paths = match b["name"].as_str() {
-            Some("read") => b["arguments"]["path"].as_str().into_iter().collect(),
+            Some("read") => b["arguments"]["path"]
+                .as_str()
+                .map(String::from)
+                .into_iter()
+                .collect(),
             Some("bash") => shell_reads(b["arguments"]["command"].as_str().unwrap_or_default()),
             _ => vec![],
         };
-        for p in paths.into_iter().filter_map(|p| repo_relative(p, cwd)) {
+        for p in paths.iter().filter_map(|p| repo_relative(p, cwd)) {
             if !out.contains(&p) {
                 out.push(p);
             }
@@ -379,7 +430,11 @@ fn last_stop(records: &[&Value]) -> Option<String> {
 /// them, Pi's own figure from its price table. `files_opened` counts, per session, the paths of
 /// the `read` tool plus the shell reads `shell_reads` recognises, each relative to that session's
 /// own `cwd`. Models come from `model_change` records and assistant messages over the tree,
-/// thinking levels from `thinking_level_change` records over the tree.
+/// thinking levels from `thinking_level_change` records and each assistant message's
+/// `thinkingLevel` over the tree; a session with neither is listed in
+/// `sessions_without_thinking`. `reviews` are the child sessions' reviewer `submit` outputs (a
+/// main session's own is not a review),
+/// ordered by their results' timestamps.
 pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run> {
     let dir = transcript.parent().unwrap_or(Path::new("."));
     let tops = top_level(dir)?;
@@ -454,29 +509,52 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
     let mut tree_files: Vec<String> = vec![];
     let mut models = BTreeSet::new();
     let mut thinking_levels = BTreeSet::new();
+    let mut sessions_without_thinking = vec![];
+    let mut reviews = vec![];
+    let mut git_history_commands = vec![];
     let mut failed_children = vec![];
     for (i, (name, recs)) in sessions.enumerate() {
-        all.extend(actions(recs));
+        all.extend(actions(recs, i > 0));
+        if i > 0 {
+            reviews.extend(review_submits(recs));
+        }
+        git_history_commands.extend(
+            bash_commands(recs)
+                .map(|(_, c)| c)
+                .filter(|c| reads_git_history(c))
+                .map(String::from),
+        );
         for f in files_opened(recs) {
             if !tree_files.contains(&f) {
                 tree_files.push(f);
             }
         }
+        let mut levels = 0;
         for r in recs.iter() {
             let m = &r["message"];
+            let level = match r["type"].as_str() {
+                Some("thinking_level_change") => r["thinkingLevel"].as_str(),
+                _ if m["role"] == "assistant" => m["thinkingLevel"].as_str(),
+                _ => None,
+            };
+            if let Some(l) = level {
+                levels += 1;
+                thinking_levels.insert(l.to_string());
+            }
             if r["type"] == "model_change" {
                 models.insert(format!(
                     "{}/{}",
                     r["provider"].as_str().unwrap_or_default(),
                     r["modelId"].as_str().unwrap_or_default()
                 ));
-            } else if r["type"] == "thinking_level_change" {
-                thinking_levels.insert(r["thinkingLevel"].as_str().unwrap_or_default().to_string());
             } else if m["role"] == "assistant"
                 && let (Some(p), Some(id)) = (m["provider"].as_str(), m["model"].as_str())
             {
                 models.insert(format!("{p}/{id}"));
             }
+        }
+        if levels == 0 {
+            sessions_without_thinking.push(if i == 0 { "main" } else { name }.to_string());
         }
         if i > 0
             && let Some(s) = last_stop(recs).filter(|s| FAILED_STOPS.contains(&s.as_str()))
@@ -506,6 +584,13 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         model,
         models: models.into_iter().collect(),
         thinking_levels: thinking_levels.into_iter().collect(),
+        sessions_without_thinking,
+        subagent_sessions: children.len(),
+        reviews: {
+            reviews.sort_by(|a, b| a.0.cmp(&b.0));
+            reviews.into_iter().map(|(_, r)| r).collect()
+        },
+        git_history_commands,
         stop_reason: last_stop(&main),
         failed_children,
         truncated_lines,

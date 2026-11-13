@@ -39,11 +39,12 @@ pub enum Source {
         tests: Vec<String>,
     },
     /// The repository holding `evals/`, cloned at `commit`, already adopted: the `full` arm is
-    /// that tree with the current AGENTS.md block, no adoption session.
+    /// that tree with the current AGENTS.md block, no adoption session. Every arm's history is
+    /// one root commit.
     Repo {
         commit: String,
-        /// Run once per invocation in a clone at `commit`; its `target/` is hard-linked into
-        /// every run copy.
+        /// Run once per invocation in a clone at `commit`; its `target/` is copied into every
+        /// run copy.
         build: Vec<String>,
     },
 }

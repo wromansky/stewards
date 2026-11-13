@@ -6,13 +6,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::copy_dir;
-use stewards::eval::grade::{grade_task, median, render, summarize};
+use stewards::eval::grade::{grade_task, median, overhead_medians, render, summarize};
 use stewards::eval::pi::{Pi, agent_dir, parse};
 use stewards::eval::{
-    ADOPT_PROMPT, Action, Arm, Driver, Plan, RITUAL_STEPS, RitualSteps, Run, RunRecord, RunRole,
-    Session, SetupNotes, Source, Status, Suite, Tokens, Verdict, adopted_knowledge, execute,
-    kill_leftovers, neutral_work_dir, next_check, path_without_stewards, ritual_steps, shell_reads,
-    stewards_subcommands, task_prompt, without_developers, would_exceed,
+    ADOPT_PROMPT, Action, Arm, Driver, Plan, RITUAL_STEPS, ReviewedUnit, RitualSteps, Run,
+    RunRecord, RunRole, Session, SetupNotes, Source, Status, Suite, Tokens, UnitReview, Verdict,
+    adopted_knowledge, execute, existing_files, kill_leftovers, neutral_work_dir, next_check,
+    path_without_stewards, reads_git_history, reviewed_units, ritual_steps, shell_reads,
+    stewards_commands, task_prompt, without_developers, would_exceed,
 };
 use stewards::output::CliError;
 use tempfile::TempDir;
@@ -69,6 +70,9 @@ fn pi_sample_counts_child_tokens_in_total_and_not_in_main() {
     assert_eq!(run.models, ["anthropic/claude-haiku-5-5"]);
     // the main session ran at medium, the pi-subagents worker at its own frontmatter's high
     assert_eq!(run.thinking_levels, ["high", "medium"]);
+    assert!(run.sessions_without_thinking.is_empty());
+    assert_eq!(run.subagent_sessions, 1);
+    assert!(run.reviews.is_empty() && run.git_history_commands.is_empty());
     assert!((run.cost_usd.unwrap() - (0.00113712 + 0.0009244)).abs() < 1e-6);
     assert_eq!(run.duration_s, 1.5);
     assert_eq!(run.ritual_steps, steps(&[]));
@@ -77,6 +81,55 @@ fn pi_sample_counts_child_tokens_in_total_and_not_in_main() {
     assert_eq!(run.stop_reason.as_deref(), Some("stop"));
     assert!(run.failed_children.is_empty());
     assert_eq!(run.truncated_lines, 0);
+}
+
+#[test]
+fn a_session_with_no_thinking_level_is_listed_and_assistant_levels_are_read() {
+    let tmp = TempDir::new().unwrap();
+    copy_dir(&sample("subagent"), tmp.path());
+    let parent = main_file(tmp.path());
+    let child = parent
+        .with_extension("")
+        .join("b5d51927-cb55-4247-a969-9448b23c2c26/run-0/session.jsonl");
+    let strip = |file: &Path, keep_changes: bool| {
+        let text: Vec<String> = std::fs::read_to_string(file)
+            .unwrap()
+            .lines()
+            .filter_map(|l| {
+                let mut r: serde_json::Value = serde_json::from_str(l).unwrap();
+                if r["type"] == "thinking_level_change" && !keep_changes {
+                    return None;
+                }
+                if let Some(m) = r["message"].as_object_mut() {
+                    m.remove("thinkingLevel");
+                }
+                Some(r.to_string())
+            })
+            .collect();
+        std::fs::write(file, text.join("\n") + "\n").unwrap();
+    };
+    // the child keeps only its assistant messages' `thinkingLevel`; the parent only its record
+    let text = std::fs::read_to_string(&child).unwrap();
+    let text: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.contains("\"thinking_level_change\""))
+        .collect();
+    std::fs::write(&child, text.join("\n") + "\n").unwrap();
+    strip(&parent, true);
+    let run = parse(&parent, 0.0, false).unwrap();
+    assert_eq!(run.thinking_levels, ["high", "medium"]);
+    assert!(run.sessions_without_thinking.is_empty());
+    strip(&child, false);
+    strip(&parent, false);
+    let run = parse(&parent, 0.0, false).unwrap();
+    assert!(run.thinking_levels.is_empty());
+    assert_eq!(
+        run.sessions_without_thinking,
+        [
+            "main",
+            "b5d51927-cb55-4247-a969-9448b23c2c26/run-0/session.jsonl"
+        ]
+    );
 }
 
 #[test]
@@ -98,15 +151,14 @@ fn a_fork_copy_of_the_parent_is_counted_once() {
 
 /// The trimmed real adoption session of the Haiku smoke run: the parent ran `stewards status`,
 /// `stewards init --draft`, launched the briefs, and ran `stewards next`; the two children kept
-/// (the architect and the api documenter) each ran `stewards submit`. Nothing ran `route`.
+/// (the architect and the api documenter) each ran `stewards submit`, neither as the reviewer.
+/// Nothing ran `route`.
 #[test]
 fn pi_ritual_sample_shows_the_real_adoption_steps_across_parent_and_children() {
     let run = parse(&main_file(&sample("ritual")), 0.0, false).unwrap();
     // check_green is the runner's own `stewards next`, never read from a transcript
-    assert_eq!(
-        run.ritual_steps,
-        steps(&["status", "brief", "next", "submit"])
-    );
+    assert_eq!(run.ritual_steps, steps(&["status", "next"]));
+    assert_eq!(run.subagent_sessions, 2);
     let main = Tokens {
         input: 26,
         output: 3121,
@@ -151,10 +203,7 @@ fn a_route_command_in_a_transcript_is_the_route_step() {
     let text = std::fs::read_to_string(&parent).unwrap() + route + "\n";
     std::fs::write(&parent, text).unwrap();
     let run = parse(&parent, 0.0, false).unwrap();
-    assert_eq!(
-        run.ritual_steps,
-        steps(&["status", "route", "brief", "next", "submit"])
-    );
+    assert_eq!(run.ritual_steps, steps(&["status", "route", "next"]));
 }
 
 #[test]
@@ -177,6 +226,14 @@ fn a_cache_refresh_cost_is_in_cost_usd_but_not_in_tokens() {
 fn shell(command: &str) -> Action {
     Action::Shell {
         command: command.into(),
+        child: false,
+    }
+}
+
+fn child_shell(command: &str) -> Action {
+    Action::Shell {
+        command: command.into(),
+        child: true,
     }
 }
 
@@ -189,27 +246,34 @@ fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
     let cases: [(&str, Vec<Action>); 5] = [
         ("status", vec![shell("stewards status")]),
         ("route", vec![shell("cd /r && stewards route a.py")]),
+        ("next", vec![child_shell("stewards next")]),
         (
-            "brief",
-            vec![dispatch(
-                r#"{"task":"Read /r/.stewards/briefs/api-maintainer.md"}"#,
-            )],
+            "review_dispatched",
+            vec![dispatch(r#"{"task":"Read /r/.stewards/briefs/review.md"}"#)],
         ),
-        ("next", vec![shell("stewards next")]),
         (
-            "submit",
-            vec![shell("stewards submit api --role tester --file a.json")],
+            "reviewer_submit",
+            vec![child_shell(
+                "cd /r && stewards submit --role reviewer --file .stewards/briefs/review.answer.json",
+            )],
         ),
     ];
     for (name, actions) in &cases {
         let found = ritual_steps(actions);
         for other in RITUAL_STEPS {
-            // submit implies brief; nothing else implies another step
-            let expected = other == *name || (*name == "submit" && other == "brief");
-            assert_eq!(found[other], expected, "{name}: {other}");
+            assert_eq!(found[other], other == *name, "{name}: {other}");
         }
     }
-    assert_eq!(ritual_steps(&[]), steps(&[]));
+    // another brief, another role's submit, or the reviewer submit in the main session: none
+    let none = [
+        dispatch(r#"{"task":"Read /r/.stewards/briefs/api-maintainer.md"}"#),
+        child_shell("stewards submit api --role tester --file a.json"),
+        shell("stewards submit --role=reviewer --file a.json"),
+    ];
+    assert_eq!(ritual_steps(&none), steps(&[]));
+    assert!(
+        ritual_steps(&[child_shell("stewards submit --role=reviewer --file a.json")])["reviewer_submit"]
+    );
 }
 
 #[test]
@@ -246,7 +310,10 @@ fn shell_reads_skips_quoted_separators_variables_negations_and_option_values() {
         shell_reads(
             r#"cd /work/3/repo && export ITEMS_STORE=$(mktemp -u /tmp/itemsXXXX.json); node --version; python3 api/items.py create "widget"; echo "---"; cat "$ITEMS_STORE"; echo; echo "---"; node client/client.ts create-item "gadget"; echo "exit=$?"; echo "---"; cat "$ITEMS_STORE"; echo; rm -f "$ITEMS_STORE"; echo "--- tests"; grep -n "label\|name" client/client.test.ts api/test_items.py | head -30"#
         ),
-        ["client/client.test.ts", "api/test_items.py"]
+        [
+            "/work/3/repo/client/client.test.ts",
+            "/work/3/repo/api/test_items.py"
+        ]
     );
     assert_eq!(
         shell_reads(
@@ -267,23 +334,124 @@ fn shell_reads_skips_quoted_separators_variables_negations_and_option_values() {
     );
 }
 
+/// The third review's real commands: a heredoc whose body has a `\'` swallowed the reads after
+/// it; `cd api; cat` names a path under `api`; a glob is returned for the runner to expand.
 #[test]
-fn stewards_subcommands_reads_argv_not_text() {
+fn shell_reads_skips_heredoc_bodies_and_follows_a_leading_cd() {
+    // bare t3 (self1 007), shortened inside the heredoc only
+    let command = r#"cd /work/7/repo && python3 - <<'E'
+import re
+def sub(p,a,b,c=1):
+    s=open(p).read(); assert a in s,(p,a); open(p,'w').write(s.replace(a,b,c))
+sub('src/status.rs','"| {} | {} | {}/{} | {} | {} | {} | {} |",\n                u.unit,','"| {} | {} | {} | {}/{} | {} | {} | {} | {} |",\n                u.unit,\n                one_line(u.owner.as_deref().unwrap_or("")).replace(\'|\', "\\\\|"),')
+E
+grep -n "UnitDef {" -A6 src/init.rs tests/check.rs tests/route_workspace.rs tests/route.rs | grep -n "purpose"; grep -rn "purpose |" tests | head"#;
     assert_eq!(
-        stewards_subcommands("echo 'run stewards next'"),
-        Vec::<&str>::new()
+        shell_reads(command),
+        [
+            "/work/7/repo/src/init.rs",
+            "/work/7/repo/tests/check.rs",
+            "/work/7/repo/tests/route_workspace.rs",
+            "/work/7/repo/tests/route.rs",
+            "/work/7/repo/tests",
+        ]
+    );
+    // `<<-` drops leading tabs on the closing line; a quoted `<<` is no heredoc
+    assert_eq!(
+        shell_reads("cat <<-EOF\n\tcat x.py\n\tEOF\ncat a.py; echo '<<B'; cat b.py"),
+        ["a.py", "b.py"]
+    );
+    assert_eq!(shell_reads("cd api; cat items.py"), ["api/items.py"]);
+    assert_eq!(shell_reads("cat docs/units/*.md"), ["docs/units/*.md"]);
+}
+
+#[test]
+fn existing_files_keeps_regular_files_and_expands_simple_globs() {
+    let tmp = TempDir::new().unwrap();
+    for f in [
+        "src/main.rs",
+        "docs/units/api.md",
+        "docs/units/cli.md",
+        "docs/units/.hidden.md",
+    ] {
+        let p = tmp.path().join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, "").unwrap();
+    }
+    let paths = |ps: &[&str]| ps.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+    // `src/cli.rs` does not exist and `src` is a directory: neither counts
+    assert_eq!(
+        existing_files(
+            tmp.path(),
+            &paths(&["src/main.rs", "src/cli.rs", "src", "tests"])
+        ),
+        ["src/main.rs"]
     );
     assert_eq!(
-        stewards_subcommands("grep stewards README.md"),
-        Vec::<&str>::new()
+        existing_files(
+            tmp.path(),
+            &paths(&["docs/units/*.md", "docs/units/api.md"])
+        ),
+        ["docs/units/api.md", "docs/units/cli.md"]
     );
+    assert!(existing_files(tmp.path(), &paths(&["*/units/*.md", "nope/*.rs"])).is_empty());
+}
+
+#[test]
+fn stewards_commands_reads_argv_not_text() {
+    let none: Vec<Vec<&str>> = vec![];
+    assert_eq!(stewards_commands("echo 'run stewards next'"), none);
+    assert_eq!(stewards_commands("grep stewards README.md"), none);
     assert_eq!(
-        stewards_subcommands(
+        stewards_commands(
             "cd /r && A=1 stewards -C /r --human next | head; /x/bin/stewards status"
         ),
-        ["next", "status"]
+        [vec!["next"], vec!["status"]]
     );
-    assert_eq!(stewards_subcommands("stewards --repo api check"), ["check"]);
+    assert_eq!(
+        stewards_commands("stewards --repo api submit --role reviewer"),
+        [vec!["submit", "--role", "reviewer"]]
+    );
+}
+
+#[test]
+fn git_history_reads_are_recognised_by_subcommand() {
+    for c in [
+        "git log --oneline",
+        "cd /r && git -C /r show HEAD~1:AGENTS.md",
+        "git -c core.pager=cat reflog",
+        "git stash list",
+        "git checkout HEAD~1 -- docs",
+        "git fsck --lost-found",
+        "git cat-file -p abc",
+    ] {
+        assert!(reads_git_history(c), "{c}");
+    }
+    for c in ["git status", "git diff", "echo git log", "grep 'git log' x"] {
+        assert!(!reads_git_history(c), "{c}");
+    }
+}
+
+#[test]
+fn reviewed_units_reads_a_reviewer_submits_json_output() {
+    let out = r#"{"stewards":{"version":"0.1.0","schema":1},"summary":"reviewer: api changes (2 findings; card: gap +a, anchor -b; not stamped), store approve (card unchanged; stamped abc1234)","findings":[{"unit":"api","file":"a.py","line":1,"cut":"x"},{"unit":"api","file":"a.py","line":2,"cut":"y"}]}"#;
+    let unit = |u: &str, v: &str, f| ReviewedUnit {
+        unit: u.into(),
+        verdict: v.into(),
+        findings: f,
+    };
+    assert_eq!(
+        reviewed_units(&format!("warning: x\n{out}\n")).unwrap(),
+        [unit("api", "changes", 2), unit("store", "approve", 0)]
+    );
+    assert_eq!(
+        reviewed_units(r#"{"summary":"architect: 3 purposes set"}"#),
+        None
+    );
+    assert_eq!(
+        reviewed_units(r#"{"error":{"code":"answer_parse_failed"}}"#),
+        None
+    );
 }
 
 #[test]
@@ -314,6 +482,10 @@ fn run_with(main: u64, total: u64, files: usize, ritual: RitualSteps) -> Run {
         model: None,
         models: vec![],
         thinking_levels: vec![],
+        sessions_without_thinking: vec![],
+        subagent_sessions: 1,
+        reviews: vec![],
+        git_history_commands: vec![],
         stop_reason: Some("stop".into()),
         failed_children: vec![],
         truncated_lines: 0,
@@ -337,7 +509,8 @@ fn record(task: u32, arm: Arm, role: RunRole, run: u32, result: Run) -> RunRecor
         workdir: PathBuf::new(),
         leftovers: None,
         next_check: None,
-        changed_tracked_files: true,
+        changed: true,
+        reviews: vec![],
         result: Some(result),
         error: None,
     }
@@ -369,109 +542,150 @@ fn records(task: u32, full_main: u64, full_total: u64, ritual: RitualSteps) -> V
 
 const ARMS: [Arm; 2] = [Arm::Bare, Arm::Full];
 
-#[test]
-fn token_criteria_boundaries() {
-    let grade = |main, total| {
-        grade_task(
-            &fixture_suite(),
-            1,
-            &records(1, main, total, all()),
-            &ARMS,
-            3,
-        )
-    };
-    let at_limits = grade(800, 1100);
-    assert_eq!(at_limits.verdict, Verdict::Pass, "{:?}", at_limits.reasons);
-    assert_eq!(at_limits.criteria.len(), 3);
-    let main_over = grade(801, 1100);
-    assert_eq!(main_over.verdict, Verdict::Warn);
-    assert!(main_over.reasons[0].starts_with("main_tokens"));
-    assert_eq!(grade(800, 1101).verdict, Verdict::Warn);
-    assert_eq!(grade(801, 1101).verdict, Verdict::Fail);
+/// The full run `run` of `recs`.
+fn full_run(recs: &mut [RunRecord], run: u32) -> &mut RunRecord {
+    recs.iter_mut()
+        .find(|r| r.arm == Arm::Full && r.run == run)
+        .unwrap()
 }
 
 #[test]
-fn cost_and_peak_context_ratios_are_report_only() {
-    // full costs and peaks 3x bare, yet the token criteria alone decide the verdict
-    let g = grade_task(
-        &fixture_suite(),
-        1,
-        &records(1, 3000, 1000, all()),
-        &ARMS,
-        3,
+fn the_gate_passes_only_when_every_full_run_has_all_four_facts() {
+    let grade = |recs: &[RunRecord]| grade_task(&fixture_suite(), 1, recs, &ARMS, 3);
+    // status and route are recorded, not gated
+    let gated = steps(&[
+        "next",
+        "review_dispatched",
+        "reviewer_submit",
+        "check_green",
+    ]);
+    let g = grade(&records(1, 3000, 9000, gated.clone()));
+    assert_eq!(g.verdict, Verdict::Pass, "{:?}", g.reasons);
+    assert_eq!((g.gate.unwrap().passed, g.gate.unwrap().runs), (3, 3));
+
+    // `next` ran but the review was not dispatched: that run fails the task, with the reason
+    let mut recs = records(1, 3000, 9000, gated.clone());
+    let r = full_run(&mut recs, 2).result.as_mut().unwrap();
+    r.ritual_steps.insert("review_dispatched", false);
+    r.ritual_steps.insert("reviewer_submit", false);
+    let g = grade(&recs);
+    assert_eq!(g.verdict, Verdict::Fail);
+    assert_eq!(g.gate.unwrap().passed, 2);
+    assert_eq!(
+        g.reasons,
+        [
+            "full run 2: `next` ran but the review was not dispatched; no child ran `stewards submit --role reviewer`"
+        ]
     );
-    let ratio = |n: &str| g.report_only.iter().find(|r| r.name == n).unwrap().ratio;
-    assert!((ratio("cost_usd").unwrap() - 3.0).abs() < 1e-9);
-    assert!((ratio("peak_main_context").unwrap() - 3.0).abs() < 1e-9);
-    assert_eq!(g.verdict, Verdict::Warn, "{:?}", g.reasons);
-    let pass = grade_task(&fixture_suite(), 1, &records(1, 500, 900, all()), &ARMS, 3);
-    assert_eq!(pass.verdict, Verdict::Pass);
-    assert!((pass.report_only[0].ratio.unwrap() - 0.5).abs() < 1e-9);
+
+    // the runner saw no change, `next` never ran, the runner's own `next` is not clean
+    let mut recs = records(1, 3000, 9000, gated.clone());
+    full_run(&mut recs, 1).changed = false;
+    let r = full_run(&mut recs, 3).result.as_mut().unwrap();
+    r.ritual_steps.insert("next", false);
+    r.ritual_steps.insert("check_green", false);
+    let g = grade(&recs);
+    assert_eq!(g.verdict, Verdict::Fail);
+    assert_eq!(
+        g.reasons,
+        [
+            "full run 1: changed nothing",
+            "full run 3: `stewards next` never ran; the runner's `stewards next --no-brief` did not exit 0",
+        ]
+    );
 }
 
 #[test]
-fn a_missing_ritual_step_is_a_warning() {
-    let mut ritual = all();
-    ritual.insert("submit", false);
-    let g = grade_task(&fixture_suite(), 1, &records(1, 500, 900, ritual), &ARMS, 3);
-    assert_eq!(g.verdict, Verdict::Warn);
-    assert_eq!(g.reasons, ["ritual steps missing: submit"]);
-}
-
-#[test]
-fn ritual_steps_that_cannot_apply_are_n_a_and_the_rest_counted() {
-    let ritual = |g: &stewards::eval::TaskGrade| {
-        let c = g.criteria.iter().find(|c| c.name == "ritual").unwrap();
-        (c.value, c.limit)
-    };
-    // task 4 is a read-only question: only status and next apply
+fn a_read_only_task_has_no_gate() {
     let g = grade_task(
         &fixture_suite(),
         4,
-        &records(4, 500, 900, steps(&["status", "next"])),
+        &records(4, 500, 900, steps(&[])),
         &ARMS,
         3,
     );
-    assert_eq!(g.verdict, Verdict::Pass, "{:?}", g.reasons);
-    assert_eq!(ritual(&g), (2.0, 2.0));
-    let full = g.arms[1].ritual.as_ref().unwrap();
-    for step in ["route", "brief", "submit", "check_green"] {
-        assert_eq!(full[step], None, "{step}");
-    }
-    assert_eq!(full["status"], Some(true));
-
-    // check_green is n/a when no run changed tracked files, counted when one did
-    let mut recs = records(
-        1,
-        500,
-        900,
-        steps(&["status", "route", "brief", "next", "submit"]),
-    );
-    for r in &mut recs {
-        r.changed_tracked_files = false;
-    }
-    let g = grade_task(&fixture_suite(), 1, &recs, &ARMS, 3);
-    assert_eq!(g.verdict, Verdict::Pass, "{:?}", g.reasons);
-    assert_eq!(ritual(&g), (5.0, 5.0));
-    recs.iter_mut()
-        .filter(|r| r.arm == Arm::Full && r.run == 1)
-        .for_each(|r| r.changed_tracked_files = true);
-    let g = grade_task(&fixture_suite(), 1, &recs, &ARMS, 3);
-    assert_eq!(g.verdict, Verdict::Warn);
-    assert_eq!(ritual(&g), (5.0, 6.0));
-    assert_eq!(g.reasons, ["ritual steps missing: check_green"]);
-    // the per-run record still shows what ran
-    assert!(recs[1].result.as_ref().unwrap().ritual_steps["route"]);
+    assert_eq!(g.verdict, Verdict::NotApplicable, "{:?}", g.reasons);
+    assert!(g.gate.is_none() && g.reasons.is_empty());
+    // the suite passes on n/a and passing tasks, fails on any failed gate
+    let p = |tasks: Vec<u32>, recs: Vec<RunRecord>| {
+        let tmp = TempDir::new().unwrap();
+        let mut p = plan(tmp.path(), 3, None);
+        p.arms = ARMS.to_vec();
+        p.tasks = tasks;
+        summarize(&p, &recs, false, &[], SetupNotes::default()).verdict
+    };
+    let mut recs = records(4, 500, 900, steps(&[]));
+    recs.extend(records(1, 500, 900, all()));
+    assert_eq!(p(vec![1, 4], recs), Verdict::Pass);
+    let mut recs = records(4, 500, 900, steps(&[]));
+    recs.extend(records(1, 500, 900, steps(&[])));
+    assert_eq!(p(vec![1, 4], recs), Verdict::Fail);
 }
 
 #[test]
-fn summary_md_shows_warnings_in_the_headline_costs_to_4_decimals_and_adoption() {
+fn overhead_is_reported_per_task_and_as_a_median_across_tasks() {
+    // full at 3x bare main, 0.9x total: reported, never judged
+    let g = grade_task(&fixture_suite(), 1, &records(1, 3000, 900, all()), &ARMS, 3);
+    assert_eq!(g.verdict, Verdict::Pass, "{:?}", g.reasons);
+    let ratio = |g: &stewards::eval::TaskGrade, n: &str| {
+        g.overhead
+            .iter()
+            .find(|r| r.name == n)
+            .unwrap()
+            .ratio
+            .unwrap()
+    };
+    for (name, want) in [
+        ("main_tokens", 3.0),
+        ("total_tokens", 0.9),
+        ("cost_usd", 3.0),
+        ("peak_main_context", 3.0),
+    ] {
+        assert!((ratio(&g, name) - want).abs() < 1e-9, "{name}");
+    }
+    assert_eq!(g.arms[1].subagent_sessions, [1, 1, 1]);
+    let grades: Vec<_> = [(1, 1000), (2, 2000), (3, 6000)]
+        .into_iter()
+        .map(|(t, main)| grade_task(&fixture_suite(), t, &records(t, main, 900, all()), &ARMS, 3))
+        .collect();
+    let medians = overhead_medians(&grades);
+    let main = medians.iter().find(|m| m.name == "main_tokens").unwrap();
+    assert_eq!((main.median, main.tasks), (Some(2.0), 3));
+    // an incomplete task's ratios are left out of the medians
+    let mut short = grades.clone();
+    short[2] = grade_task(
+        &fixture_suite(),
+        3,
+        &records(3, 6000, 900, all())[..5],
+        &ARMS,
+        3,
+    );
+    let main = overhead_medians(&short)
+        .into_iter()
+        .find(|m| m.name == "main_tokens")
+        .unwrap();
+    assert_eq!((main.median, main.tasks), (Some(1.5), 2));
+}
+
+#[test]
+fn summary_md_shows_the_gate_the_overhead_the_flags_and_the_review_outcomes() {
     let tmp = TempDir::new().unwrap();
     let mut p = plan(tmp.path(), 3, None);
     p.arms = ARMS.to_vec();
-    let mut recs = records(1, 801, 1000, all()); // main_tokens over its limit: a warning
+    let mut recs = records(1, 801, 1000, all());
     recs[1].thinking_mismatch = true;
-    recs[1].result.as_mut().unwrap().thinking_levels = vec!["high".into(), "medium".into()];
+    let r = recs[1].result.as_mut().unwrap();
+    r.thinking_levels = vec!["high".into(), "medium".into()];
+    r.sessions_without_thinking = vec!["x/run-0/session.jsonl".into()];
+    r.git_history_commands = vec!["git log --oneline".into()];
+    recs[1].reviews = vec![UnitReview {
+        round: 1,
+        unit: "api".into(),
+        verdict: "changes".into(),
+        findings: 2,
+        bugs: vec!["pagination skips the last item".into()],
+        tests_ran: true,
+    }];
     let mut adoption = record(
         1,
         Arm::Full,
@@ -488,11 +702,21 @@ fn summary_md_shows_warnings_in_the_headline_costs_to_4_decimals_and_adoption() 
         ..SetupNotes::default()
     };
     let summary = summarize(&p, &recs, false, &[], setup);
-    assert_eq!(summary.verdict, Verdict::Pass, "the exit code stays a pass");
+    assert_eq!(summary.verdict, Verdict::Pass);
     assert_eq!(summary.adoption_in_bare_tasks, Some(16.0));
     let md = render(&summary);
-    assert!(md.starts_with("# eval: pass (with warnings: 1)\n"), "{md}");
-    assert!(md.contains("| 0.8010 |"), "{md}");
+    assert!(md.starts_with("# eval: pass\n"), "{md}");
+    assert!(md.contains("| 0.8010 | 1,1,1 |"), "{md}");
+    assert!(md.contains("- task 1: pass (gate 3/3) (overhead, full/bare: main_tokens 0.80, total_tokens 1.00, cost_usd 0.80, peak_main_context 0.80)"), "{md}");
+    assert!(
+        md.contains("overhead medians across tasks, full/bare (reported, not judged): main_tokens 0.80 (1 tasks)"),
+        "{md}"
+    );
+    assert!(
+        md.contains("- full-t1-r1: round 1 api changes (2 findings, bugs: pagination skips the last item, tests ran)"),
+        "{md}"
+    );
+    assert!(md.contains("- full-t1-r2: no reviewer submit"), "{md}");
     assert!(
         md.contains("adoption total tokens = 16.0 median bare task totals (report-only)"),
         "{md}"
@@ -506,7 +730,14 @@ fn summary_md_shows_warnings_in_the_headline_costs_to_4_decimals_and_adoption() 
         md.contains("other thinking levels used: full-t1-r1: high, medium"),
         "{md}"
     );
-    assert!(md.contains("| 6/6 |"), "{md}");
+    assert!(
+        md.contains("no thinking level recorded: full-t1-r1: x/run-0/session.jsonl"),
+        "{md}"
+    );
+    assert!(
+        md.contains("git history read: full-t1-r1: git log --oneline"),
+        "{md}"
+    );
 }
 
 #[test]
@@ -528,8 +759,8 @@ fn adopted_knowledge_lists_gaps_of_every_kind_and_the_flows() {
     assert_eq!(flows, ["create-item: api, store"]);
 }
 
-/// Task 6 records with the full arm's task-6 files opened at `files`, against bare task 4 at `bare4`.
-fn task6_against(files: usize, bare4: usize) -> Vec<RunRecord> {
+/// Task 6 records with the full arm's task-6 files opened at `files`, against bare task 4 at 10.
+fn task6(files: usize) -> Vec<RunRecord> {
     let mut out = records(6, 500, 900, all());
     for r in out.iter_mut().filter(|r| r.arm == Arm::Full) {
         r.result.as_mut().unwrap().files_opened = (0..files).map(|n| format!("f{n}")).collect();
@@ -549,34 +780,23 @@ fn task6_against(files: usize, bare4: usize) -> Vec<RunRecord> {
             Arm::Bare,
             RunRole::Task,
             run,
-            run_with(1000, 1000, bare4, steps(&[])),
+            run_with(1000, 1000, 10, steps(&[])),
         ));
     }
     out
 }
 
-fn task6(files: usize) -> Vec<RunRecord> {
-    task6_against(files, 10)
-}
-
 #[test]
-fn task_6_files_opened_is_at_most_half_of_bare_task_4() {
-    let half = grade_task(&fixture_suite(), 6, &task6(5), &ARMS, 3);
-    assert_eq!(half.verdict, Verdict::Pass, "{:?}", half.reasons);
-    let over = grade_task(&fixture_suite(), 6, &task6(6), &ARMS, 3);
-    assert_eq!(over.verdict, Verdict::Warn);
-    assert!(over.reasons[0].starts_with("files_opened 0.60"));
-    let none = grade_task(&fixture_suite(), 6, &task6_against(0, 0), &ARMS, 3);
-    assert_eq!(none.verdict, Verdict::Warn, "0 on both sides is not a pass");
-    assert_eq!(
-        none.reasons,
-        ["files_opened unmeasured: 0 files opened on both sides"]
-    );
-    assert!(
-        none.criteria
-            .iter()
-            .any(|c| c.name == "files_opened" && c.unmeasured)
-    );
+fn task_6_files_opened_is_reported_against_bare_task_4() {
+    let g = grade_task(&fixture_suite(), 6, &task6(6), &ARMS, 3);
+    assert_eq!(g.verdict, Verdict::NotApplicable, "{:?}", g.reasons);
+    let files = g
+        .overhead
+        .iter()
+        .find(|r| r.name == "files_opened")
+        .unwrap();
+    assert_eq!((files.full, files.bare), (Some(6.0), Some(10.0)));
+    assert!((files.ratio.unwrap() - 0.6).abs() < 1e-9);
 }
 
 #[test]
@@ -586,7 +806,6 @@ fn a_timed_out_or_missing_run_makes_the_task_incomplete_with_medians_kept() {
     let g = grade_task(&fixture_suite(), 1, &recs, &ARMS, 3);
     assert_eq!(g.verdict, Verdict::Incomplete);
     assert_eq!(g.reasons, ["full task 1 run 1: timed_out"]);
-    assert!(g.criteria.is_empty());
     assert_eq!(g.arms[1].main_tokens, Some(500.0));
     assert_eq!(g.arms[1].not_ok, 1);
 
@@ -912,7 +1131,9 @@ impl Driver for Replay {
             &self.task_writes
         };
         for (path, text) in writes {
-            std::fs::write(dir.join(path), text)?;
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::write(path, text)?;
         }
         std::process::Command::new("sh")
             .args(["-c", "setsid sleep 300 >/dev/null 2>&1 &"])
@@ -1041,7 +1262,7 @@ fn a_timed_out_run_is_recorded_not_dropped_and_its_leftover_process_killed() {
     assert_eq!(runs[0]["result"]["main_tokens"]["output"], 743);
     assert_eq!(runs[0]["leftovers"]["killed"], 1);
     assert_eq!(runs[0]["next_check"], serde_json::Value::Null);
-    assert_eq!(runs[0]["changed_tracked_files"], false);
+    assert_eq!(runs[0]["changed"], false);
     // the replayed worker child ran at high, not the requested medium
     assert_eq!(runs[0]["thinking_mismatch"], true);
     assert_eq!(
@@ -1055,17 +1276,21 @@ fn a_timed_out_run_is_recorded_not_dropped_and_its_leftover_process_killed() {
 }
 
 #[test]
-fn only_a_change_to_a_tracked_file_counts_as_changed() {
+fn a_new_or_changed_file_outside_the_tools_own_paths_counts_as_changed() {
     for (writes, changed) in [
-        (vec![("api/new_file.py", "x\n")], false),
+        (vec![("api/new_file.py", "x\n")], true),
         (vec![("api/items.py", "changed\n")], true),
+        // gitignored, or the tool's own
+        (vec![("api/items.json", "[]\n")], false),
+        (vec![(".stewards/notes.txt", "x\n")], false),
+        (vec![], false),
     ] {
         let tmp = TempDir::new().unwrap();
         let mut driver = Replay::new(sample("subagent"), Status::Ok);
-        driver.task_writes = writes;
+        driver.task_writes = writes.clone();
         execute(&driver, &plan(tmp.path(), 1, None)).unwrap();
         let runs = run_files(&tmp.path().join("results"));
-        assert_eq!(runs[0]["changed_tracked_files"], changed);
+        assert_eq!(runs[0]["changed"], changed, "{writes:?}");
     }
 }
 
@@ -1256,7 +1481,7 @@ fn the_self_manifest_pins_its_commit_and_its_four_tasks() {
     assert_eq!(s.session_minutes, 60);
     assert_eq!(s.commit(), Some("bcfccf0"));
     assert!(
-        matches!(&s.source, Source::Repo { build, .. } if build == &["cargo", "build", "--all-targets"])
+        matches!(&s.source, Source::Repo { build, .. } if build == &["sh", "-c", "cargo build --all-targets && cargo clippy --all-targets"])
     );
     assert_eq!(
         task_facts(&s),
@@ -1354,9 +1579,9 @@ fn self_plan(tmp: &Path, repo: &Path) -> Plan {
 }
 
 #[test]
-fn a_repo_suite_prepares_each_arm_from_one_clone_and_links_one_build() {
+fn a_repo_suite_prepares_each_arm_from_one_clone_and_copies_one_build() {
     use std::os::unix::fs::MetadataExt;
-    let (repo, _) = self_style_repo();
+    let (repo, unstamped) = self_style_repo();
     let tmp = TempDir::new().unwrap();
     let mut p = self_plan(tmp.path(), repo.path());
     p.arms = vec![Arm::Bare, Arm::BlockOnly, Arm::Full];
@@ -1367,8 +1592,15 @@ fn a_repo_suite_prepares_each_arm_from_one_clone_and_links_one_build() {
     assert_eq!(summary.commit.as_deref(), Some(commit));
     assert!(summary.setup.build_s.is_some());
     assert!(summary.adoption.is_none(), "no adoption session");
+    let sha = common::git(repo.path(), &["rev-parse", commit])
+        .trim()
+        .to_string();
+    assert_eq!(summary.setup.resolved_commit.as_deref(), Some(sha.as_str()));
     let md = render(&summary);
-    assert!(md.contains(&format!("suite: self at {commit}\n")), "{md}");
+    assert!(
+        md.contains(&format!("suite: self at {commit} ({sha})\n")),
+        "{md}"
+    );
     assert!(md.contains("build cache: one build"), "{md}");
     let runs = run_files(&tmp.path().join("results"));
     assert_eq!(runs.len(), 3);
@@ -1377,9 +1609,18 @@ fn a_repo_suite_prepares_each_arm_from_one_clone_and_links_one_build() {
     for run in &runs {
         let dir = PathBuf::from(run["workdir"].as_str().unwrap());
         let arm = run["arm"].as_str().unwrap();
-        // the one build's output, the same file in every arm
-        let marker = std::fs::metadata(dir.join("target/debug/marker")).unwrap();
-        assert_eq!(marker.ino(), cache.ino(), "{arm}");
+        // the one build's output in every arm, a copy: no run writes into the cache
+        let marker = dir.join("target/debug/marker");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            "built\n",
+            "{arm}"
+        );
+        assert_ne!(
+            std::fs::metadata(&marker).unwrap().ino(),
+            cache.ino(),
+            "{arm}"
+        );
         assert_eq!(common::git(&dir, &["status", "--porcelain"]), "", "{arm}");
         let agents = std::fs::read_to_string(dir.join("AGENTS.md")).ok();
         let kept = dir.join(".stewards").exists() || dir.join("docs/units").exists();
@@ -1399,11 +1640,147 @@ fn a_repo_suite_prepares_each_arm_from_one_clone_and_links_one_build() {
             }
             other => panic!("{other}"),
         }
-        // the clone is at the pinned commit, with no remote to push to
-        let log = common::git(&dir, &["log", "--format=%H"]);
-        assert!(log.contains(commit), "{arm}");
+        // one root commit on `main` and no other ref, reflog, or remote
+        assert_eq!(
+            common::git(&dir, &["log", "--format=%s"]),
+            "initial\n",
+            "{arm}"
+        );
+        assert_eq!(
+            common::git(&dir, &["for-each-ref", "--format=%(refname)"]),
+            "refs/heads/main\n",
+            "{arm}"
+        );
+        assert_eq!(common::git(&dir, &["reflog", "--all"]), "", "{arm}");
         assert_eq!(common::git(&dir, &["remote"]), "", "{arm}");
+        // only `full` keeps the old objects, which hold its units' stamped trees
+        let old = std::process::Command::new("git")
+            .args(["cat-file", "-e", &unstamped])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        assert_eq!(old.success(), arm == "full", "{arm}");
     }
+}
+
+/// The subagent sample with its child as a reviewer: it runs `pytest tests/api`, then a reviewer
+/// `submit` whose output says api has one finding and store is approved.
+fn reviewer_sample(tmp: &Path) -> PathBuf {
+    let dir = tmp.join("reviewer-sample");
+    std::fs::create_dir_all(&dir).unwrap();
+    copy_dir(&sample("subagent"), &dir);
+    let child = main_file(&dir)
+        .with_extension("")
+        .join("b5d51927-cb55-4247-a969-9448b23c2c26/run-0/session.jsonl");
+    let call = |id: &str, command: &str| {
+        serde_json::json!({"type": "message", "id": id, "parentId": null, "timestamp": "2026-11-12T19:28:00.000Z",
+            "message": {"role": "assistant", "content": [{"type": "toolCall", "id": id, "name": "bash",
+                "arguments": {"command": command}}], "stopReason": "toolUse"}})
+        .to_string()
+    };
+    let output = r#"{"stewards":{"version":"0.1.0","schema":1},"summary":"reviewer: api changes (1 finding; card unchanged; not stamped), store approve (card: gap +loses writes; stamped abc1234)","findings":[{"unit":"api","file":"src/api/items.py","line":1,"cut":"x"}]}"#;
+    let result = serde_json::json!({"type": "message", "id": "res2", "parentId": null, "timestamp": "2026-11-12T19:28:01.000Z",
+        "message": {"role": "toolResult", "toolCallId": "call2", "toolName": "bash",
+            "content": [{"type": "text", "text": output}]}})
+    .to_string();
+    let text = std::fs::read_to_string(&child).unwrap()
+        + &[
+            call("call1", "cd /r && pytest tests/api -q"),
+            call(
+                "call2",
+                "stewards submit --role reviewer --file .stewards/briefs/review.answer.json",
+            ),
+            result,
+        ]
+        .join("\n")
+        + "\n";
+    std::fs::write(&child, text).unwrap();
+    dir
+}
+
+#[test]
+fn a_full_runs_review_outcome_comes_from_the_reviewer_submit_and_the_cards() {
+    let (repo, _) = self_style_repo();
+    let tmp = TempDir::new().unwrap();
+    let mut p = self_plan(tmp.path(), repo.path());
+    p.arms = vec![Arm::Bare, Arm::Full];
+    let mut driver = Replay::new(reviewer_sample(tmp.path()), Status::Ok);
+    let card = include_str!("fixtures/single/.stewards/units/store.toml").to_string()
+        + "[[gap]]\nkind = \"bug\"\ntitle = \"loses writes\"\n";
+    driver.task_writes = vec![(
+        ".stewards/units/store.toml",
+        Box::leak(card.into_boxed_str()),
+    )];
+    execute(&driver, &p).unwrap();
+    let runs = run_files(&tmp.path().join("results"));
+    let review = |arm: &str| runs.iter().find(|r| r["arm"] == arm).unwrap()["reviews"].clone();
+    assert_eq!(review("bare"), serde_json::json!([]));
+    assert_eq!(
+        review("full"),
+        serde_json::json!([
+            {"round": 1, "unit": "api", "verdict": "changes", "findings": 1, "bugs": [], "tests_ran": true},
+            {"round": 1, "unit": "store", "verdict": "approve", "findings": 0, "bugs": ["loses writes"], "tests_ran": false},
+        ])
+    );
+}
+
+/// `full` keeps the clone's objects, so after an edit the review pack carries hunks from the
+/// stamped tree, not every owned file as a first review would.
+#[test]
+fn after_an_edit_in_a_repo_suites_full_copy_the_review_pack_shows_hunks() {
+    let (repo, _) = self_style_repo();
+    let tmp = TempDir::new().unwrap();
+    let mut p = self_plan(tmp.path(), repo.path());
+    p.arms = vec![Arm::Bare, Arm::Full];
+    p.keep_work = true;
+    let mut driver = Replay::new(sample("subagent"), Status::Ok);
+    driver.task_writes = vec![(
+        "src/api/items.py",
+        "def create_item(name):\n    return name\n",
+    )];
+    execute(&driver, &p).unwrap();
+    let runs = run_files(&tmp.path().join("results"));
+    let full = runs.iter().find(|r| r["arm"] == "full").unwrap();
+    assert_eq!(full["changed"], true);
+    let dir = PathBuf::from(full["workdir"].as_str().unwrap());
+    let (code, v) = common::run(&dir, &["next"]);
+    assert_eq!(code, 1, "{v}");
+    let brief = std::fs::read_to_string(dir.join(".stewards/briefs/review.md")).unwrap();
+    assert!(
+        brief.contains("## Hunks") && brief.contains("```diff"),
+        "{brief}"
+    );
+    assert!(!brief.contains("has not been reviewed yet"), "{brief}");
+}
+
+#[test]
+fn a_repo_suite_whose_stamped_tree_is_missing_stops_before_any_run() {
+    let (repo, _) = self_style_repo();
+    let dir = repo.path();
+    let card = dir.join(".stewards/units/api.toml");
+    let text = std::fs::read_to_string(&card).unwrap();
+    let at = text.find("tree = \"").unwrap() + "tree = \"".len();
+    let fake = "0123456789abcdef0123456789abcdef01234567";
+    std::fs::write(&card, format!("{}{fake}{}", &text[..at], &text[at + 40..])).unwrap();
+    common::git(dir, &["commit", "-qam", "fake stamp"]);
+    let tmp = TempDir::new().unwrap();
+    let mut p = self_plan(tmp.path(), dir);
+    let Source::Repo { commit, .. } = &mut p.suite.source else {
+        panic!()
+    };
+    *commit = common::git(dir, &["rev-parse", "HEAD"]).trim().to_string();
+    p.arms = vec![Arm::Bare, Arm::Full];
+    let err = setup_error(
+        execute(&Replay::new(sample("subagent"), Status::Ok), &p)
+            .err()
+            .unwrap(),
+    );
+    assert!(
+        err.message.contains("lacks the stamped trees of: api"),
+        "{}",
+        err.message
+    );
+    assert!(!tmp.path().join("results/runs").exists(), "no run started");
 }
 
 #[test]

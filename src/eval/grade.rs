@@ -1,48 +1,33 @@
 // Graders: pure functions from run records to per-task verdicts.
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Serialize;
 
 use super::{
-    Arm, Plan, RITUAL_NOTE, RITUAL_STEPS, Run, RunRecord, RunRole, SetupNotes, Status, Suite,
+    Arm, Plan, RITUAL_NOTE, Run, RunRecord, RunRole, SetupNotes, Status, Suite, UnitReview,
 };
 use crate::output::Human;
-
-/// Medians of `full` over `bare`: main context at most this share, total at most this share.
-pub const MAIN_LIMIT: f64 = 0.8;
-pub const TOTAL_LIMIT: f64 = 1.1;
-/// `full` files opened over `bare` files opened on the task's `files_opened_vs_bare`.
-pub const FILES_LIMIT: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Pass,
-    Warn,
     Fail,
-    /// A compared run failed, timed out, has no transcript, or never started: no verdict on the numbers.
+    /// A compared run failed, timed out, has no transcript, or never started: no verdict.
     Incomplete,
+    /// A read-only task: no gate applies.
+    #[serde(rename = "n/a")]
+    NotApplicable,
 }
 
 impl Verdict {
     fn as_str(self) -> &'static str {
         match self {
             Verdict::Pass => "pass",
-            Verdict::Warn => "warn",
             Verdict::Fail => "fail",
             Verdict::Incomplete => "incomplete",
+            Verdict::NotApplicable => "n/a",
         }
-    }
-}
-
-/// Whether ritual `step` is graded for run `r`: not `route`, `brief`, `submit`, or `check_green`
-/// on a `read_only` task, and `check_green` only when the session changed tracked files.
-fn ritual_applies(step: &str, r: &RunRecord, read_only: bool) -> bool {
-    match step {
-        "route" | "brief" | "submit" => !read_only,
-        "check_green" => !read_only && r.changed_tracked_files,
-        _ => true,
     }
 }
 
@@ -81,36 +66,12 @@ pub struct ArmStats {
     pub files_opened_tree: Option<f64>,
     pub peak_main_context: Option<f64>,
     pub cost_usd: Option<f64>,
-    /// Each step present in a majority of the runs it applies to (see `ritual_applies`), `None`
-    /// (n/a) when it applies to none; `None` outside the `full` arms.
-    pub ritual: Option<BTreeMap<&'static str, Option<bool>>>,
+    /// Child sessions of each run with a parsed transcript, in run order.
+    pub subagent_sessions: Vec<usize>,
 }
 
-/// Medians of `runs`, all of one task, which is `read_only` or not.
-pub fn arm_stats(arm: Arm, runs: &[&RunRecord], read_only: bool) -> ArmStats {
-    let ritual = arm.is_full().then(|| {
-        RITUAL_STEPS
-            .iter()
-            .map(|&name| {
-                let applies: Vec<_> = runs
-                    .iter()
-                    .filter(|r| ritual_applies(name, r, read_only))
-                    .collect();
-                let yes = applies
-                    .iter()
-                    .filter(|r| {
-                        r.result
-                            .as_ref()
-                            .is_some_and(|x| x.ritual_steps.get(name) == Some(&true))
-                    })
-                    .count();
-                (
-                    name,
-                    (!applies.is_empty()).then_some(yes * 2 > applies.len()),
-                )
-            })
-            .collect()
-    });
+/// Medians of `runs`, all of one task.
+pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
     ArmStats {
         arm,
         runs: runs.len(),
@@ -121,23 +82,14 @@ pub fn arm_stats(arm: Arm, runs: &[&RunRecord], read_only: bool) -> ArmStats {
         files_opened_tree: median_of(runs, |r| Some(r.files_opened_tree.len() as f64)),
         peak_main_context: median_of(runs, |r| Some(r.peak_main_context as f64)),
         cost_usd: median_of(runs, |r| r.cost_usd),
-        ritual,
+        subagent_sessions: runs
+            .iter()
+            .filter_map(|r| r.result.as_ref().map(|x| x.subagent_sessions))
+            .collect(),
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct Criterion {
-    pub name: &'static str,
-    /// `full` over `bare`, or for `ritual` the number of applicable steps present (the limit is
-    /// the number applicable).
-    pub value: f64,
-    pub limit: f64,
-    pub ok: bool,
-    /// Nothing to compare (`files_opened` 0 on both sides): not ok, and not a measured failure.
-    pub unmeasured: bool,
-}
-
-/// A report-only ratio of `full` over `bare` medians, outside the verdict.
+/// A report-only ratio of `full` over `bare` medians.
 #[derive(Debug, Clone, Serialize)]
 pub struct Ratio {
     pub name: &'static str,
@@ -147,17 +99,26 @@ pub struct Ratio {
     pub ratio: Option<f64>,
 }
 
+/// The `full` runs of an edit task that passed the gate, of those recorded.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct GateCount {
+    pub passed: usize,
+    pub runs: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskGrade {
     pub task: u32,
     pub verdict: Verdict,
-    /// Why the task is not a pass: failed criteria, or each run that makes it incomplete.
+    /// Why the task is not a pass: each run that makes it incomplete, or each run that failed the
+    /// gate and what it missed.
     pub reasons: Vec<String>,
     pub arms: Vec<ArmStats>,
-    /// Empty when the verdict is `incomplete`.
-    pub criteria: Vec<Criterion>,
-    /// Cost and peak main context, `full` over `bare`; they do not change the verdict.
-    pub report_only: Vec<Ratio>,
+    /// `None` (n/a) on a read-only task or without a `full` arm.
+    pub gate: Option<GateCount>,
+    /// Main tokens, total tokens, cost, peak main context, and (with `files_opened_vs_bare`) main
+    /// files opened, `full` over `bare`: reported, not judged.
+    pub overhead: Vec<Ratio>,
 }
 
 fn runs_of(records: &[RunRecord], task: u32, arm: Arm, role: RunRole) -> Vec<&RunRecord> {
@@ -167,10 +128,41 @@ fn runs_of(records: &[RunRecord], task: u32, arm: Arm, role: RunRole) -> Vec<&Ru
         .collect()
 }
 
-/// Grades one task of `suite`: `full` (or `full-no-developers`) against `bare` medians. Both token
-/// criteria failing fails the task; any other failing criterion is a warning. A compared run (a
-/// task also compares its `files_opened_vs_bare` task in `bare`, and counts its own `setup` runs)
-/// that is not ok, has no transcript, or never started makes the task `incomplete`.
+/// What one `full` run of an edit task misses of the gate: the runner saw a change, `next` ran,
+/// the review brief was dispatched, a child ran the reviewer `submit`, and the runner's own
+/// `next` is clean after the session. Empty when it passes.
+pub fn gate_misses(r: &RunRecord) -> Vec<&'static str> {
+    let step = |s: &str| {
+        r.result
+            .as_ref()
+            .is_some_and(|x| x.ritual_steps.get(s) == Some(&true))
+    };
+    let mut out = vec![];
+    if !r.changed {
+        out.push("changed nothing");
+    }
+    match (step("next"), step("review_dispatched")) {
+        (false, false) => {
+            out.extend(["`stewards next` never ran", "the review was not dispatched"])
+        }
+        (false, true) => out.push("`stewards next` never ran"),
+        (true, false) => out.push("`next` ran but the review was not dispatched"),
+        (true, true) => {}
+    }
+    if !step("reviewer_submit") {
+        out.push("no child ran `stewards submit --role reviewer`");
+    }
+    if !step("check_green") {
+        out.push("the runner's `stewards next --no-brief` did not exit 0");
+    }
+    out
+}
+
+/// Grades one task of `suite`. A compared run (`bare` and `full`, their `setup` runs, and the
+/// `files_opened_vs_bare` task in `bare`) that is not ok, has no transcript, or never started
+/// makes the task `incomplete`. Otherwise a read-only task is `n/a`, and an edit task passes when
+/// every `full` run passes the gate (`gate_misses`), else fails. The overhead ratios never change
+/// the verdict.
 pub fn grade_task(
     suite: &Suite,
     task: u32,
@@ -179,16 +171,9 @@ pub fn grade_task(
     runs: u32,
 ) -> TaskGrade {
     let facts = suite.task(task).copied().unwrap_or_default();
-    let read_only = |t: u32| suite.task(t).is_some_and(|t| t.read_only);
     let stats: Vec<ArmStats> = arms
         .iter()
-        .map(|&a| {
-            arm_stats(
-                a,
-                &runs_of(records, task, a, RunRole::Task),
-                facts.read_only,
-            )
-        })
+        .map(|&a| arm_stats(a, &runs_of(records, task, a, RunRole::Task)))
         .collect();
     let full = arms.iter().copied().find(|a| a.is_full());
     let mut reasons = vec![];
@@ -232,128 +217,75 @@ pub fn grade_task(
             }
         }
     }
-    let report_only = full
+    let incomplete = !reasons.is_empty();
+    let stat = |a: Arm| stats.iter().find(|s| s.arm == a);
+    let overhead = full
         .map(|f| {
-            let stat = |a: Arm| stats.iter().find(|s| s.arm == a);
             let (b, f) = (stat(Arm::Bare), stat(f));
-            let ratio = |name, m: fn(&ArmStats) -> Option<f64>| {
-                let (full, bare) = (f.and_then(m), b.and_then(m));
-                Ratio {
-                    name,
-                    full,
-                    bare,
-                    ratio: full.zip(bare.filter(|b| *b > 0.0)).map(|(f, b)| f / b),
-                }
+            let ratio = |name, full: Option<f64>, bare: Option<f64>| Ratio {
+                name,
+                full,
+                bare,
+                ratio: full.zip(bare.filter(|b| *b > 0.0)).map(|(f, b)| f / b),
             };
-            vec![
-                ratio("cost_usd", |s| s.cost_usd),
-                ratio("peak_main_context", |s| s.peak_main_context),
-            ]
+            let both =
+                |name, m: fn(&ArmStats) -> Option<f64>| ratio(name, f.and_then(m), b.and_then(m));
+            let mut out = vec![
+                both("main_tokens", |s| s.main_tokens),
+                both("total_tokens", |s| s.total_tokens),
+                both("cost_usd", |s| s.cost_usd),
+                both("peak_main_context", |s| s.peak_main_context),
+            ];
+            if let Some(v) = facts.files_opened_vs_bare {
+                let bare_v = arm_stats(Arm::Bare, &runs_of(records, v, Arm::Bare, RunRole::Task));
+                out.push(ratio(
+                    "files_opened",
+                    f.and_then(|s| s.files_opened),
+                    bare_v.files_opened,
+                ));
+            }
+            out
         })
         .unwrap_or_default();
-    let incomplete = |reasons: Vec<String>, stats: Vec<ArmStats>| TaskGrade {
-        task,
-        verdict: Verdict::Incomplete,
-        reasons,
-        arms: stats,
-        criteria: vec![],
-        report_only: report_only.clone(),
-    };
-    let Some(full) = full.filter(|_| reasons.is_empty()) else {
-        return incomplete(reasons, stats);
-    };
-    let stat = |a: Arm| stats.iter().find(|s| s.arm == a).expect("arm graded");
-    let (b, f) = (stat(Arm::Bare), stat(full));
-    let ratio = |x: Option<f64>, y: Option<f64>| match (x, y) {
-        (Some(x), Some(y)) if y > 0.0 => x / y,
-        (Some(0.0), Some(_)) => 0.0,
-        _ => f64::INFINITY,
-    };
-    let mut criteria = vec![];
-    let mut push = |name, value: f64, limit| {
-        criteria.push(Criterion {
-            name,
-            value,
-            limit,
-            ok: value <= limit,
-            unmeasured: false,
-        })
-    };
-    push(
-        "main_tokens",
-        ratio(f.main_tokens, b.main_tokens),
-        MAIN_LIMIT,
-    );
-    push(
-        "total_tokens",
-        ratio(f.total_tokens, b.total_tokens),
-        TOTAL_LIMIT,
-    );
-    if let Some(v) = facts.files_opened_vs_bare {
-        let bare_v = arm_stats(
-            Arm::Bare,
-            &runs_of(records, v, Arm::Bare, RunRole::Task),
-            read_only(v),
-        );
-        if f.files_opened == Some(0.0) && bare_v.files_opened == Some(0.0) {
-            criteria.push(Criterion {
-                name: "files_opened",
-                value: 0.0,
-                limit: FILES_LIMIT,
-                ok: false,
-                unmeasured: true,
-            });
-            reasons.push("files_opened unmeasured: 0 files opened on both sides".into());
-        } else {
-            push(
-                "files_opened",
-                ratio(f.files_opened, bare_v.files_opened),
-                FILES_LIMIT,
-            );
+    let gate = full.filter(|_| !facts.read_only).map(|f| {
+        let rs = runs_of(records, task, f, RunRole::Task);
+        let mut passed = 0;
+        for r in &rs {
+            let misses = gate_misses(r);
+            if misses.is_empty() {
+                passed += 1;
+            } else if r.status == Status::Ok && r.result.is_some() {
+                reasons.push(format!(
+                    "{} run {}: {}",
+                    f.as_str(),
+                    r.run,
+                    misses.join("; ")
+                ));
+            }
         }
-    }
-    if let Some(steps) = &f.ritual {
-        let missing: Vec<&str> = RITUAL_STEPS
-            .into_iter()
-            .filter(|n| steps.get(n) == Some(&Some(false)))
-            .collect();
-        let applicable = steps.values().filter(|v| v.is_some()).count();
-        criteria.push(Criterion {
-            name: "ritual",
-            value: (applicable - missing.len()) as f64,
-            limit: applicable as f64,
-            ok: missing.is_empty(),
-            unmeasured: false,
-        });
-        if !missing.is_empty() {
-            reasons.push(format!("ritual steps missing: {}", missing.join(", ")));
+        GateCount {
+            passed,
+            runs: rs.len(),
         }
-    }
-    for c in criteria
-        .iter()
-        .filter(|c| !c.ok && !c.unmeasured && c.name != "ritual")
-    {
-        reasons.push(format!("{} {:.2} over {:.2}", c.name, c.value, c.limit));
-    }
-    let failed = |n: &str| criteria.iter().any(|c| c.name == n && !c.ok);
-    let verdict = if failed("main_tokens") && failed("total_tokens") {
-        Verdict::Fail
-    } else if criteria.iter().any(|c| !c.ok) {
-        Verdict::Warn
-    } else {
-        Verdict::Pass
+    });
+    let verdict = match gate {
+        _ if incomplete => Verdict::Incomplete,
+        None => Verdict::NotApplicable,
+        Some(g) if g.passed == g.runs => Verdict::Pass,
+        Some(_) => Verdict::Fail,
     };
     TaskGrade {
         task,
         verdict,
         reasons,
         arms: stats,
-        criteria,
-        report_only,
+        gate,
+        overhead,
     }
 }
 
-/// Fail when any task fails, else incomplete when any task is, else pass.
+/// Fail when any task fails, else incomplete when any task is (or there are none), else pass:
+/// every edit task's gate passed and no run is incomplete.
 pub fn suite_verdict(grades: &[TaskGrade]) -> Verdict {
     let any = |v| grades.iter().any(|g| g.verdict == v);
     if any(Verdict::Fail) {
@@ -363,6 +295,47 @@ pub fn suite_verdict(grades: &[TaskGrade]) -> Verdict {
     } else {
         Verdict::Pass
     }
+}
+
+/// One overhead ratio's median across the tasks that are not incomplete.
+#[derive(Debug, Clone, Serialize)]
+pub struct OverheadMedian {
+    pub name: &'static str,
+    pub median: Option<f64>,
+    /// Tasks with this ratio measured.
+    pub tasks: usize,
+}
+
+/// Each overhead ratio's median across `grades` that are not incomplete, in first-seen order.
+pub fn overhead_medians(grades: &[TaskGrade]) -> Vec<OverheadMedian> {
+    let mut by_name: Vec<(&'static str, Vec<f64>)> = vec![];
+    for g in grades.iter().filter(|g| g.verdict != Verdict::Incomplete) {
+        for r in &g.overhead {
+            let at = match by_name.iter().position(|(n, _)| *n == r.name) {
+                Some(at) => at,
+                None => {
+                    by_name.push((r.name, vec![]));
+                    by_name.len() - 1
+                }
+            };
+            by_name[at].1.extend(r.ratio);
+        }
+    }
+    by_name
+        .into_iter()
+        .map(|(name, xs)| OverheadMedian {
+            name,
+            median: median(&xs),
+            tasks: xs.len(),
+        })
+        .collect()
+}
+
+/// The reviewer outcomes of one `full` task run.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunReviews {
+    pub label: String,
+    pub reviews: Vec<UnitReview>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -398,11 +371,20 @@ pub struct Summary {
     pub model_mismatches: Vec<String>,
     /// Runs where a session of the tree ran at a thinking level other than the requested one.
     pub thinking_mismatches: Vec<String>,
+    /// Runs with a session that recorded no thinking level, as `label: sessions`.
+    pub thinking_unknown: Vec<String>,
+    /// Shell commands that read git history (`reads_git_history`), as `label: command`
+    /// (flagged, not failed).
+    pub git_history: Vec<String>,
     /// Report-only: the adoption session's total tokens over the median total of the parsed
     /// `bare` task runs, so a reader can amortize adoption.
     pub adoption_in_bare_tasks: Option<f64>,
     pub verdict: Verdict,
     pub grades: Vec<TaskGrade>,
+    /// Report-only: each overhead ratio's median across tasks.
+    pub overhead: Vec<OverheadMedian>,
+    /// Report-only: the reviewer outcomes of each `full` task run.
+    pub reviews: Vec<RunReviews>,
 }
 
 pub fn summarize(
@@ -474,8 +456,34 @@ pub fn summarize(
                 format!("{}: {}", r.label, levels.join(", "))
             })
             .collect(),
+        thinking_unknown: records
+            .iter()
+            .filter_map(|r| {
+                let s = &r.result.as_ref()?.sessions_without_thinking;
+                (!s.is_empty()).then(|| format!("{}: {}", r.label, s.join(", ")))
+            })
+            .collect(),
+        git_history: records
+            .iter()
+            .flat_map(|r| {
+                r.result.iter().flat_map(|x| {
+                    x.git_history_commands
+                        .iter()
+                        .map(|c| format!("{}: {c}", r.label))
+                })
+            })
+            .collect(),
         adoption_in_bare_tasks,
         verdict: suite_verdict(&grades),
+        overhead: overhead_medians(&grades),
+        reviews: records
+            .iter()
+            .filter(|r| r.arm.is_full() && r.role == RunRole::Task)
+            .map(|r| RunReviews {
+                label: r.label.clone(),
+                reviews: r.reviews.clone(),
+            })
+            .collect(),
         grades,
     }
 }
@@ -484,24 +492,18 @@ fn num(x: Option<f64>) -> String {
     x.map_or("null".into(), |x| format!("{x:.0}"))
 }
 
+fn ratio(x: Option<f64>) -> String {
+    x.map_or("null".into(), |x| format!("{x:.2}"))
+}
+
 fn usd(x: Option<f64>) -> String {
     x.map_or("null".into(), |c| format!("{c:.4}"))
 }
 
 /// The short human table written to `summary.md`.
 pub fn render(s: &Summary) -> String {
-    let warnings = s
-        .grades
-        .iter()
-        .filter(|g| g.verdict == Verdict::Warn)
-        .count();
-    let headline = if s.verdict == Verdict::Pass && warnings > 0 {
-        format!("pass (with warnings: {warnings})")
-    } else {
-        s.verdict.as_str().to_string()
-    };
     let mut out = vec![
-        format!("# eval: {headline}"),
+        format!("# eval: {}", s.verdict.as_str()),
         String::new(),
         format!(
             "{} sessions, model {}, thinking {}, spent ${:.4}{}{}",
@@ -518,11 +520,15 @@ pub fn render(s: &Summary) -> String {
             }
         ),
         format!(
-            "suite: {}{}",
+            "suite: {}{}{}",
             s.suite,
             s.commit
                 .as_ref()
-                .map_or(String::new(), |c| format!(" at {c}"))
+                .map_or(String::new(), |c| format!(" at {c}")),
+            s.setup
+                .resolved_commit
+                .as_ref()
+                .map_or(String::new(), |c| format!(" ({c})"))
         ),
         format!("results: {}", s.results.display()),
     ];
@@ -548,7 +554,7 @@ pub fn render(s: &Summary) -> String {
     }
     if let Some(b) = s.setup.build_s {
         out.push(format!(
-            "build cache: one build, {b:.0} s, hard-linked into every run (setup, outside every ratio)"
+            "build cache: one build, {b:.0} s, copied into every run (setup, outside every ratio)"
         ));
     }
     out.extend(s.setup.units.clone());
@@ -587,20 +593,26 @@ pub fn render(s: &Summary) -> String {
             s.thinking_mismatches.join("; ")
         ));
     }
+    if !s.thinking_unknown.is_empty() {
+        out.push(format!(
+            "no thinking level recorded: {}",
+            s.thinking_unknown.join("; ")
+        ));
+    }
+    if !s.git_history.is_empty() {
+        out.push(format!("git history read: {}", s.git_history.join("; ")));
+    }
     out.push(s.ritual_note.to_string());
     out.push(String::new());
     out.push(
-        "| task | arm | runs | not ok | main | total | peak main | files main | files tree | cost | ritual |"
+        "| task | arm | runs | not ok | main | total | peak main | files main | files tree | cost | subagents |"
             .into(),
     );
     out.push("|---|---|---|---|---|---|---|---|---|---|---|".into());
     let count = |x: Option<f64>| x.map_or("null".into(), |x| format!("{x}"));
     for g in &s.grades {
         for a in &g.arms {
-            let ritual = a.ritual.as_ref().map_or("n/a".to_string(), |r| {
-                let k = r.values().filter(|v| **v == Some(true)).count();
-                format!("{k}/{}", r.values().filter(|v| v.is_some()).count())
-            });
+            let subagents: Vec<String> = a.subagent_sessions.iter().map(usize::to_string).collect();
             out.push(format!(
                 "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                 g.task,
@@ -613,7 +625,7 @@ pub fn render(s: &Summary) -> String {
                 count(a.files_opened),
                 count(a.files_opened_tree),
                 usd(a.cost_usd),
-                ritual
+                subagents.join(",")
             ));
         }
     }
@@ -624,22 +636,62 @@ pub fn render(s: &Summary) -> String {
         } else {
             format!(": {}", g.reasons.join("; "))
         };
-        let report: Vec<String> = g
-            .report_only
+        let gate = g.gate.map_or(String::new(), |c| {
+            format!(" (gate {}/{})", c.passed, c.runs)
+        });
+        let overhead: Vec<String> = g
+            .overhead
             .iter()
-            .map(|r| {
+            .map(|r| format!("{} {}", r.name, ratio(r.ratio)))
+            .collect();
+        out.push(format!(
+            "- task {}: {}{gate}{why} (overhead, full/bare: {})",
+            g.task,
+            g.verdict.as_str(),
+            overhead.join(", ")
+        ));
+    }
+    let medians: Vec<String> = s
+        .overhead
+        .iter()
+        .map(|m| format!("{} {} ({} tasks)", m.name, ratio(m.median), m.tasks))
+        .collect();
+    out.push(format!(
+        "- overhead medians across tasks, full/bare (reported, not judged): {}",
+        medians.join(", ")
+    ));
+    if !s.reviews.is_empty() {
+        out.push(String::new());
+        out.push("review outcomes (report-only):".into());
+    }
+    for r in &s.reviews {
+        let units: Vec<String> = r
+            .reviews
+            .iter()
+            .map(|u| {
                 format!(
-                    "{} {}",
-                    r.name,
-                    r.ratio.map_or("null".into(), |x| format!("{x:.2}"))
+                    "round {} {} {} ({} findings, bugs: {}, tests {})",
+                    u.round,
+                    u.unit,
+                    u.verdict,
+                    u.findings,
+                    if u.bugs.is_empty() {
+                        "none".to_string()
+                    } else {
+                        u.bugs.join(", ")
+                    },
+                    if u.tests_ran { "ran" } else { "not seen" }
                 )
             })
             .collect();
         out.push(format!(
-            "- task {}: {}{why} (report-only, full/bare: {})",
-            g.task,
-            g.verdict.as_str(),
-            report.join(", ")
+            "- {}: {}",
+            r.label,
+            if units.is_empty() {
+                "no reviewer submit".to_string()
+            } else {
+                units.join("; ")
+            }
         ));
     }
     out.join("\n") + "\n"

@@ -993,21 +993,43 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   does) and committed, and no adoption session; the runner checks
   `stewards next --no-brief` exits 0 there before any run (else
   `eval_setup_incomplete`). `bare` is the tree without `.stewards/`,
-  `docs/units/`, and `AGENTS.md`, committed; `block-only` adds an
-  `AGENTS.md` holding only the block. Its manifest's `build` (`cargo build
-  --all-targets`) runs once per invocation in the clone with the user's
-  environment; its `target/` is hard-linked (`cp -al`) into every run copy
-  of every arm, after the copy's `git clean -fdX`, so the clean never
-  removes it and no arm pays a cold build. The build's seconds are setup,
-  reported outside every ratio. Its four tasks are under
+  `docs/units/`, and `AGENTS.md`; `block-only` adds an `AGENTS.md` holding
+  only the block. Every arm's history is one root commit, `initial`, on
+  `main`, with no other ref and an expired reflog, so no session can
+  recover `.stewards/`, `docs/units/`, or `AGENTS.md` (or later commits of
+  the checkout) from history: `bare` and `block-only` are new repositories
+  (`git init`), with no old object at all. `full` is an orphan commit in
+  the clone and keeps the clone's object store, unpruned: a unit's stamp
+  and its tester and documenter marks are tree hashes held only as
+  unreachable objects there, and `next`, the review pack, and the
+  line-level triggers diff from them; without them every owned file would
+  count as changed and the review brief would carry whole files instead
+  of hunks. A local clone carries those objects; the runner checks each
+  one exists (`git cat-file -e`) and stops with `eval_setup_incomplete`
+  naming the unit otherwise. The old commits stay reachable to `git fsck`
+  and `git cat-file` in `full`, so those join the flagged history commands
+  (see Runner). The summary records the commit git resolved. In this
+  suite the `stewards` on `full`'s `PATH` is the eval's own binary, not
+  the pinned commit's code: a session that changes stewards itself runs
+  the older or newer binary, not its edit. Its manifest's `build` (`cargo
+  build --all-targets && cargo clippy --all-targets`, so every arm starts
+  with a warm lint cache too) runs once per invocation in the clone with
+  the user's environment; its `target/` is then moved out of the clone and
+  copied (`cp -a --reflink=auto`, sharing blocks where the filesystem can)
+  into every run copy of every arm, so no arm pays a cold build and no
+  run's in-place writes (cargo rewrites fingerprints) reach the cache.
+  Only `full` copies are cleaned (`git clean -fdX`, before the cache is
+  copied in); `bare` and `block-only` copies are not, and need not be: the
+  clone holds no ignored file once `target/` is moved out. The build's
+  seconds are setup, reported outside every ratio. Its four tasks are under
   `evals/suites/self/tasks/`: (1) a `--unit` filter for `debt`; (2)
   explain how an approving review is stamped (read-only); (3) an optional
   unit `owner` end to end; (4) a second-session question about `owner`
   after task 3 (read-only, compared with `bare` task 2). A session has 60
   minutes. The work directory is `<tmp>`, so run it with `TMPDIR` on a disk
-  with room for the target directory: hard links need the build cache and
-  the run copies on one filesystem, and a small RAM-backed `/tmp` fills.
-  The summary names the suite and the pinned commit.
+  with room for a target directory per run (a reflink copy shares blocks
+  only on the cache's filesystem), since a small RAM-backed `/tmp` fills.
+  The summary names the suite, the pinned commit, and its resolved hash.
 - **Fixture, zero external deps:** `evals/fixture/` with `api/` (Python
   in-memory items store, `unittest`), `client/` (TypeScript run by Node
   directly with type stripping, Node 22.18 or newer, no `tsc`;
@@ -1036,11 +1058,13 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   to `Run {main_tokens {input, output, cache_read, cache_write},
   total_tokens {same}, cache_warming {same}, peak_main_context,
   tool_calls[], files_opened[], files_opened_tree[], shell_commands[],
-  ritual_steps{status, route, brief, next, submit, check_green}, cost_usd?,
-  duration_s, models[], thinking_levels[], stop_reason, failed_children[],
+  ritual_steps{status, route, next, review_dispatched, reviewer_submit,
+  check_green}, cost_usd?, duration_s, models[], thinking_levels[],
+  sessions_without_thinking[], subagent_sessions, reviews[],
+  git_history_commands[], stop_reason, failed_children[],
   truncated_lines}`.
   Main tokens = the parent session only; total = parent + all children;
-  the token criteria compare the sum of the four fields. For Pi the fields
+  the token ratios compare the sum of the four fields. For Pi the fields
   are summed over assistant-message usage plus `compaction` and
   `branch_summary` records (matched by record type), each record counted
   once across the tree by `(id, timestamp)` because a fork starts as a copy
@@ -1053,21 +1077,38 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   count distinct paths relative to each session's cwd, from the `read` tool
   plus simply recognised shell reads (`cat`, `head`, `tail`, `less`, `sed
   -n`, `grep`/`rg` with a path argument; separators inside quotes do not
-  split, and words with `$`, words starting with `!`, and option values
-  such as `--glob x` or `-A 3` are not paths; see `shell_reads`).
-  `check_green` comes from the runner: after each `full` (and
-  `full-no-developers`) session it runs `stewards next --no-brief` in the
-  run directory and records the exit code and job count; green is exit 0.
-  It counts only when the session changed tracked files (its `HEAD` or the
-  diff of tracked files against it differs from before the session); else
-  it is n/a. On the read-only tasks (fixture 4 and 6), `route`, `brief`, `submit`,
-  and `check_green` are n/a; every run record still shows each step.
-  The other five ritual steps are best-effort from the transcripts: shell
-  commands, in the main session or any child, whose argv starts with
-  `stewards <cmd>`; `brief` when a subagent is dispatched with a
-  `.stewards/briefs/` path or a `stewards submit` appears; the summary lists
-  the known blind spots (`timeout`/`env` prefixes, `if`, `bash -c`,
-  heredocs, steps a child alone ran). A session whose last main response,
+  split, heredoc bodies (`<<WORD`, `<<'WORD'`, `<<-WORD` up to the line
+  equal to `WORD`) are skipped, a relative path after a leading `cd <dir>`
+  segment is taken under `<dir>`, and words with `$`, words starting with
+  `!`, and option values such as `--glob x` or `-A 3` are not paths; see
+  `shell_reads`). After the parse the runner keeps only the paths that are
+  regular files in the run's directory after the session: a glob in the
+  last path component is expanded against that directory, and
+  directories and paths that do not exist are not counted. The ritual
+  steps recorded per run are `status`, `route`, `next` (a shell command,
+  in the main session or any child, whose argv starts with `stewards
+  <cmd>`), `review_dispatched` (a subagent launch whose arguments name
+  `.stewards/briefs/review.md`), `reviewer_submit` (`stewards submit ...
+  --role reviewer` in a child session), and `check_green`, which comes
+  from the runner: after each `full` (and `full-no-developers`) session it
+  runs `stewards next --no-brief` in the run directory and records the
+  exit code and job count; green is exit 0. The runner also records
+  whether the session `changed` the run directory: any path that differs
+  from the session's starting commit (`git diff --name-only <start>`, so
+  committed changes count) or is untracked and not ignored, outside
+  `.stewards/` and `docs/units/`. The transcript steps are best-effort;
+  the summary lists the known blind spots (`timeout`/`env` prefixes,
+  `if`, `bash -c`, backticks). Each run records its count of subagent
+  sessions. Each `full` run records its review outcome, report-only, per
+  unit of each successful reviewer `submit` (from the JSON that submit
+  printed in the child's transcript): the round, the verdict, the number
+  of findings, the bug gaps the unit's card gained during the run (cards
+  read before and after), and whether the submitting child ran the
+  unit's test command (its test card's `test_command`, else one of the
+  repo's `commands.test`, as a substring of one of the child's shell
+  commands). Any session whose shell commands run `git log`, `show`,
+  `checkout`, `reflog`, `stash`, `fsck`, or `cat-file` is flagged, not
+  failed, and listed in the summary. A session whose last main response,
   or any child's last response, stopped with `error`, `aborted`, or
   `length` is a failed run whatever the harness's exit code; the stop
   reason and the failed child are recorded. A session directory with more
@@ -1086,9 +1127,10 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `agentOverrides.<name>.thinking` for each bundled agent (`defaultThinking`
   does not override an agent's own frontmatter, such as `worker`'s `high`,
   and `maxThinking` fails a launch above it rather than lowering it). Every
-  session's level is recorded from its `thinking_level_change` records,
-  and a run where any differs from the requested one is flagged, not
-  failed (the main agent may still ask a child for a lower level).
+  session's level is recorded from its `thinking_level_change` records and
+  each assistant message's `thinkingLevel`; a run where any differs from
+  the requested one is flagged, not failed (the main agent may still ask a
+  child for a lower level), and so is a session with neither.
   Sessions run without the user's personal harness setup: for Pi, one agent
   directory per invocation (`PI_CODING_AGENT_DIR`) holds a `settings.json`
   listing only `npm:pi-subagents` (plus the user's `defaultProvider`/
@@ -1145,35 +1187,45 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `evals/results/<timestamp>/` (gitignored): `runs/*.json` (the `Run`, arm,
   task, role, model, thinking, model and thinking mismatch flags, status,
   failure, leftovers, `next` check, whether tracked files changed,
-  transcript path), `sessions/` (each session's transcripts, copied there
-  after the run), `summary.json`, and `summary.md`, with report-only
-  `full`/`bare` ratios of median cost and median peak main context next to
-  each verdict, and costs to 4 decimals. Each run's work directory is deleted after the run unless
+  transcript path, review outcome), `sessions/` (each session's
+  transcripts, copied there after the run), `summary.json`, and
+  `summary.md`, with each task's verdict and gate count, its overhead
+  ratios, their medians across tasks, the review outcomes, the flags, and
+  costs to 4 decimals. Each run's work directory is deleted after the run unless
   `--keep-work`. pi-subagents also leaves run state outside both, under
   `/tmp/pi-subagents-uid-<uid>/` (`async-subagent-runs/`,
   `async-subagent-launches/`, `async-subagent-results/`,
   `nested-subagent-events/`, `run-fanout-budgets/`, `session-leases/`,
   `supervisor-channels/`); the eval does not clean it.
-- **Pass criteria:** 3 runs per arm per task, medians compared. Tokens:
-  `full` main-context ≤ 80% of `bare` and total ≤ 110% of `bare`; a task
-  with `files_opened_vs_bare` (fixture task 6) opens (main session) ≤ half
-  the files of that `bare` task (fixture task 4), and 0 on both sides
-  is `unmeasured`, a warning, not a pass; both token criteria failing fails
-  the task, one is a warning. A task with any compared run failed, timed
-  out, without a transcript, or not started is `incomplete`: its medians
-  are reported but given no verdict, and it never passes. Cleanliness:
+- **Pass criteria:** 3 runs per arm per task. The ritual is the gate, on
+  edit tasks only (read-only tasks are `n/a`): a `full` run passes when
+  the runner saw it change the run directory, `next` ran, a subagent was
+  handed `.stewards/briefs/review.md`, a child ran `stewards submit --role
+  reviewer`, and the runner's own `stewards next --no-brief` exits 0 after
+  the session (which proves the review covered the final state: a stamp
+  matches only the snapshot it was made at). `status` and `route` are
+  recorded, not gated. The task passes when every `full` run passes,
+  shown `k/n`, and fails otherwise, each failing run named with what it
+  missed (`next` ran but the review was not dispatched, and so on).
+  Overhead is reported, not judged: per task the `full`/`bare` ratios of
+  the median main tokens, total tokens, cost, and peak main context (and,
+  with `files_opened_vs_bare`, of main-session files opened against that
+  `bare` task, fixture task 6 against 4), each ratio's median across the
+  tasks that are not incomplete, and each run's count of subagent
+  sessions. Thresholds on overhead will be set by the user after the first
+  measurement with the reviewer role. A task with any compared run
+  failed, timed out, without a transcript, or not started is
+  `incomplete`: its medians are reported but given no verdict, and it
+  never passes. Cleanliness:
   BAML judge, 3 votes, majority,
   counting rung failures, untraced lines, missing checks; pass when `full`
   has 0 untraced lines, ≤ 1 rung failure, ≥ 1 runnable check, and is ≤
   `bare` on every count. Docs accuracy: no claim in `docs/units/api.md`
   contradicted by code after task 1. Bug tasks: the tester's repro
   reproduces and the validator's severity equals the seeded one. Task 5: a
-  plan exists and closes. Ritual: every applicable step of the six appears
-  in `full` (each in a majority of the runs it applies to; shown `k/n` over
-  the applicable steps); a missing step is a warning. The suite
-  fails when any task fails, is incomplete when any task is; warnings are
-  listed, and a passing suite with any warning reads `pass (with warnings:
-  N)`, its exit code still 0.
+  plan exists and closes. The suite fails when any task fails, is
+  incomplete when any task is, and passes otherwise: every edit task's
+  gate passed and no run is incomplete (exit code 0 only then).
 - **Cadence:** on demand and in CI on release tags; `--max-cost` ceiling.
 
 ## Release and versioning

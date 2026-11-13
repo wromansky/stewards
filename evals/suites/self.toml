@@ -9,7 +9,8 @@ session_minutes = 60
 kind = "repo"
 # on main, where `stewards next` lists no jobs
 commit = "bcfccf0"
-build = ["cargo", "build", "--all-targets"]
+# clippy too, so every arm starts with a warm lint cache
+build = ["sh", "-c", "cargo build --all-targets && cargo clippy --all-targets"]
 
 [[task]]
 number = 1

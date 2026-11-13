@@ -1044,8 +1044,8 @@ Tester:
 > prove the contract. For this change: run the scenarios the diff affects,
 > then the unit's test command once; write the missing scenario for any
 > interface entry the diff touched; record results. A failing scenario is a
-> bug: give a title, the exact repro command (it must start with one of the
-> repo's test commands), and the evidence. You may write tests under the
+> bug: give a title, the exact repro command (it must start with the unit's test
+> command or one of the repo's), and the evidence. You may write tests under the
 > repo's test roots. You never edit source.
 
 Documenter:
@@ -1102,7 +1102,7 @@ Reviewer:
 > scenarios only if the contract changed. Write the doc when the unit has
 > none; rewrite it only if what a section says is no longer true. Report a
 > defect you will not fix as a bug. A bug's `repro` and a scenario's
-> `command` must start with one of the repo's test commands. Never edit
+> `command` must start with the unit's test command or one of the repo's. Never edit
 > source. Open more only by anchor. One answer, one `submit`.
 
 The reviewer's brief adds one line after the role text naming the units

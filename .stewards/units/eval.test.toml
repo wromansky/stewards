@@ -1,0 +1,49 @@
+unit = "eval"
+
+[[scenario]]
+id = "eval-claude-plain-main-equals-total"
+interface = "claude_parse"
+given = "the recorded claude-code plain session with no subagent"
+expect = "main tokens equal total tokens, both from the stream's result line"
+level = "integration"
+command = "cargo test --test eval claude_plain_sample_has_main_equal_to_total"
+
+[[scenario]]
+id = "eval-claude-no-result-null-tokens"
+interface = "claude_parse"
+given = "a claude-code session whose stdout.log has no result line"
+expect = "main_tokens and total_tokens are null"
+level = "integration"
+command = "cargo test --test eval a_claude_session_without_a_result_line_has_null_tokens"
+
+[[scenario]]
+id = "eval-timed-out-null-tokens"
+interface = "execute"
+given = "a replayed session that timed out"
+expect = "its run record has null main_tokens and total_tokens and its leftover process is killed"
+level = "integration"
+command = "cargo test --test eval a_timed_out_run_is_recorded_not_dropped_and_its_leftover_process_killed"
+
+[[scenario]]
+id = "eval-think-prompt-refused"
+interface = "task_prompt"
+given = "a task file containing THINK"
+expect = "a usage error naming the file; no shipped suite task contains think"
+level = "integration"
+command = "cargo test --test eval a_task_prompt_containing_think_is_a_usage_error_and_no_suite_task_does"
+
+[[scenario]]
+id = "eval-claude-max-cost-refused"
+interface = "eval_run"
+given = "no run with a cost, and stewards eval --harness claude-code --max-cost"
+expect = "spent_usd is null, and --max-cost is a usage error for claude-code"
+level = "integration"
+command = "cargo test --test eval spent_is_null_when_no_run_has_a_cost_and_max_cost_is_refused_for_claude_code"
+
+[[scenario]]
+id = "eval-context-file-committed"
+interface = "driver"
+given = "a driver with a context_file and arm copies with and without AGENTS.md"
+expect = "the file is committed only into copies with an AGENTS.md, history keeps its shape"
+level = "integration"
+command = "cargo test --test eval a_context_file_is_committed_into_every_arm_copy_with_an_agents_md"

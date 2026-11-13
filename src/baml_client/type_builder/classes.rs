@@ -1045,6 +1045,13 @@ impl ReviewAnswerClassBuilder {
     // Field Accessors (1:1 with schema field names)
     // =========================================================================
 
+    /// Access the `snapshot` field builder.
+    pub fn property_snapshot(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("snapshot").expect(
+            "ReviewAnswer.snapshot is statically defined in .baml and should always be present",
+        )
+    }
+
     /// Access the `units` field builder.
     pub fn property_units(&self) -> ::baml::ClassPropertyBuilder {
         self.inner.get_property("units").expect(

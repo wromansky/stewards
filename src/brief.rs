@@ -209,8 +209,16 @@ fn render(
         Some(u) => format!("stewards -C {root} submit {u} --role {role} --file {file}"),
         None => format!("stewards -C {root} submit --role {role} --file {file}"),
     };
+    // the reviewer copies it, so an answer to an older review brief is refused
+    let snapshot = match header.role {
+        Role::Reviewer => format!(
+            "Set `snapshot` in your answer to {}.\n\n",
+            code(&header.snapshot)
+        ),
+        _ => String::new(),
+    };
     out += &format!(
-        "\n{schema}\n\nWrite your answer to {answer}. Run {submit}. If it reports an error, \
+        "\n{schema}\n\n{snapshot}Write your answer to {answer}. Run {submit}. If it reports an error, \
          fix the file and run it again; after the third failure reply with the errors verbatim. \
          A field over its stated cap is rejected: stay under it, do not aim at the limit. \
          Reply to your caller with exactly what submit prints, nothing else.\n\n{role_line}\n",
@@ -251,7 +259,7 @@ pub fn build(
 /// review budget are covered, the rest named as next round.
 pub fn build_review(
     repo: &Repo,
-    due: &[String],
+    due: &[next::DueUnit],
     task: &str,
     snapshot: &str,
 ) -> Result<(String, ReviewPack)> {

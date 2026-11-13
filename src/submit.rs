@@ -16,6 +16,7 @@ use crate::harness;
 use crate::llm::types::{self, CardPatch, Verdict};
 use crate::llm::{self, Answer, FieldError, Mode};
 use crate::model::{self, CommandEntry, Commands, GapKind, Role, TestCard, UnitCard};
+use crate::next;
 use crate::output::{CliError, Global, Human, emit, with_note};
 use crate::route::Router;
 use crate::telemetry;
@@ -178,10 +179,21 @@ pub(crate) fn submit_file(
     let brief_rel = brief::rel_path(unit, role, n);
     let header = brief::read_header(&repo.root.join(&brief_rel))?;
     check_header(&repo.root, unit, role, n, &header, &brief_rel)?;
-    // a reviewer's units name the files it writes, as a unit does
+    // A reviewer's units name the files it writes, as a unit does, and only a stamped unit is
+    // reviewed this way: a hand-edited header must not skip a first review.
     let covered = header.units.clone().unwrap_or_default();
-    for u in &covered {
-        loaded.unit(u)?;
+    for (i, u) in covered.iter().enumerate() {
+        let stamped = loaded.cards.get(u).is_some_and(|c| c.reviewed.is_some());
+        if loaded.unit(u).is_err() || !stamped || covered[..i].contains(u) {
+            bail!(CliError::new(
+                "no_brief",
+                format!(
+                    "the header of {brief_rel} lists `{}`, which is unknown, never reviewed, or listed twice",
+                    one_line(u)
+                ),
+                "write a fresh brief with `stewards next`",
+            ));
+        }
     }
     let text = read_answer(file)?;
     // The job's own answer, the path the brief names: removed with the brief once the submit
@@ -1067,6 +1079,17 @@ pub fn reviewer(
     let Answer::Review(a) = parse_answer(Role::Reviewer, header.mode, text)? else {
         unreachable!("a reviewer answer parses to the review variant")
     };
+    // `next` rewrites review.md: an answer to an older brief must not stamp the newer one
+    if a.snapshot != header.snapshot {
+        let brief_rel = brief::rel_path(None, Role::Reviewer, None);
+        bail!(CliError::new(
+            "no_brief",
+            format!(
+                "the answer's `snapshot` is not the one in {brief_rel}: it answers an older review brief"
+            ),
+            format!("read {brief_rel} again and answer the units it lists now, with its snapshot"),
+        ));
+    }
     let root = &repo.root;
     let loaded = repo.loaded()?;
     let commands = &loaded.repo.commands;
@@ -1099,14 +1122,44 @@ pub fn reviewer(
                 fix = check_review(p, &u.verdict, &u.findings, root, unit, &router);
                 let alive = |a: &model::Anchor| anchor_alive(root, &entries, &router, unit, a);
                 check_patch(p, u.card_patch.as_ref(), &old, alive);
-                check_text(p, "check.command", &u.check.command, LINE_CAP, true);
-                check_text(p, "check.output", &u.check.output, PROSE_CAP, false);
-                if u.verdict == Verdict::Approve && !u.check.pass {
+                // the brief shows the unit's and the repo's test commands: with one, run it
+                let shown = !commands.test.is_empty()
+                    || loaded
+                        .tests
+                        .get(unit)
+                        .is_some_and(|t| t.test_command.is_some());
+                match &u.check {
+                    Some(c) if shown => {
+                        check_text(p, "check.command", &c.command, LINE_CAP, true);
+                        check_text(p, "check.output", &c.output, PROSE_CAP, false);
+                    }
+                    None if !shown => {}
+                    _ => p.push((
+                        "answer_parse_failed",
+                        FieldError {
+                            field: "check".into(),
+                            problem: if shown {
+                                "missing; run the test command the brief shows and report it"
+                            } else {
+                                "the brief shows no test command, so there is none to report"
+                            }
+                            .into(),
+                            example: if shown {
+                                "{\"command\": \"pytest tests\", \"pass\": true, \"output\": \"2 passed\"}"
+                            } else {
+                                "null"
+                            }
+                            .into(),
+                        },
+                    )),
+                }
+                if u.verdict == Verdict::Approve && u.check.as_ref().is_some_and(|c| !c.pass) {
                     p.push((
                         "answer_parse_failed",
                         FieldError {
                             field: "verdict".into(),
-                            problem: "approve with a failing check; a unit whose tests fail                                       is not approved"
+                            problem: "approve with a failing check; a unit whose tests fail is \
+                                      not approved"
                                 .into(),
                             example: "\"changes\", with a finding for the failure".into(),
                         },
@@ -1122,8 +1175,20 @@ pub fn reviewer(
                     unit,
                     commands,
                 );
-                if let Some(doc) = &u.doc {
-                    check_doc(p, doc);
+                match &u.doc {
+                    Some(doc) => check_doc(p, doc),
+                    // `next` lists the unit until it has docs
+                    None if next::needs_docs(&card) => p.push((
+                        "answer_parse_failed",
+                        FieldError {
+                            field: "doc".into(),
+                            problem: format!(
+                                "unit `{unit}` has an interface and no docs; write all three sections"
+                            ),
+                            example: "{\"overview\": \"Serves items over HTTP.\", ...}".into(),
+                        },
+                    )),
+                    None => {}
                 }
             });
             reviews.push((u, old, card, fix));
@@ -1159,7 +1224,7 @@ pub fn reviewer(
     let mut edits: Vec<(String, Option<String>)> = vec![];
     let mut checked = vec![];
     let mut fresh = loaded.clone();
-    let mut documented = vec![];
+    let mut paged = vec![];
     let mut parts = vec![];
     let mut findings = vec![];
     let short: String = header.snapshot.chars().take(7).collect();
@@ -1169,17 +1234,18 @@ pub fn reviewer(
         let mut part = vec![card_line(&old, &card)];
         if let Some(doc) = &u.doc {
             card.doc = Some(model_doc(doc));
-            documented.push(unit);
             part.push("doc updated".into());
         }
         let scenarios = u.scenario_patch.as_deref().unwrap_or_default();
-        if !scenarios.is_empty() {
+        let mut written = !scenarios.is_empty();
+        if written {
             let mut tests = test_card(loaded, unit);
             apply_scenarios(&mut tests, scenarios);
             let rel = format!(".stewards/units/{unit}.test.toml");
             edits.push((rel.clone(), Some(toml::to_string(&tests)?)));
             checked.push(rel);
             part.push(count(scenarios.len(), "scenario") + " upserted");
+            fresh.tests.insert(unit.to_string(), tests);
         }
         if u.verdict == Verdict::Approve {
             // at the brief's snapshot, as a maintainer's; the reviewer answered for the tester
@@ -1204,6 +1270,11 @@ pub fn reviewer(
             let rel = format!(".stewards/units/{unit}.toml");
             edits.push((rel.clone(), Some(card_text)));
             checked.push(rel);
+            written = true;
+        }
+        // its page shows the card and the scenarios, so it is rendered again with them
+        if written && card.doc.is_some() {
+            paged.push(unit);
         }
         edits.extend(task_edits(root, unit, fix.map(|t| vec![t]).as_ref())?);
         checked.push(tasks_rel(unit));
@@ -1217,7 +1288,7 @@ pub fn reviewer(
     }
     // each page renders its card as it is about to be written; the index once, unchecked, as the
     // documenter's
-    for unit in documented {
+    for unit in paged {
         for (rel, text) in docs::pages(&fresh, Some(unit))? {
             if !rel.ends_with("/README.md") {
                 checked.push(rel.clone());

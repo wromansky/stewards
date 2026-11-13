@@ -262,6 +262,7 @@ fn example(role: Role, mode: Mode) -> Value {
             "explanation": "Two steps, api then store."
         }),
         (Role::Reviewer, _) => json!({
+            "snapshot": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
             "units": [{
                 "unit": "api",
                 "verdict": "changes",

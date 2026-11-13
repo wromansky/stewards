@@ -11,6 +11,8 @@ Rung
 
 Answer in JSON using this schema:
 {
+  // the snapshot the brief gives, copied exactly
+  snapshot: string,
   // every unit under review exactly once, no other; max 200 items
   units: [
     {
@@ -72,14 +74,14 @@ Answer in JSON using this schema:
         // titles of gaps to remove; max 200 items, each max 120 chars
         remove_gaps: string[] or null,
       } or null,
-      // the unit's test command as run, and the tail of its output; a failing check cannot approve
+      // the test command as run, and the tail of its output; required when the pack shows a test command, null when it shows none; a failing check cannot approve
       check: {
         // max 300 chars
         command: string,
         pass: bool,
         // max 2000 chars
         output: string,
-      },
+      } or null,
       // only when the contract changed; upserts by id; max 200 items
       scenario_patch: [
         {
@@ -110,7 +112,7 @@ Answer in JSON using this schema:
           interface: string or null,
         }
       ] or null,
-      // all three sections as they should read; only when what one says is no longer true
+      // all three sections as they should read; required when the unit has no docs; otherwise only when what a section says is no longer true
       doc: {
         // max 2000 chars
         overview: string,

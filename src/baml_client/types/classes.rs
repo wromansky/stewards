@@ -270,6 +270,7 @@ impl ::std::convert::AsRef<PlanStep> for PlanStep {
 #[derive(Debug, Clone, Default, BamlEncode, BamlDecode, Serialize, Deserialize)]
 #[serde(crate = "::baml::__internal::serde")]
 pub struct ReviewAnswer {
+    pub snapshot: String,
     pub units: Vec<UnitReview>,
     pub pulled_anchors: Vec<String>,
     pub notes: String,
@@ -365,7 +366,7 @@ pub struct UnitReview {
     pub verdict: Verdict,
     pub findings: Vec<Finding>,
     pub card_patch: Option<CardPatch>,
-    pub check: CheckRun,
+    pub check: Option<CheckRun>,
     pub scenario_patch: Option<Vec<Scenario>>,
     pub bugs: Option<Vec<Bug>>,
     pub doc: Option<Doc>,

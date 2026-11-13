@@ -115,7 +115,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   `stewards submit <unit> --role <r> --file <f>`, fixing and retrying up to
   three times on a validation error; the main agent receives only what
   submit prints: a one-line summary, plus the answer's `explanation` (capped
-  at 2,000 characters) for explain and plan jobs. Every LLM step uses this
+  at 2,000 characters) for explain and plan jobs, and each finding's file,
+  line, and `cut` for a reviewer's `changes`. Every LLM step uses this
   loop, including `init --draft`.
 - **Developers:** a maintainer has one developer by default and several
   when it splits its plan. Each task in the plan names its **lane**: the
@@ -125,8 +126,9 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   maintainer splits only work whose pieces build and check independently;
   anything else is one task. Reporting is by artifact, because most
   harnesses cap subagent depth at one: the maintainer's tasks become the
-  developers' briefs, their combined diff becomes the maintainer's one
-  review, and the main agent only dispatches. A developer is a fresh child
+  developers' briefs, their combined diff is reviewed once (by the
+  per-change reviewer, or with `--roles` the maintainer), and the main
+  agent only dispatches. A developer is a fresh child
   per task, not a standing process; what makes it the unit's own is its
   pack. A change with no maintainer plan the main agent makes itself; the
   review is the same.
@@ -148,7 +150,9 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Tests, two writers in turn:** a developer writes the check for its task
   inside its lane; the tester writes scenario tests for the contract and
   may edit any test under the test roots. They never overlap: developers
-  run in the changing step, the tester in the `next` round after it.
+  run in the changing step, the tester in a `next --roles` round after it.
+  The per-change reviewer writes no tests: it runs the unit's test command
+  and may upsert scenarios.
 - **Job files:** one open job per (unit, role), or per task for developers,
   and one review per repo. The brief is `.stewards/briefs/<unit>-<role>.md`
   (`architect.md` for the architect, `review.md` for the reviewer,
@@ -243,15 +247,17 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   fresh again; a closed plan is deleted (git history keeps it).
 - **Debt:** `simplified:` comments are computed on demand by `debt` and
   attached to the owning unit by route; never stored.
-- **Bugs:** a tester's `bugs[]` and `validate --report` both land on the
-  owning card as `[[gap]] kind = "bug"` with the repro, keyed by title; a
+- **Bugs:** a tester's or reviewer's `bugs[]` and `validate --report` both
+  land on the owning card as `[[gap]] kind = "bug"` with the repro, keyed by title; a
   tester's bug that names an interface takes that interface's anchor as its
   `anchor`, and one that names none keeps the anchor it had. The
   validator's submit sets `severity`, or removes a bug it judges not real;
   the maintainer closes a fixed one like any gap.
-- **Docs:** `docs/units/<unit>.md` is rendered from the card; the documenter
-  writes only the prose sections; `docs/units/README.md` is the human index
-  with flows and decisions.
+- **Docs:** `docs/units/<unit>.md` is rendered from the card; the
+  documenter, or the reviewer through a unit's `doc`, writes only the prose
+  sections; a reviewer's submit renders the page again for every unit whose
+  card or test card it wrote and which has docs; `docs/units/README.md` is
+  the human index with flows and decisions.
 - **Memory:** `~/.stewards/memory.toml`, hand-edited one-liners with optional
   language or role filters; roles never write it; matching entries are
   packed into every brief under a byte budget.
@@ -536,7 +542,7 @@ hunks are truncated.
 | validator | purpose, paths, interface, primary_paths, the bug, test_command, commands.test, repro_result |
 | architect | every unit's purpose, interface ids, paths, and owned-file count, all flows, all decisions; no anchors, no source |
 | developer | purpose, paths, interface, its task (change, lane, check), anchors (+source) in its lane, gaps, flows |
-| reviewer | per covered unit: the maintainer's `--diff` sections plus scenarios, test_command, and doc prose |
+| reviewer | per covered unit: why it is due, the maintainer's `--diff` sections (hunks from the oldest of its stamp and role marks) plus scenarios, test_command, commands.test, and doc prose; once for the brief, the files changed in units not due |
 
 The reviewer's pack is one section per unit it covers, under one budget of
 48,000 bytes for them all (a constant, not a `[budgets]` key). Units join
@@ -544,12 +550,20 @@ in `units.toml` order while the total fits; from the first that does not
 fit on, units are listed as next round: named in the brief and in the job's
 reasons, not covered by this job, and still due, so the next `next` lists
 them. The first unit always joins; alone over the budget, it is shrunk as
-any pack is (below) and no other unit joins it.
+any pack is (below), then loses its doc, then its scenarios, then has every
+fenced body left (purpose, sources, hunks) cut to one length until it fits,
+each cut named on its section's "Left out to fit" line, and no other unit
+joins it. Each unit's section opens with a "Due because" line: the reasons
+of its jobs. Its hunks run from the oldest of its stamp, tester mark, and
+documenter mark whose tree exists (a tree has no time, so the oldest is the
+one the most of its files changed since), so a unit due only because a
+mark is behind its stamp shows the change that mark has not seen.
 Source windows are 20 lines before and after the match (the definition span
 with tree-sitter). Budget is bytes of the `--human` rendering. Shrink order:
 halve every source window once; drop windows last-listed first; drop gaps;
 drop flows; truncate hunks to their first 40 lines each. Purpose, interface,
-scenarios, and `other_changed_files` are never dropped. If still over,
+scenarios, and `other_changed_files` are never dropped (but for the review
+pack's last cuts above). If still over,
 `over_budget = true` with the size and no further truncation. Every removal
 is listed in `dropped`. Files matching `[pack] exclude` are named, never
 inlined.
@@ -752,7 +766,7 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `unknown_repo` | `--repo` names no repo | one of the listed repos |
 | `path_outside_repo` | `route` given a path in no repo | pass a path inside the repo |
 | `already_initialized` | `init` where `.stewards/` files exist | edit `.stewards/units.toml` instead |
-| `no_brief` | no brief, or an unreadable header, for the job | run the brief command named |
+| `no_brief` | no brief, or an unusable header, for the job, or an answer to an older brief | run the brief command named, or read the brief again |
 | `no_direct_model` | `--direct` with no `[models.direct]` entry for the role, or an unsupported provider | set `[models.direct] <role> = "<provider>/<model>"` in the user config |
 | `direct_call_failed` | the model call failed (fixed text, never the prompt or key) | rerun with `BAML_LOG=info` |
 | `unsafe_path` | a path the tool reads or writes in a repo is not plain names, or passes through a symlink | remove the symlink at `<path>`; stewards never writes through links |
@@ -777,7 +791,7 @@ Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
 - Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`), or the architect for two or more units (`stewards brief --role architect --task "<the change>"`).
 - Changing: make the edit yourself. When a maintainer split a plan into tasks, run `stewards brief <unit> --role developer` and dispatch every brief it writes.
-- Before reporting done: after any edit, however small, run `stewards next`. It writes one review brief for the whole change. Hand that brief's path to one subagent that can run shell and wait for its summary. Fix the findings it returns, then run `stewards next` again; repeat until it lists no jobs. Done means no jobs; a change with jobs still listed is not done.
+- Before reporting done: after any edit, however small, run `stewards next`. It lists the review to run: normally one brief for the whole change. Hand each brief's path to a general-purpose subagent that can run shell and write files (not a read-only review agent) and wait for its summary. Fix the findings it returns, then run `stewards next` again; repeat until it lists no jobs. Done means no jobs; a change with jobs still listed is not done.
 - On request or before a release: `stewards next --roles` lists the deeper per-unit jobs (maintainer, tester, documenter, validator, architect).
 
 Roles (the tool packs their context; you only hand over the brief path)
@@ -896,18 +910,23 @@ Reviewer:
 > You review one change across the units below. For each unit: read its
 > hunks against the request and check cleanliness and scope on the ladder:
 > approve only when every changed line traces to the request and nothing
-> fails a rung; for each problem give the file, line, the first rung it
-> fails, what to cut, and the smaller replacement; never flag validation at
-> trust boundaries, error handling that prevents data loss, security, or
-> accessibility. Run the unit's test command and report it in `check`; a
-> unit whose tests fail is not approved. Keep the card true. Update
+> fails a rung; an approval has no findings. For each problem give the
+> file (a file of that unit), line, the first rung it fails, what to cut,
+> and the smaller replacement; never flag validation at trust boundaries,
+> error handling that prevents data loss, security, or accessibility. Run
+> the unit's test command, or with none the repo's test commands, and
+> report it in `check`; with no test command in the pack, `check` is null.
+> A unit whose tests fail is not approved. Keep the card true. Update
 > scenarios only if the contract changed. Write the doc when the unit has
 > none; rewrite it only if what a section says is no longer true. Report a
-> defect you will not fix as a bug. Never edit source. Open more only by
-> anchor. One answer, one `submit`.
+> defect you will not fix as a bug. A bug's `repro` and a scenario's
+> `command` must start with one of the repo's test commands. Never edit
+> source. Open more only by anchor. One answer, one `submit`.
 
 The reviewer's brief adds one line after the role text naming the units
-under review, each to appear exactly once in `units` and no other.
+under review, each to appear exactly once in `units` and no other, and one
+before the submit instructions giving its snapshot, which the answer
+copies.
 
 Answer shapes: maintainer review `verdict approve|changes`, `findings[]
 {file, line, rung, cut, replace_with}`, `card_patch {interface[], anchors[],
@@ -918,19 +937,29 @@ and print its path); maintainer explain `explanation`, `tasks[] {title, change, 
 {scenario, pass, output}`, `bugs[] {title, repro, evidence, interface?}`,
 `tests_written[]`; documenter `doc {overview, how_it_works, how_to_change}`;
 validator `real, severity, reason, evidence[]`; architect `plan | null,
-flows[], decisions[], unit_proposals[], explanation`; reviewer `units[]
-{unit, verdict approve|changes, findings[], card_patch | null, check
-{command, pass, output}, scenario_patch[] | null, bugs[] | null, doc |
-null}`. All carry `pulled_anchors[]` and `notes`.
+flows[], decisions[], unit_proposals[], explanation`; reviewer `snapshot`,
+`units[] {unit, verdict approve|changes, findings[], card_patch | null,
+check {command, pass, output} | null, scenario_patch[] | null, bugs[] |
+null, doc | null}`. All carry `pulled_anchors[]` and `notes`.
 
-A reviewer's answer names every unit of its brief exactly once and no
+A reviewer's answer copies the brief's `snapshot`: one that differs is
+`no_brief` (it answers an older `review.md`, which `next` rewrites), and
+the fix is to read the brief again. `submit` also refuses (`no_brief`) a
+review brief whose header lists a unit that is unknown, never stamped, or
+listed twice. The answer names every unit of its brief exactly once and no
 other, and each unit's fields pass the checks and caps the maintainer's,
 tester's, and documenter's do; a unit approved with a failing `check` is
-rejected. `submit` validates the whole answer first and writes nothing on
+rejected. `check` is required when the brief shows a test command for the
+unit (its own or the repo's `commands.test`) and must be null when it shows
+none, so a repo with no test command can still be approved. `doc` is
+required when the unit, with its card patch applied, has an interface and
+no docs (otherwise `next` would list it forever), and otherwise given only
+when what a section says is no longer true. `submit` validates the whole answer first and writes nothing on
 any error. Then per unit, through the same code paths: the card patch;
 bugs as the tester's become bug gaps with no severity; the doc as the
-documenter's, with its page rendered; scenarios as the tester's, into the
-test card; on `approve` the stamp at the brief's snapshot with both role
+documenter's; scenarios as the tester's, into the test card; the page
+rendered again for every unit whose card or test card was written and
+which has docs; on `approve` the stamp at the brief's snapshot with both role
 marks set there, and the unit's task list removed; on `changes` no stamp
 and the findings as the unit's fix task. The lost-update check covers every
 file it writes, and the brief is retired, as for any role. The summary
@@ -962,7 +991,8 @@ env; `--harness <name>` forces one, `--all` prints every variant. The
 detection rule and the paragraph text per harness come from the
 `harness.rs` table (the current entries are in Facts); the generic paragraph
 says: start a fresh-context subagent that can run shell, give it the
-absolute brief path and nothing else, wait for its one-line summary.
+absolute brief path and nothing else, wait for its reply: what `submit`
+printed.
 
 ## Docs templates
 
@@ -1250,8 +1280,10 @@ build time. Checklist in `RELEASING.md`.
    `guide`, memory, telemetry. Dogfood from here.
    **2b. Proof** (`feat/stage-2b-proof`): the eval fixture, the runner, the
    Pi driver, and the token and ritual graders, run on tasks 1, 3, 4, and 6.
-   Stage 3 starts only when `full` main context is on track for the 80%
-   criterion; otherwise risk 3's kill criterion applies here.
+   The 2026-11-12 decision replaced the token-saving gate (see Handoff,
+   "What the thin eval showed"): stage 3 starts when an agent completes the
+   one-job ritual (one review brief per change) unprompted in the eval and
+   the user accepts its measured overhead.
 3. **Depth** (`feat/stage-3-depth`): architect and plans in `next`;
    `validate` and export (GitHub, then GitLab, Jira, Linear); tree-sitter static
    grammars, then runtime extras; `render` for six harnesses.
@@ -1547,7 +1579,7 @@ helpers in `tests/common`. One behavior per test.
 |---|---|---|---|---|
 | 1 | BAML Rust client immature | `cargo update` breaks the generated client; runtime download fails | Pin `baml` and `baml-sys` exactly; validation is serde on the generated types, so only `--direct` touches the native lib; vendor the lib in releases; every LLM step behind `llm.rs` so templates + serde is a one-module swap | Two consecutive BAML releases break the client with no fix in 30 days → templates + serde |
 | 2 | Harness drift across the supported harnesses | Agent dirs, subagent tools, or env vars change | Per-harness facts in one `harness.rs` table with a last-verified date; evals on three; spot-check list for the rest per release | A harness drops repo AGENTS.md or shell → drop it |
-| 3 | Subagents ignore the pack | `pulled_anchors` large; tokens per job far above pack size | Pull rule stated twice; budget shown; token grader | Two prompt-tuning rounds after the first eval; still missing the 20% main-context criterion → reopen delegation before stage 3 starts |
+| 3 | Subagents ignore the pack | `pulled_anchors` large; tokens per job far above pack size | Pull rule stated twice; budget shown; token grader | Replaced by the 2026-11-12 decision, which dropped the main-context saving criterion: the stage-3 gate is now an agent completing the one-job ritual unprompted in the eval, with a measured overhead the user accepts; missing it → reopen delegation before stage 3 starts |
 | 4 | Cards rot despite `check` | Many `card_patch: null` while anchors drift; prose contradicts code | Fingerprint staleness; docs-accuracy grader; `next` re-reviews every stale unit | Docs-accuracy fails two releases running → regen-only cards |
 | 5 | Prompt injection through cards or reports | A brief makes a subagent act outside its role | Data fencing, caps, allowlist, writes boundary; a hostile fixture card in the Rust tests (fence breakout, control characters, over-cap fields) | Any confirmed escape → stop-ship until fixed |
 | 6 | Scope for one builder | Stages slip; no dogfood by stage 2 | Each stage usable alone; cut order above | Stage 2 not dogfooding in its window → freeze at stages 1–2 |

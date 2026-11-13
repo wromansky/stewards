@@ -7,7 +7,7 @@ Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
 - Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`), or the architect for two or more units (`stewards brief --role architect --task "<the change>"`).
 - Changing: make the edit yourself. When a maintainer split a plan into tasks, run `stewards brief <unit> --role developer` and dispatch every brief it writes.
-- Before reporting done: after any edit, however small, run `stewards next`. It writes one review brief for the whole change. Hand that brief's path to one subagent that can run shell and wait for its summary. Fix the findings it returns, then run `stewards next` again; repeat until it lists no jobs. Done means no jobs; a change with jobs still listed is not done.
+- Before reporting done: after any edit, however small, run `stewards next`. It lists the review to run: normally one brief for the whole change. Hand each brief's path to a general-purpose subagent that can run shell and write files (not a read-only review agent) and wait for its summary. Fix the findings it returns, then run `stewards next` again; repeat until it lists no jobs. Done means no jobs; a change with jobs still listed is not done.
 - On request or before a release: `stewards next --roles` lists the deeper per-unit jobs (maintainer, tester, documenter, validator, architect).
 
 Roles (the tool packs their context; you only hand over the brief path)

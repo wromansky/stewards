@@ -11,7 +11,7 @@ use crate::check::{CheckReport, changed_since, check_at, one_line, stale_files};
 use crate::debt::{DebtItem, is_debt_line};
 use crate::git;
 use crate::llm::Mode;
-use crate::model::{Anchor, GapKind, Interface, Role};
+use crate::model::{Anchor, GapKind, Interface, Role, UnitCard};
 use crate::output::{Global, Human, emit, not_implemented};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, here};
@@ -132,8 +132,11 @@ pub fn next(
 
 const NEVER_REVIEWED: &str = "never reviewed";
 
+/// A unit the review brief covers and the reasons it is due.
+pub type DueUnit = (String, Vec<String>);
+
 /// A stamped unit the reviewer covers, with why: the reasons of its maintainer (stale), tester,
-/// and documenter jobs, each led by the unit's name.
+/// and documenter jobs.
 struct Due {
     unit: String,
     reasons: Vec<String>,
@@ -168,9 +171,8 @@ fn due_for_review(jobs: &[&RoleJob]) -> Vec<Due> {
         };
         let d = &mut due[at];
         for r in &j.job.reasons {
-            let r = format!("{}: {r}", j.job.unit);
-            if !d.reasons.contains(&r) {
-                d.reasons.push(r);
+            if !d.reasons.contains(r) {
+                d.reasons.push(r.clone());
             }
         }
         for c in &j.job.changed {
@@ -193,15 +195,24 @@ fn reviewer_job(
     snapshot: &str,
     write_brief: bool,
 ) -> Result<Job> {
-    let names: Vec<String> = due.iter().map(|d| d.unit.clone()).collect();
-    let (text, pack) = brief::build_review(repo, &names, task, snapshot)?;
+    let units: Vec<DueUnit> = due
+        .iter()
+        .map(|d| (d.unit.clone(), d.reasons.clone()))
+        .collect();
+    let (text, pack) = brief::build_review(repo, &units, task, snapshot)?;
     let brief_path = if write_brief {
         Some(brief::write_text(repo, None, Role::Reviewer, &text)?)
     } else {
         None
     };
     let covered = &due[..pack.units.len()];
-    let mut reasons: Vec<String> = covered.iter().flat_map(|d| d.reasons.clone()).collect();
+    let mut reasons: Vec<String> = covered
+        .iter()
+        .flat_map(|d| {
+            let name = ws.display_name(repo, &d.unit);
+            d.reasons.iter().map(move |r| format!("{name}: {r}"))
+        })
+        .collect();
     if !pack.next_round.is_empty() {
         let later: Vec<String> = pack
             .next_round
@@ -230,9 +241,9 @@ fn reviewer_job(
     })
 }
 
-/// The snapshot, task, and the stamped units of `repo` due for review (units.toml order), for
-/// `brief --role reviewer` and `pack --role reviewer`.
-pub fn review_due(repo: &Repo, task: Option<&str>) -> Result<(String, String, Vec<String>)> {
+/// The snapshot, task, and the stamped units of `repo` due for review (units.toml order) with
+/// their reasons, for `brief --role reviewer` and `pack --role reviewer`.
+pub fn review_due(repo: &Repo, task: Option<&str>) -> Result<(String, String, Vec<DueUnit>)> {
     let ws = Workspace {
         repos: vec![Repo {
             name: repo.name.clone(),
@@ -248,7 +259,10 @@ pub fn review_due(repo: &Repo, task: Option<&str>) -> Result<(String, String, Ve
         None => git::task_text(&repo.root)?,
     };
     let jobs: Vec<&RoleJob> = jobs.iter().collect();
-    let due = due_for_review(&jobs).into_iter().map(|d| d.unit).collect();
+    let due = due_for_review(&jobs)
+        .into_iter()
+        .map(|d| (d.unit, d.reasons))
+        .collect();
     Ok((snapshots[0].clone(), task, due))
 }
 
@@ -377,15 +391,7 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
             let documenter_mark = reviewed.and_then(|r| r.documenter.as_ref()).or(stamp);
             let ((mut reasons, changed), _) = touched(documenter_mark)?;
             // a card a first review drafted has an interface to document
-            let no_docs = card.is_some_and(|c| {
-                !c.interface.is_empty()
-                    && c.doc.as_ref().is_none_or(|d| {
-                        [&d.overview, &d.how_it_works, &d.how_to_change]
-                            .iter()
-                            .all(|s| s.trim().is_empty())
-                    })
-            });
-            if no_docs {
+            if card.is_some_and(needs_docs) {
                 reasons.push("no docs yet".into());
             }
             if reviewed.is_some() && !reasons.is_empty() {
@@ -442,6 +448,16 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
         );
     }
     Ok((jobs, snapshots))
+}
+
+/// A card with an interface and no doc section written: `next` lists it until one is.
+pub(crate) fn needs_docs(card: &UnitCard) -> bool {
+    !card.interface.is_empty()
+        && card.doc.as_ref().is_none_or(|d| {
+            [&d.overview, &d.how_it_works, &d.how_to_change]
+                .iter()
+                .all(|s| s.trim().is_empty())
+        })
 }
 
 /// Extensions of the languages `anchors::interface_lines`'s block rule was written for.

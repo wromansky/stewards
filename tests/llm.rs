@@ -72,6 +72,7 @@ fn architect() -> Value {
 
 fn reviewer() -> Value {
     with_common(json!({
+        "snapshot": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
         "units": [{
             "unit": "api", "verdict": "approve", "findings": [], "card_patch": null,
             "check": {"command": "cargo test", "pass": true, "output": "ok"},

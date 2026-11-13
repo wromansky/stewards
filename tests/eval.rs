@@ -237,36 +237,52 @@ fn child_shell(command: &str) -> Action {
     }
 }
 
-fn dispatch(text: &str) -> Action {
-    Action::Dispatch { text: text.into() }
+/// A pi-subagents launch whose child gets `task`, beside the agent name.
+fn dispatch(task: &str) -> Action {
+    Action::Dispatch {
+        tasks: vec![task.into()],
+    }
 }
+
+const HANDOFF: &str = "Read `/r r/.stewards/briefs/api-maintainer.md` and follow it.";
 
 #[test]
 fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
-    let cases: [(&str, Vec<Action>); 5] = [
-        ("status", vec![shell("stewards status")]),
-        ("route", vec![shell("cd /r && stewards route a.py")]),
-        ("next", vec![child_shell("stewards next")]),
+    let cases: [(&[&str], Vec<Action>); 7] = [
+        (&["status"], vec![shell("stewards status")]),
+        (&["route"], vec![shell("cd /r && stewards route a.py")]),
+        (&["next"], vec![child_shell("stewards next")]),
+        (&["review"], vec![shell("stewards review --task 'x'")]),
+        // any brief's handoff, its path with a space, passed as the whole task
+        (&["handoff", "handoff_exact"], vec![dispatch(HANDOFF)]),
+        // the handoff inside the agent's own wording: handed off, not exactly
         (
-            "review_dispatched",
-            vec![dispatch(r#"{"task":"Read /r/.stewards/briefs/review.md"}"#)],
+            &["handoff"],
+            vec![
+                dispatch(HANDOFF),
+                dispatch(&format!("{HANDOFF} Return a short summary of findings.")),
+            ],
         ),
         (
-            "reviewer_submit",
+            &["reviewer_submit"],
             vec![child_shell(
                 "cd /r && stewards submit --role reviewer --file .stewards/briefs/review.answer.json",
             )],
         ),
     ];
-    for (name, actions) in &cases {
+    for (names, actions) in &cases {
         let found = ritual_steps(actions);
         for other in RITUAL_STEPS {
-            assert_eq!(found[other], other == *name, "{name}: {other}");
+            assert_eq!(found[other], names.contains(&other), "{names:?}: {other}");
         }
     }
-    // another brief, another role's submit, or the reviewer submit in the main session: none
+    // a brief path without the sentence, a relative path, a path outside the code span, another
+    // role's submit, or the reviewer submit in the main session: none
     let none = [
-        dispatch(r#"{"task":"Read /r/.stewards/briefs/api-maintainer.md"}"#),
+        dispatch("Read `/r/.stewards/briefs/review.md`"),
+        dispatch("Read `.stewards/briefs/review.md` and follow it."),
+        dispatch("Read `/r/notes.md` and follow it."),
+        dispatch("Read /r/.stewards/briefs/review.md and follow it."),
         child_shell("stewards submit api --role tester --file a.json"),
         shell("stewards submit --role=reviewer --file a.json"),
     ];
@@ -274,6 +290,66 @@ fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
     assert!(
         ritual_steps(&[child_shell("stewards submit --role=reviewer --file a.json")])["reviewer_submit"]
     );
+}
+
+#[test]
+fn the_handoff_brief_prints_is_one_the_eval_reads_as_exact() {
+    let h = stewards::brief::handoff(std::path::Path::new(
+        "/w/my repo/.stewards/briefs/review.md",
+    ))
+    .unwrap();
+    assert!(stewards::eval::is_handoff(&h), "{h}");
+    assert!(stewards::eval::holds_handoff(&format!(
+        "please: {h} thanks"
+    )));
+}
+
+/// The recorded sample `name` with each `(from, to)` replaced: the real pi-subagents argument
+/// shapes (one `subagent` call with `agent`, `task`, `model`, and `options`; a `parallel`
+/// workflow with `args.tasks[]`) with other task strings.
+fn with_tasks(name: &str, replace: &[(&str, &str)]) -> Run {
+    let tmp = TempDir::new().unwrap();
+    copy_dir(&sample(name), tmp.path());
+    let parent = main_file(tmp.path());
+    let mut text = std::fs::read_to_string(&parent).unwrap();
+    for (from, to) in replace {
+        assert!(text.contains(from), "{name}: {from}");
+        text = text.replace(from, to);
+    }
+    std::fs::write(&parent, text).unwrap();
+    parse(&parent, 0.0, false).unwrap()
+}
+
+#[test]
+fn handoff_exact_reads_the_task_of_a_real_pi_subagent_call() {
+    let single = r#""task":"Reply with the word ok and nothing else.""#;
+    let h = r#""task":"Read `/work/0/repo/.stewards/briefs/architect.md` and follow it.""#;
+    // every child of the parallel call: its brief path inside the handoff
+    let (start, end) = (
+        r#""task":"Execute the stewards brief at "#,
+        r#". You have shell access. Follow the brief, then reply with a short summary of what you did and any files written.""#,
+    );
+    let exact = [
+        with_tasks("subagent", &[(single, h)]),
+        with_tasks(
+            "ritual",
+            &[(start, r#""task":"Read `"#), (end, r#"` and follow it.""#)],
+        ),
+    ];
+    for run in exact {
+        assert!(run.ritual_steps["handoff"] && run.ritual_steps["handoff_exact"]);
+    }
+    let added = r#"` and follow it. Then summarize.""#;
+    let not_exact = [
+        with_tasks(
+            "subagent",
+            &[(single, &h.replace("` and follow it.\"", added))],
+        ),
+        with_tasks("ritual", &[(start, r#""task":"Read `"#), (end, added)]),
+    ];
+    for run in not_exact {
+        assert!(run.ritual_steps["handoff"] && !run.ritual_steps["handoff_exact"]);
+    }
 }
 
 #[test]
@@ -552,37 +628,26 @@ fn full_run(recs: &mut [RunRecord], run: u32) -> &mut RunRecord {
 #[test]
 fn the_gate_passes_only_when_every_full_run_has_all_four_facts() {
     let grade = |recs: &[RunRecord]| grade_task(&fixture_suite(), 1, recs, &ARMS, 3);
-    // status and route are recorded, not gated
-    let gated = steps(&[
-        "next",
-        "review_dispatched",
-        "reviewer_submit",
-        "check_green",
-    ]);
+    // status, route, next, handoff_exact, and reviewer_submit are recorded, not gated
+    let gated = steps(&["review", "handoff", "check_green"]);
     let g = grade(&records(1, 3000, 9000, gated.clone()));
     assert_eq!(g.verdict, Verdict::Pass, "{:?}", g.reasons);
     assert_eq!((g.gate.unwrap().passed, g.gate.unwrap().runs), (3, 3));
 
-    // `next` ran but the review was not dispatched: that run fails the task, with the reason
+    // `review` ran but no subagent got its handoff: that run fails the task, with the reason
     let mut recs = records(1, 3000, 9000, gated.clone());
     let r = full_run(&mut recs, 2).result.as_mut().unwrap();
-    r.ritual_steps.insert("review_dispatched", false);
-    r.ritual_steps.insert("reviewer_submit", false);
+    r.ritual_steps.insert("handoff", false);
     let g = grade(&recs);
     assert_eq!(g.verdict, Verdict::Fail);
     assert_eq!(g.gate.unwrap().passed, 2);
-    assert_eq!(
-        g.reasons,
-        [
-            "full run 2: `next` ran but the review was not dispatched; no child ran `stewards submit --role reviewer`"
-        ]
-    );
+    assert_eq!(g.reasons, ["full run 2: no subagent was given a handoff"]);
 
-    // the runner saw no change, `next` never ran, the runner's own `next` is not clean
+    // the runner saw no change, `review` never ran, the runner's own `next` is not clean
     let mut recs = records(1, 3000, 9000, gated.clone());
     full_run(&mut recs, 1).changed = false;
     let r = full_run(&mut recs, 3).result.as_mut().unwrap();
-    r.ritual_steps.insert("next", false);
+    r.ritual_steps.insert("review", false);
     r.ritual_steps.insert("check_green", false);
     let g = grade(&recs);
     assert_eq!(g.verdict, Verdict::Fail);
@@ -590,7 +655,7 @@ fn the_gate_passes_only_when_every_full_run_has_all_four_facts() {
         g.reasons,
         [
             "full run 1: changed nothing",
-            "full run 3: `stewards next` never ran; the runner's `stewards next --no-brief` did not exit 0",
+            "full run 3: `stewards review` never ran; the runner's `stewards next --no-brief` did not exit 0",
         ]
     );
 }

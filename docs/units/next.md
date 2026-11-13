@@ -19,10 +19,10 @@ Change a due-job rule in the per-unit block of role_jobs in src/next.rs, and wha
 | id | contract | anchor |
 |---|---|---|
 | next | Roles\: maintainer if stale/unreviewed; stamped only\: tester (interface lines or test file changed since mark), documenter (interface lines or no docs); validator per unjudged bug; architect if 2+ stamped moved. Else\: one reviewer job per repo folding stamped units' reasons, plus first reviews. | [src/next.rs\:\:next](../../src/next.rs#L1) |
-| next\_run | \`stewards next\`\: lists the reviewer job and first reviews, or with --roles every per-role job; \`--pr\` is not implemented; writes briefs unless --no-brief; exits 0 only when there are no jobs and no check failures, else 1. | [src/next.rs\:\:run](../../src/next.rs#L548) |
+| next\_run | \`stewards next\`\: lists the reviewer job and first reviews, or with --roles every per-role job; \`--pr\` is not implemented; writes briefs unless --no-brief, each listed with its one-sentence handoff; exits 0 only when there are no jobs and no check failures, else 1. | [src/next.rs\:\:run](../../src/next.rs#L593) |
 | status | Per unit of each initialized repo\: freshness (fresh/stale/unreviewed by fingerprint), interfaces, interfaces covered by a scenario, non-bug gaps, bugs, and debt count; uninitialized repos listed apart; workspace names carry the repo prefix. | [src/status.rs\:\:status](../../src/status.rs#L1) |
 | status\_run | \`stewards status\`\: always exits 0; with --telemetry adds the current repo's telemetry summary, or null with no current repo. | [src/status.rs\:\:run](../../src/status.rs#L109) |
-| review\_due | For one repo\: the snapshot, the task (given or from git), and the stamped units with a maintainer (stale), tester or documenter job, in units.toml order, each with its deduplicated reasons. | [src/next.rs\:\:review\_due](../../src/next.rs#L235) |
+| review\_due | For one repo\: the snapshot, the task (given or from git), and the stamped units with a maintainer (stale), tester or documenter job, in units.toml order, each with its deduplicated reasons. | [src/next.rs\:\:review\_due](../../src/next.rs#L272) |
 
 ## Scenarios
 
@@ -34,6 +34,7 @@ Change a due-job rule in the per-unit block of role_jobs in src/next.rs, and wha
 | interface-without-findable-lines-falls-back-to-the-file-trigger | next | stamped unit whose interface name was removed from its file, or sits in a file added since the mark | tester and documenter jobs fire with reason 'interface file changed' | integration |
 | plain-next-folds-stamped-units-into-one-reviewer-job | next | two stamped units whose interfaces changed; plain \`next --no-brief\` | one job, role reviewer, empty unit, command 'stewards brief --role reviewer'; its reasons are every maintainer/tester/documenter reason of \`next --roles\` led by the unit name; architect false; exit 1 | integration |
 | never-stamped-unit-keeps-its-maintainer-job-beside-the-review | next | api stamped and changed, store never stamped; plain \`next --no-brief\` | jobs are the reviewer job then store maintainer; exit 1 | integration |
+| a-written-brief-carries-a-safe-handoff | next\_run | workspace whose repo directory name is prose that reads like an instruction, or contains a backtick; briefs written with --roles | job handoff is exactly 'Read \`\<brief\_path\>\` and follow it.' with two backticks; a backtick in the path is refused with error unsafe\_path, exit 2 | integration |
 
 ## Flows
 
@@ -49,4 +50,4 @@ Change a due-job rule in the per-unit block of role_jobs in src/next.rs, and wha
 
 ## Last reviewed
 
-2d972b0896b3296afa9472532b7f9f0cf954c19e
+7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51

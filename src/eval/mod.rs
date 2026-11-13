@@ -27,13 +27,13 @@ pub use suite::{Source, Suite, SuiteTask};
 const ADOPTION_OWN: [&str; 4] = [".stewards/", "docs/units/", "AGENTS.md", ".gitignore"];
 
 /// The prompt of the `full` arm's adoption session, run once per eval before any `full` run.
-pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards init --draft` and hand every brief it writes to a subagent that can run shell, then run `stewards next --roles` and dispatch every brief it writes until it lists no jobs.";
+pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards init --draft` and start one subagent per handoff it prints, giving it exactly that sentence as its whole task; when they have finished, run `stewards review --roles` until it exits 0.";
 
 /// The final stop reasons of a response that did not end normally.
 pub const FAILED_STOPS: [&str; 3] = ["error", "aborted", "length"];
 
 /// What the summary says about the ritual gate and the transcript-derived steps.
-pub const RITUAL_NOTE: &str = "The gate, on each full run of an edit task (read-only tasks are n/a): the runner saw a change (`changed`: outside .stewards/ and docs/units/, against the run's starting commit, untracked files included), `next` ran somewhere in the session tree, a subagent was handed .stewards/briefs/review.md (`review_dispatched`), a child ran `stewards submit --role reviewer` (`reviewer_submit`), and the runner's own `stewards next --no-brief` exits 0 afterwards (`check_green`). `status` and `route` are recorded, not gated. Steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, and backticks are misread or missed.";
+pub const RITUAL_NOTE: &str = "The gate, on each full run of an edit task (read-only tasks are n/a): the runner saw a change (`changed`: outside .stewards/ and docs/units/, against the run's starting commit, untracked files included), a `stewards review` command ran somewhere in the session tree (`review`), a subagent was started whose task contains the handoff sentence for a brief under .stewards/briefs/ (`handoff`), and the runner's own `stewards next --no-brief` exits 0 afterwards (`check_green`). `status`, `route`, `next`, whether every subagent launch holding a handoff gave each child exactly that sentence as its task (`handoff_exact`), and whether a child ran `stewards submit --role reviewer` (`reviewer_submit`) are recorded, not gated. Steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, and backticks are misread or missed.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -116,12 +116,15 @@ impl Tokens {
     }
 }
 
-/// The recorded ritual steps, in order; all but `status` and `route` are gated (see `RITUAL_NOTE`).
-pub const RITUAL_STEPS: [&str; 6] = [
+/// The recorded ritual steps, in order; `review`, `handoff`, and `check_green` are gated (see
+/// `RITUAL_NOTE`).
+pub const RITUAL_STEPS: [&str; 8] = [
     "status",
     "route",
     "next",
-    "review_dispatched",
+    "review",
+    "handoff",
+    "handoff_exact",
     "reviewer_submit",
     "check_green",
 ];
@@ -229,8 +232,30 @@ pub enum Action {
         /// Run by a child session, not the main one.
         child: bool,
     },
-    /// A subagent launch; `text` is its arguments.
-    Dispatch { text: String },
+    /// A subagent launch; `tasks` are what each child is given as its task.
+    Dispatch { tasks: Vec<String> },
+}
+
+/// Whether `text` is exactly a handoff (`brief::handoff`) of a brief under `.stewards/briefs/`.
+pub fn is_handoff(text: &str) -> bool {
+    text.strip_prefix("Read `")
+        .and_then(|r| r.strip_suffix("` and follow it."))
+        .is_some_and(|p| {
+            p.starts_with('/')
+                && !p.contains('`')
+                && p.contains("/.stewards/briefs/")
+                && p.ends_with(".md")
+        })
+}
+
+/// Whether `text` holds a handoff anywhere in it.
+pub fn holds_handoff(text: &str) -> bool {
+    const END: &str = "` and follow it.";
+    text.match_indices("Read `").any(|(i, _)| {
+        text[i..]
+            .find(END)
+            .is_some_and(|j| is_handoff(&text[i..i + j + END.len()]))
+    })
 }
 
 /// Whether a `stewards` command (see `stewards_commands`) is `submit --role reviewer`.
@@ -239,18 +264,19 @@ pub fn is_reviewer_submit(cmd: &[&str]) -> bool {
         && (cmd.contains(&"--role=reviewer") || cmd.windows(2).any(|w| w == ["--role", "reviewer"]))
 }
 
-/// The transcript-derived ritual steps: `status`, `route`, `next` are shell commands, in any
-/// session, whose argv starts with `stewards <cmd>`; `review_dispatched` is a subagent launched
-/// with `.stewards/briefs/review.md` in its arguments; `reviewer_submit` is
-/// `is_reviewer_submit` in a child. `check_green` is left `false` for the runner.
+/// The transcript-derived ritual steps: `status`, `route`, `next`, `review` are shell commands,
+/// in any session, whose argv starts with `stewards <cmd>`; `handoff` is a subagent launched with
+/// a handoff in one of its argument strings, and `handoff_exact` that every such launch gives
+/// each child exactly a handoff as its task; `reviewer_submit` is `is_reviewer_submit` in a
+/// child. `check_green` is left `false` for the runner.
 pub fn ritual_steps(actions: &[Action]) -> RitualSteps {
     let mut steps: RitualSteps = RITUAL_STEPS.iter().map(|&s| (s, false)).collect();
-    let review_brief = crate::brief::rel_path(None, crate::model::Role::Reviewer, None);
+    let mut exact = true;
     for a in actions {
         match a {
             Action::Shell { command, child } => {
                 for cmd in stewards_commands(command) {
-                    if let Some(step) = ["status", "route", "next"]
+                    if let Some(step) = ["status", "route", "next", "review"]
                         .into_iter()
                         .find(|s| *s == cmd[0])
                     {
@@ -261,12 +287,15 @@ pub fn ritual_steps(actions: &[Action]) -> RitualSteps {
                     }
                 }
             }
-            Action::Dispatch { text } if text.contains(&review_brief) => {
-                steps.insert("review_dispatched", true);
+            Action::Dispatch { tasks } => {
+                if tasks.iter().any(|t| holds_handoff(t)) {
+                    steps.insert("handoff", true);
+                    exact &= tasks.iter().all(|t| is_handoff(t));
+                }
             }
-            _ => {}
         }
     }
+    steps.insert("handoff_exact", steps["handoff"] && exact);
     steps
 }
 
@@ -1430,7 +1459,7 @@ fn commit_adopted(dir: &Path) -> Result<()> {
 }
 
 /// The developer line of the AGENTS.md block, and its `--no-developers` replacement.
-const DEVELOPER_LINE: &str = "- Changing: make the edit yourself. When a maintainer split a plan into tasks, run `stewards brief <unit> --role developer` and dispatch every brief it writes.";
+const DEVELOPER_LINE: &str = "- Changing: make the edit yourself. When a maintainer split a plan into tasks, `stewards brief <unit> --role developer` prints one handoff per task.";
 const NO_DEVELOPER_LINE: &str = "- Changing: make the edit yourself.";
 
 /// The AGENTS.md text with the developer role switched off; an error when the block's developer

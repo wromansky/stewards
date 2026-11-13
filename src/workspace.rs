@@ -302,6 +302,41 @@ impl Repo {
             .with_context(|| format!("append {}", path.display()))
     }
 
+    /// The bytes of the regular file `rel`, at most `cap` of them: opened through no link and
+    /// without waiting on a FIFO, its type checked on the open handle, so a swap after a check
+    /// cannot make it read something else. Any other file, or one over `cap`, is an error.
+    pub fn read(&self, rel: &str, cap: u64) -> anyhow::Result<Vec<u8>> {
+        use std::io::Read;
+        let path = safe_path(&self.root, rel, false)?;
+        let mut open = OpenOptions::new();
+        open.read(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(
+            &mut open,
+            libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        );
+        // simplified: elsewhere a link or FIFO swapped in after this check is opened; a real
+        // fix needs that platform's no-follow, non-blocking open.
+        #[cfg(not(unix))]
+        if !std::fs::symlink_metadata(&path)?.is_file() {
+            anyhow::bail!("{} is not a regular file", path.display());
+        }
+        let file = open
+            .open(&path)
+            .with_context(|| format!("open {}", path.display()))?;
+        if !file.metadata()?.is_file() {
+            anyhow::bail!("{} is not a regular file", path.display());
+        }
+        let mut bytes = vec![];
+        file.take(cap + 1)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("read {}", path.display()))?;
+        if bytes.len() as u64 > cap {
+            anyhow::bail!("{} is over {cap} bytes", path.display());
+        }
+        Ok(bytes)
+    }
+
     /// Removes the regular file `rel`; a missing file is fine.
     pub fn remove(&self, rel: &str) -> anyhow::Result<()> {
         let path = safe_path(&self.root, rel, false)?;

@@ -1,11 +1,11 @@
 unit = "model"
 
 [reviewed]
-commit = "2d972b0896b3296afa9472532b7f9f0cf954c19e"
-fingerprint = "sha256:a8db3c953834e1445a27a710db05aaaf1ecbce4f43fe3bdf088d43d078a484a6"
-tree = "d4946411371231151e8e447600bff5e59e178da4"
-tester = "d4946411371231151e8e447600bff5e59e178da4"
-documenter = "d4946411371231151e8e447600bff5e59e178da4"
+commit = "7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51"
+fingerprint = "sha256:d3c9d10ca2206d0cb9485b8c69d240a161017b6d4983d398dfd637ccd947bf0a"
+tree = "b82429e8bfcd73443a38fbfd3d59504efbda97b7"
+tester = "b82429e8bfcd73443a38fbfd3d59504efbda97b7"
+documenter = "b82429e8bfcd73443a38fbfd3d59504efbda97b7"
 
 [[interface]]
 id = "load-repo"
@@ -96,6 +96,11 @@ contract = "Entries whose roles (absent = all) include role and whose languages 
 id = "loaded-card"
 anchor = "src/model.rs::card"
 contract = "Loaded::card(unit) returns a clone of the unit's card, or an empty card (unit set, reviewed None, no interface, anchors, gaps, or doc) when it has none yet. The one lookup submit and check use instead of their own copies."
+
+[[interface]]
+id = "repo-read"
+anchor = "src/workspace.rs::read"
+contract = "Repo::read(rel, cap) returns the bytes of the regular file rel through safe_path, opened with no link followed and without blocking on a FIFO (unix), its type checked on the open handle; a non-regular file or one over cap bytes is an error."
 
 [[anchor]]
 path = "src/model.rs"

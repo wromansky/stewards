@@ -65,12 +65,9 @@ fn nothing_detected_prints_the_generic_paragraph() {
     let (v, code) = guide(&[], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(v["harness"], Value::Null);
-    assert!(
-        v["delegation"]
-            .as_str()
-            .unwrap()
-            .starts_with("Start a fresh-context subagent that can run shell")
-    );
+    assert!(v["delegation"].as_str().unwrap().starts_with(
+        "Start a fresh-context, general-purpose subagent that can run shell and write files"
+    ));
 }
 
 #[test]
@@ -83,7 +80,19 @@ fn guide_has_the_block_sections_as_named_fields() {
             .unwrap()
             .starts_with("Ritual\n- Entering")
     );
+    assert!(
+        v["handoff"]
+            .as_str()
+            .unwrap()
+            .starts_with("A handoff is always one sentence, ``Read `<path>` and follow it.``")
+    );
     assert!(v["roles"].as_str().unwrap().starts_with("Roles ("));
+    let adoption = v["adoption"].as_str().unwrap();
+    assert!(
+        adoption.contains("`stewards init --draft`")
+            && adoption.contains("`stewards review --roles` until it exits 0"),
+        "{adoption}"
+    );
     assert!(v["editing"].as_str().unwrap().starts_with("Editing\n"));
     assert!(v["hygiene"].as_str().unwrap().starts_with("Hygiene:"));
     assert!(v.get("errors").is_none() && v.get("glossary").is_none());
@@ -96,15 +105,16 @@ fn harness_flag_forces_a_harness() {
 }
 
 #[test]
-fn unknown_harness_flag_is_harness_unknown() {
+fn a_harness_not_in_the_table_gets_the_generic_guidance() {
+    let (generic, _) = guide(&[], &[]);
     let (v, code) = guide(&[], &["--harness", "emacs"]);
-    assert_eq!(code, Some(2));
-    assert_eq!(v["error"]["code"], "harness_unknown");
+    assert_eq!(code, Some(0));
+    assert_eq!(v["harness"], Value::Null);
+    assert_eq!(v["delegation"], generic["delegation"]);
+    let text = v["delegation"].as_str().unwrap();
     assert!(
-        v["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("claude-code")
+        text.contains("``Read `<absolute brief path>` and follow it.``"),
+        "{text}"
     );
 }
 
@@ -255,32 +265,27 @@ fn block_equals_the_block_in_the_design_record() {
     assert_eq!(&design[start..end], block());
 }
 
+/// No harness gets other guidance than one stewards does not know: the generic paragraph, plus
+/// at most one sentence naming its subagent tool.
 #[test]
-fn briefed_delegation_text_matches_facts_word_for_word() {
+fn every_harness_gets_the_generic_delegation_plus_at_most_its_tool_name() {
+    let (generic, _) = guide(&[], &[]);
+    let generic = generic["delegation"].as_str().unwrap();
     let (v, _) = guide(&[], &["--all"]);
-    let text = |name: &str| {
-        v["all_delegations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|d| d["harness"] == name)
-            .unwrap()["text"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    };
-    assert_eq!(
-        text("hermes"),
-        r#"`delegate_task(tasks=[{goal: "Read <absolute brief path> and follow it", context: "<repo path>"}])`; children run in the background by default, wait for the completion message; `role` is ignored by the source."#
-    );
-    assert_eq!(
-        text("zeroclaw"),
-        r#"`spawn_subagent{prompt: "Read <absolute brief path> and follow it"}` (same agent, fresh session, blocks; the risk profile must not exclude it), or `delegate{agent, prompt, context}` to a same-profile agent in bounded mode."#
-    );
-    assert_eq!(
-        text("borg"),
-        r#"`spawn_agent(role="coder", blocking=true, message="Read <absolute brief path> and follow it", context="<task>")`, or a fresh `borg ask` session per brief; run inside the repo workspace (`-w` or `borg acp`), because `borg ask` defaults to the daemon's cwd."#
-    );
+    for d in v["all_delegations"].as_array().unwrap() {
+        let (name, text) = (d["harness"].as_str().unwrap(), d["text"].as_str().unwrap());
+        let hint = text
+            .strip_prefix(generic)
+            .unwrap_or_else(|| panic!("{text}"));
+        let tool = hint
+            .strip_prefix(&format!(" In {name} that is the `"))
+            .and_then(|t| t.strip_suffix("` tool."));
+        assert!(
+            hint.is_empty() || tool.is_some_and(|t| !t.contains(' ')),
+            "{name}: {hint}"
+        );
+        assert!(!text.contains("render"), "{name}: {text}");
+    }
 }
 
 #[test]
@@ -300,8 +305,8 @@ fn zeroclaw_and_borg_delegation_name_their_spawn_tool() {
 fn guide_output_names_all_seven_roles() {
     let (v, _) = guide(&[], &[]);
     let roles = v["roles"].as_str().unwrap();
-    assert!(roles.contains("- reviewer:"), "{roles}");
     for role in [
+        "reviewer",
         "maintainer",
         "tester",
         "documenter",
@@ -350,4 +355,31 @@ fn upsert_replacing_a_block_keeps_crlf_and_missing_final_newline_outside_it() {
     assert!(upsert_block(&repo(dir.path())).unwrap());
     let text = std::fs::read_to_string(agents_md(dir.path())).unwrap();
     assert_eq!(text, format!("# Top\r\n{}\r\nend", block()));
+}
+
+/// stewards never starts a session: no source outside the eval driver knows a harness's command
+/// line.
+#[test]
+fn no_source_outside_the_eval_knows_a_harness_command_line() {
+    fn files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                if !p.ends_with("eval") {
+                    files(&p, out);
+                }
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let mut all = vec![];
+    files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut all);
+    assert!(all.iter().any(|p| p.ends_with("review.rs")));
+    for p in all {
+        let text = std::fs::read_to_string(&p).unwrap();
+        for flag in ["--dangerously", "--mode json", "exec --json"] {
+            assert!(!text.contains(flag), "{} mentions `{flag}`", p.display());
+        }
+    }
 }

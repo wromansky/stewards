@@ -263,6 +263,29 @@ fn explain_prints_the_explanation_truncated_and_does_not_stamp() {
 }
 
 #[test]
+fn human_submit_output_shows_each_findings_replacement() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    fs::write(dir.path().join(ANSWER), review("changes").to_string()).unwrap();
+    let args = [
+        "submit",
+        "api",
+        "--role",
+        "maintainer",
+        "--file",
+        ANSWER,
+        "--human",
+    ];
+    let out = run_in(dir.path(), home.path(), &args);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.lines()
+            .any(|l| l == "- api src/api/items.py:4: cut x; replace with y"),
+        "{text}"
+    );
+}
+
+#[test]
 fn patch_adding_an_interface_keeps_the_rest_of_the_card() {
     let (dir, home) = setup();
     assert_eq!(run(dir.path(), home.path(), &["stamp", "api"]).0, 0);
@@ -1214,4 +1237,27 @@ fn write_and_retire_writes_files_unchanged_since_they_were_recorded() {
     write_and_retire(&repo, &before, &writes, BRIEF).unwrap();
     assert_eq!(fs::read(repo.root.join(CARD)).unwrap(), b"new");
     assert!(!repo.root.join(BRIEF).exists());
+}
+
+/// Every role's accepted submit goes through `submit_file`, which writes exactly what it printed
+/// beside the brief for `stewards review` to collect; a rejected one writes none.
+#[test]
+fn an_accepted_submit_writes_what_it_printed_to_the_result_file() {
+    let result = |d: &Path| d.join(".stewards/briefs/api-maintainer.result.json");
+    for (job, answer) in [
+        (review_job as fn(&Path, &Path), review("changes")),
+        (explain_job, explain("it routes")),
+    ] {
+        let (dir, home) = setup();
+        let d = dir.path();
+        job(d, home.path());
+        let (exit, _) = submit_text(d, home.path(), "{");
+        assert_eq!(exit, 2);
+        assert!(!result(d).exists());
+        let (code, mut printed) = submit(d, home.path(), &answer);
+        assert_eq!(code, 0, "{printed}");
+        printed.as_object_mut().unwrap().remove("stewards");
+        let written: Value = serde_json::from_slice(&fs::read(result(d)).unwrap()).unwrap();
+        assert_eq!(written, printed);
+    }
 }

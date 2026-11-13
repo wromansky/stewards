@@ -8,7 +8,7 @@ The cli unit is the stewards binary itself: the part a person or an agent actual
 
 ## How it works
 
-Everything starts in src/main.rs. The Cli struct declares the four global flags, accepted before or after any subcommand, and a Command enum with one variant per subcommand. A --help or --version request prints clap's text and exits normally; any other parse failure becomes a CliError with code usage, printed as JSON unless --human is in argv, exit 2. After a good parse main builds a Global (human, repo, direct); direct is true with --direct or STEWARDS_DIRECT=1. If -C was given, main changes directory before anything else, and a directory it cannot enter is also a usage error. Then dispatch calls the run function of the owning module, parsing --role strings into a Role. The stub modules (completions, render, review, validate) are stubs returning not_implemented; init's unbuilt flags and next --pr reuse that helper. src/output.rs holds the shared pieces. emit prints a payload as enveloped JSON or, with --human, through Human::render. It never panics on a failed write: a closed pipe is dropped quietly so the command keeps its exit code, and other write errors go to stderr. Every command prints through it, including brief --stdout, which sends the brief text as a human-rendered payload. CliError carries code, message, fix and, for a failed submit, field errors serialised only when non-empty; CliError::emit prints an error: line, a fix: line and one line per field error in human form. with_note appends a note to a CliError's message, or adds context to any other error. Back in main, a CliError is emitted as is and any other error as code internal with fix 'report a bug'; both exit 2. Tests live in tests/skeleton.rs, with helpers in tests/common/mod.rs such as fixture, run and stewards.
+Everything starts in src/main.rs. The Cli struct declares the four global flags, accepted before or after any subcommand, and a Command enum with one variant per subcommand. --help or --version prints clap's text and exits normally; any other parse failure becomes a CliError with code usage, JSON unless --human is in argv, exit 2. After a good parse main builds a Global (human, repo, direct; direct also from STEWARDS_DIRECT=1), changes directory for -C (a directory it cannot enter is a usage error), and dispatch calls the owning module's run. completions, render and validate are stubs returning not_implemented; review --pr, init's unbuilt flags and next --pr reuse that helper. src/review.rs runs stewards review: it keeps --task in .stewards/briefs/review-task.txt until review is done, reads up to 20 untracked result files submit wrote, shows each as reported, not verified, and lists next's jobs with their handoffs unless a result reports findings or files are left. It removes the files only once its output is written, and exits 0 only when no job or check failure is left. src/output.rs holds the shared pieces. emit prints a payload as enveloped JSON or, with --human, through Human::render, and returns whether it was all written; a closed pipe is dropped quietly, other write errors go to stderr. CliError carries code, message, fix and, for a failed submit, field errors serialised only when non-empty. with_note appends a note to a CliError's message or adds context to any other error. A CliError from dispatch is emitted as is, any other error as code internal with fix 'report a bug'; both exit 2. Tests live in tests/skeleton.rs and tests/review.rs, with helpers in tests/common/mod.rs such as fixture, run and stewards.
 
 ## How to change it
 
@@ -18,17 +18,21 @@ To add or change a command, start in src/main.rs: add the variant and its flags 
 
 | id | contract | anchor |
 |---|---|---|
-| json-envelope | Every command prints one JSON object on stdout\: \`stewards\: {version\: CARGO\_PKG\_VERSION, schema\: 1}\` flattened with the payload's fields; with --human it prints the payload's markdown \`Human\:\:render\` instead. A closed pipe is dropped silently (exit code kept); other write errors go to stderr. | [src/output.rs\:\:emit](../../src/output.rs#L32) |
-| cli-error | A failed command prints the envelope with \`error\: {code, message, fix}\` (+ \`errors\` when non-empty) on stdout and exits 2; --human prints \`error\:\` and \`fix\:\` lines plus one line per field error. A non-CliError prints as code \`internal\`. | [src/output.rs\:\:CliError](../../src/output.rs#L54) |
-| usage-errors | Clap parse failures (missing or unknown args) and a \`-C\` dir that cannot be entered are CliError code \`usage\`, exit 2, JSON unless --human appears in argv; --help and --version print clap's text and exit normally. | [src/main.rs\:\:main](../../src/main.rs#L170) |
+| json-envelope | Every command prints one JSON object on stdout\: \`stewards\: {version, schema\: 1}\` flattened with the payload; --human prints \`Human\:\:render\` instead. A closed pipe is dropped silently, other write errors go to stderr; returns whether all was written. | [src/output.rs\:\:emit](../../src/output.rs#L33) |
+| cli-error | A failed command prints the envelope with \`error\: {code, message, fix}\` (+ \`errors\` when non-empty) on stdout and exits 2; --human prints \`error\:\` and \`fix\:\` lines plus one line per field error. A non-CliError prints as code \`internal\`. | [src/output.rs\:\:CliError](../../src/output.rs#L57) |
+| usage-errors | Clap parse failures (missing or unknown args) and a \`-C\` dir that cannot be entered are CliError code \`usage\`, exit 2, JSON unless --human appears in argv; --help and --version print clap's text and exit normally. | [src/main.rs\:\:main](../../src/main.rs#L176) |
 | global-flags | --human, --repo \<name\>, -C \<dir\> and --direct are accepted before or after any subcommand; -C changes the working directory before dispatch; --direct is also set by STEWARDS\_DIRECT=1. | [src/main.rs\:\:Cli](../../src/main.rs#L16) |
-| not-implemented | Unbuilt commands (completions, render, review, validate) parse their flags and then fail with CliError code \`not\_implemented\`, exit 2. | [src/output.rs\:\:not\_implemented](../../src/output.rs#L114) |
+| not-implemented | Unbuilt commands (completions, render, validate) and flags (review --pr, next --pr) parse and then fail with CliError code \`not\_implemented\`, exit 2. | [src/output.rs\:\:not\_implemented](../../src/output.rs#L117) |
+| review-command | \`review \[--task\] \[--roles\]\` shows up to 20 untracked result files per call as reported (not verified), removing them once output is written; lists next's jobs with handoffs unless findings or files remain; --task kept until done; exit 0 only when done, else 1. | [src/review.rs\:\:run](../../src/review.rs#L338) |
 
 ## Scenarios
 
 | id | interface | given | expect | level |
 |---|---|---|---|---|
 | emit-closed-pipe | json-envelope | \`stewards route\` with 3000 paths (JSON and --human) and \`stewards brief api --role maintainer --task \<120 KB\> --stdout\`, whose stdout reader closes after one byte | no panic on stderr, exit code 0; a broken pipe is dropped quietly | integration |
+| review-done | review-command | a repo with nothing due | stewards review prints then\: done, no jobs, exit 0 | integration |
+| review-findings-block-jobs | review-command | a result file reporting a finding | the finding is shown as reported, no jobs are listed, exit 1; after the fix the unit is listed again | integration |
+| review-removes-after-write | review-command | result files and a stdout closed before the output is written | the result files stay for the next call | integration |
 
 ## Flows
 
@@ -40,9 +44,9 @@ _None._
 |---|---|---|
 | future | completions is a stub | \`stewards completions \<shell\>\` returns not\_implemented; it already receives \`Cli\:\:command()\` for clap\_complete. |
 | future | render is a stub | \`stewards render --harness\` returns not\_implemented. |
-| future | review is a stub | \`stewards review --pr\` returns not\_implemented. |
 | future | validate is a stub | \`stewards validate\` returns not\_implemented. |
+| future | review --pr is a stub | \`stewards review --pr \<n\>\` returns not\_implemented; plain \`review\` and \`review --roles\` are built. |
 
 ## Last reviewed
 
-2d972b0896b3296afa9472532b7f9f0cf954c19e
+7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51

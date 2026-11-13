@@ -128,9 +128,9 @@ fn runs_of(records: &[RunRecord], task: u32, arm: Arm, role: RunRole) -> Vec<&Ru
         .collect()
 }
 
-/// What one `full` run of an edit task misses of the gate: the runner saw a change, `next` ran,
-/// the review brief was dispatched, a child ran the reviewer `submit`, and the runner's own
-/// `next` is clean after the session. Empty when it passes.
+/// What one `full` run of an edit task misses of the gate: the runner saw a change, a
+/// `stewards review` ran, a subagent was given a handoff, and the runner's own `next` is clean
+/// after the session. Empty when it passes.
 pub fn gate_misses(r: &RunRecord) -> Vec<&'static str> {
     let step = |s: &str| {
         r.result
@@ -141,16 +141,11 @@ pub fn gate_misses(r: &RunRecord) -> Vec<&'static str> {
     if !r.changed {
         out.push("changed nothing");
     }
-    match (step("next"), step("review_dispatched")) {
-        (false, false) => {
-            out.extend(["`stewards next` never ran", "the review was not dispatched"])
-        }
-        (false, true) => out.push("`stewards next` never ran"),
-        (true, false) => out.push("`next` ran but the review was not dispatched"),
-        (true, true) => {}
+    if !step("review") {
+        out.push("`stewards review` never ran");
     }
-    if !step("reviewer_submit") {
-        out.push("no child ran `stewards submit --role reviewer`");
+    if !step("handoff") {
+        out.push("no subagent was given a handoff");
     }
     if !step("check_green") {
         out.push("the runner's `stewards next --no-brief` did not exit 0");

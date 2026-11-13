@@ -159,3 +159,35 @@ given = "a review header listing an unstamped, unknown or repeated unit"
 expect = "no_brief"
 level = "integration"
 command = "cargo test --test review a_header_listing_an_unstamped_unknown_or_repeated_unit_is_no_brief"
+
+[[scenario]]
+id = "submit-writes-result"
+interface = "submit-file"
+given = "a maintainer review or explain job, first answered with unparseable JSON, then with a valid answer"
+expect = "the rejected submit writes no result file; the accepted one writes exactly what it printed to api-maintainer.result.json"
+level = "integration"
+command = "cargo test --test submit an_accepted_submit_writes_what_it_printed_to_the_result_file"
+
+[[scenario]]
+id = "submit-roles-write-result"
+interface = "submit-file"
+given = "accepted tester, documenter, validator and architect submits"
+expect = "each writes exactly what it printed beside its brief as <stem>.result.json"
+level = "integration"
+command = "cargo test --test submit_roles each_roles_accepted_submit_writes_what_it_printed_to_its_result_file"
+
+[[scenario]]
+id = "developer-brief-handoff"
+interface = "brief-handoff"
+given = "a developer brief run over two tasks"
+expect = "each job carries its brief_path and the handoff Read `<brief_path>` and follow it."
+level = "integration"
+command = "cargo test --test developer two_tasks_with_disjoint_lanes_give_two_briefs_with_their_task_and_lane"
+
+[[scenario]]
+id = "handoff-refuses-backtick"
+interface = "brief-handoff"
+given = "a workspace repo directory whose name holds a backtick or instruction-like text"
+expect = "a backtick is unsafe_path; other text stays inside the handoff's code span"
+level = "integration"
+command = "cargo test --test next a_workspace_repo_directory_name_cannot_steer_the_handoff"

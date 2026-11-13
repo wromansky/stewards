@@ -7,3 +7,27 @@ given = "`stewards route` with 3000 paths (JSON and --human) and `stewards brief
 expect = "no panic on stderr, exit code 0; a broken pipe is dropped quietly"
 level = "integration"
 command = "cargo test --test skeleton output_into_a_pipe_closed_early_does_not_panic"
+
+[[scenario]]
+id = "review-done"
+interface = "review-command"
+given = "a repo with nothing due"
+expect = "stewards review prints then: done, no jobs, exit 0"
+level = "integration"
+command = "cargo test --test review review_with_nothing_due_is_done_and_exits_0"
+
+[[scenario]]
+id = "review-findings-block-jobs"
+interface = "review-command"
+given = "a result file reporting a finding"
+expect = "the finding is shown as reported, no jobs are listed, exit 1; after the fix the unit is listed again"
+level = "integration"
+command = "cargo test --test review review_reports_findings_until_they_are_fixed_then_lists_the_unit_again"
+
+[[scenario]]
+id = "review-removes-after-write"
+interface = "review-command"
+given = "result files and a stdout closed before the output is written"
+expect = "the result files stay for the next call"
+level = "integration"
+command = "cargo test --test review results_are_removed_only_after_the_output_is_written"

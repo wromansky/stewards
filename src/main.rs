@@ -115,10 +115,16 @@ enum Command {
         #[arg(long)]
         export: bool,
     },
-    /// Maintainer review briefs on a PR or MR diff
+    /// Collect what the subagents submitted, then list the jobs `next` lists with their handoffs
     Review {
+        /// What you changed and why: the reviewer checks every changed line against it
         #[arg(long)]
-        pr: u64,
+        task: Option<String>,
+        /// The per-unit jobs (maintainer, tester, documenter, validator, architect) instead of one review
+        #[arg(long)]
+        roles: bool,
+        #[arg(long)]
+        pr: Option<u64>,
     },
     /// `simplified:` comments attached to units
     Debt,
@@ -263,7 +269,7 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
         } => next::run(g, task.as_deref(), no_brief, roles, no_run, pr),
         Command::Check => check::run(g),
         Command::Validate { report, export } => validate::run(g, report.as_deref(), export),
-        Command::Review { pr } => review::run(g, pr),
+        Command::Review { task, roles, pr } => review::run(g, task.as_deref(), roles, pr),
         Command::Debt => debt::run(g),
         Command::Docs { unit } => docs::run(g, unit.as_deref()),
         Command::Render {

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::anchors::{Resolution, resolve};
 use crate::brief::{self, Header};
@@ -72,7 +72,10 @@ pub struct Submitted {
     pub(crate) unit_proposals: Vec<types::UnitProposal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
-    /// A reviewer's findings, for the agent that made the change to fix.
+    /// A review's verdict per unit (the reviewer's, or a maintainer review's one unit).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    units: Vec<UnitVerdict>,
+    /// A review's findings, for the agent that made the change to fix.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     findings: Vec<ShownFinding>,
     #[serde(flatten)]
@@ -81,13 +84,62 @@ pub struct Submitted {
     pulled_anchors: Vec<String>,
 }
 
-/// A reviewer's finding as submit prints it: where, and what to cut, capped.
-#[derive(Serialize)]
-struct ShownFinding {
-    unit: String,
-    file: String,
-    line: i64,
-    cut: String,
+/// A review's finding as submit prints it: where, what to cut, and the smaller replacement, each
+/// text capped.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ShownFinding {
+    pub(crate) unit: String,
+    pub(crate) file: String,
+    pub(crate) line: i64,
+    pub(crate) cut: String,
+    pub(crate) replace_with: String,
+}
+
+impl ShownFinding {
+    fn new(unit: &str, f: &types::Finding) -> ShownFinding {
+        ShownFinding {
+            unit: unit.to_string(),
+            file: f.file.clone(),
+            line: f.line,
+            cut: f.cut.clone(),
+            replace_with: f.replace_with.clone(),
+        }
+        .capped()
+    }
+
+    /// Whether submit's own checks on a finding accept it: its file a plain path its unit owns,
+    /// each text under its cap with no hidden, control, or data-marker character.
+    pub(crate) fn passes_submit_checks(&self, root: &Path, router: &Router) -> bool {
+        let mut p = vec![];
+        check_text(&mut p, "file", &self.file, LINE_CAP, true);
+        check_owned(&mut p, "file", &self.file, root, &self.unit, router);
+        check_text(&mut p, "cut", &self.cut, PROSE_CAP, false);
+        check_text(&mut p, "replace_with", &self.replace_with, PROSE_CAP, false);
+        p.is_empty()
+    }
+
+    /// Each text on one line and cut to what submit prints.
+    pub(crate) fn capped(self) -> ShownFinding {
+        let shown = |s: &str| one_line(s).chars().take(CUT_SHOWN).collect();
+        ShownFinding {
+            unit: shown(&self.unit),
+            file: shown(&self.file),
+            cut: shown(&self.cut),
+            replace_with: shown(&self.replace_with),
+            ..self
+        }
+    }
+}
+
+/// One unit's verdict in a review's output.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct UnitVerdict {
+    pub(crate) unit: String,
+    /// `approve` or `changes`.
+    pub(crate) verdict: String,
+    pub(crate) stamped: bool,
+    /// The pass value of the `check` the answer reported; `None` with no check.
+    pub(crate) check_reported: Option<bool>,
 }
 
 /// What a developer submit computed from git, beside the summary.
@@ -119,8 +171,8 @@ impl Human for Submitted {
         out.extend(self.unit_proposals.iter().map(proposal_line));
         out.extend(self.findings.iter().map(|f| {
             one_line(&format!(
-                "- {} {}:{}: cut {}",
-                f.unit, f.file, f.line, f.cut
+                "- {} {}:{}: cut {}; replace with {}",
+                f.unit, f.file, f.line, f.cut, f.replace_with
             ))
         }));
         out.extend(self.warning.as_ref().map(|w| format!("warning: {w}")));
@@ -251,6 +303,15 @@ pub(crate) fn submit_file(
     };
     if let Err(e) = telemetry::append(repo, &record) {
         out.warning = Some(format!("telemetry not written: {e:#}"));
+    }
+    // what it prints, for `review` to report
+    let result = serde_json::to_string(&out)?;
+    if let Err(e) = repo.write(&brief::result_rel(&brief_rel), result.as_bytes()) {
+        let note = format!("result file not written: {e:#}");
+        out.warning = Some(match out.warning.take() {
+            Some(w) => format!("{w}; {note}"),
+            None => note,
+        });
     }
     Ok(out)
 }
@@ -445,6 +506,19 @@ fn maintainer(
         pulled_anchors: pulled.clone(),
         ..Default::default()
     };
+    if let Answer::MaintainerReview(a) = &answer {
+        out.units.push(UnitVerdict {
+            unit: unit.to_string(),
+            verdict: if approve { "approve" } else { "changes" }.into(),
+            stamped: approve,
+            check_reported: None,
+        });
+        out.findings = a
+            .findings
+            .iter()
+            .map(|f| ShownFinding::new(unit, f))
+            .collect();
+    }
     out.summary = match &answer {
         Answer::MaintainerReview(_) if approve => {
             let short: String = header.snapshot.chars().take(7).collect();
@@ -1227,6 +1301,7 @@ pub fn reviewer(
     let mut paged = vec![];
     let mut parts = vec![];
     let mut findings = vec![];
+    let mut verdicts = vec![];
     let short: String = header.snapshot.chars().take(7).collect();
     for (u, old, mut card, fix) in reviews {
         let unit = u.unit.as_str();
@@ -1258,12 +1333,7 @@ pub fn reviewer(
         } else {
             part.insert(0, count(u.findings.len(), "finding"));
             part.push("not stamped".into());
-            findings.extend(u.findings.iter().map(|f| ShownFinding {
-                unit: unit.to_string(),
-                file: f.file.clone(),
-                line: f.line,
-                cut: one_line(&f.cut).chars().take(CUT_SHOWN).collect(),
-            }));
+            findings.extend(u.findings.iter().map(|f| ShownFinding::new(unit, f)));
         }
         let card_text = toml::to_string(&card)?;
         if card_text != toml::to_string(&old)? {
@@ -1283,6 +1353,12 @@ pub fn reviewer(
         } else {
             "changes"
         };
+        verdicts.push(UnitVerdict {
+            unit: unit.to_string(),
+            verdict: verdict.into(),
+            stamped: u.verdict == Verdict::Approve,
+            check_reported: u.check.as_ref().map(|c| c.pass),
+        });
         parts.push(format!("{unit} {verdict} ({})", part.join("; ")));
         fresh.cards.insert(unit.to_string(), card);
     }
@@ -1302,6 +1378,7 @@ pub fn reviewer(
     write_remove_and_retire(repo, before, &checked, &edits, &brief_rel)?;
     Ok(Submitted {
         summary: one_line(&format!("reviewer: {}", parts.join(", "))),
+        units: verdicts,
         findings,
         pulled_anchors: a.pulled_anchors,
         ..Default::default()

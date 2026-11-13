@@ -1,11 +1,11 @@
 unit = "eval"
 
 [reviewed]
-commit = "2d972b0896b3296afa9472532b7f9f0cf954c19e"
-fingerprint = "sha256:c819462ce9f4c19a403dca46e7f98985f1fdd04fc03932b70275d420af730870"
-tree = "a51d26de8be8f823771500c48305f444fd697fd9"
-tester = "a51d26de8be8f823771500c48305f444fd697fd9"
-documenter = "a51d26de8be8f823771500c48305f444fd697fd9"
+commit = "7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51"
+fingerprint = "sha256:f56e732091bb062f2ae93f096a91e446742f9db959cf01507ae525cabaf4f98a"
+tree = "cdbd17c852acedf786fd6f4d4bdcfcb068fc8105"
+tester = "cdbd17c852acedf786fd6f4d4bdcfcb068fc8105"
+documenter = "cdbd17c852acedf786fd6f4d4bdcfcb068fc8105"
 
 [[interface]]
 id = "eval_run"
@@ -45,7 +45,7 @@ contract = "A compared run not ok, without transcript, or never started makes th
 [[interface]]
 id = "gate_misses"
 anchor = "src/eval/grade.rs::gate_misses"
-contract = "What one full run of an edit task misses: changed, next ran, review brief dispatched, a child ran submit --role reviewer, and the runner's next --no-brief exited 0. Empty when it passes."
+contract = "What one full run of an edit task misses: changed, a `stewards review` ran, a subagent was given a handoff, and the runner's next --no-brief exited 0. Empty when it passes."
 
 [[interface]]
 id = "suite_verdict"
@@ -55,7 +55,7 @@ contract = "Fail when any task fails, else incomplete when any task is or there 
 [[interface]]
 id = "ritual_steps"
 anchor = "src/eval/mod.rs::ritual_steps"
-contract = "From actions: status/route/next are stewards commands in any session; review_dispatched is a dispatch naming .stewards/briefs/review.md; reviewer_submit is a child's submit --role reviewer; check_green left false for the runner."
+contract = "From actions: status/route/next/review are stewards commands in any session; handoff is a subagent launch holding a handoff (is_handoff) of a brief; handoff_exact that every such launch gives each child exactly a handoff; reviewer_submit is a child's submit --role reviewer; check_green left false."
 
 [[interface]]
 id = "stewards_commands"
@@ -210,6 +210,14 @@ name = "summarize"
 path = "src/eval/grade.rs"
 name = "render"
 
+[[anchor]]
+path = "src/eval/mod.rs"
+name = "is_handoff"
+
+[[anchor]]
+path = "src/eval/mod.rs"
+name = "holds_handoff"
+
 [[gap]]
 kind = "gap"
 title = "Ritual steps are best-effort from transcripts"
@@ -242,5 +250,5 @@ note = "Uses /proc/<pid>/cwd; without /proc nothing is killed and leftovers is N
 
 [doc]
 overview = "The eval unit is the runner behind `stewards eval`. It measures whether coding agents do better with stewards than without: it drives a harness (only Pi today) over a suite of tasks in several arms, parses every session transcript into a run record, checks that the full arm followed the ritual, and reports cost and token overhead. It also holds the material it runs on under evals/: the small three-language fixture, the task prompts, the suite manifests, arms.sh, and one reproduction per seeded bug."
-how_it_works = "run (src/eval/mod.rs) accepts only the pi harness, picks the arms (bare, block-only and full by default; full-no-developers with --no-developers), loads the suite manifest from evals/suites/<name>.toml (suite.rs, load) and checks the task numbers. A fixture suite copies evals/fixture; a repo suite clones the stewards repo at a pinned commit and builds it once. pi.rs finds pi and writes an isolated Pi agent dir with only pi-subagents, so the user's own Pi setup is never touched. execute then prepares the full arm once: for a fixture it runs arms.sh full, sets the hand-written units, and runs one adoption session with ADOPT_PROMPT; with --setup-dir it uses an already adopted copy; a repo suite is already adopted. Adoption must leave the fixture's code unchanged, every tracked file owned and `stewards next` clean, else eval_setup_incomplete. Each task then runs, per run, in every arm in a fresh copy; bare and block-only sessions get a PATH with stewards hidden. The Driver starts a session in a fresh environment and parses its transcript (pi.rs, parse) into a Run: tokens, cost, files opened, stewards commands and reviewer submits. After each session the runner runs `stewards next --no-brief` and kills leftover processes. grade.rs grades each task: an edit task passes only when every full run has no gate misses (it changed files, ran next, dispatched the review brief, a child submitted as reviewer, and next exits 0); overhead ratios are reported but never change the verdict. Results go to evals/results/<timestamp>/ as runs/*.json, summary.json and summary.md; a session that would pass --max-cost is not started."
-how_to_change = "Start in src/eval/mod.rs for the command, the plan and the per-session loop; pi.rs for anything about Pi or its transcripts; grade.rs for verdicts and the report; suite.rs for manifest fields. Tests live in tests/eval.rs, with recorded Pi transcripts under tests/fixtures/transcripts/; add a transcript there when the parser must read a new shape. Keep true what the contracts promise: never write the user's Pi agent dir; bare and block-only arms never see stewards on PATH; a full arm that did not finish adoption is an error, not a quiet pass; overhead ratios stay report-only; the first session always runs under --max-cost. The transcript readers (stewards_commands, shell_reads) are best-effort, see the card's gaps before trusting a ritual miss. A new suite is a TOML file under evals/suites/ plus its task prompts; a new harness needs a Driver and its entry in src/harness.rs."
+how_it_works = "run (src/eval/mod.rs) accepts only the pi harness, picks the arms (bare, block-only and full by default; full-no-developers with --no-developers), loads the suite manifest from evals/suites/<name>.toml (suite.rs, load) and checks the task numbers. A fixture suite copies evals/fixture; a repo suite clones the stewards repo at a pinned commit and builds it once. pi.rs finds pi and writes an isolated Pi agent dir with only pi-subagents, so the user's own Pi setup is never touched. execute then prepares the full arm once: for a fixture it runs arms.sh full, sets the hand-written units, and runs one adoption session with ADOPT_PROMPT (init --draft, one subagent per printed handoff, then review --roles until it exits 0); with --setup-dir it uses an already adopted copy; a repo suite is already adopted. Adoption must leave the fixture's code unchanged, every tracked file owned and `stewards next` clean, else eval_setup_incomplete. Each task then runs, per run, in every arm in a fresh copy; bare and block-only sessions get a PATH with stewards hidden. The Driver starts a session in a fresh environment and parses its transcript (pi.rs, parse) into a Run: tokens, cost, files opened, stewards commands, subagent launches and their tasks, and reviewer submits. After each session the runner runs `stewards next --no-brief` and kills leftover processes. grade.rs grades each task: an edit task passes only when every full run has no gate misses (it changed files, ran `stewards review`, gave a subagent a handoff, and next exits 0); status, route, next, handoff_exact and reviewer_submit are recorded, not gated, and overhead ratios are reported but never change the verdict. Results go to evals/results/<timestamp>/ as runs/*.json, summary.json and summary.md; a session that would pass --max-cost is not started."
+how_to_change = "Start in src/eval/mod.rs for the command, the plan and the per-session loop; pi.rs for anything about Pi or its transcripts; grade.rs for verdicts and the report; suite.rs for manifest fields. Tests live in tests/eval.rs, with recorded Pi transcripts under tests/fixtures/transcripts/; add a transcript there when the parser must read a new shape. Keep true what the contracts promise: never write the user's Pi agent dir; bare and block-only arms never see stewards on PATH; a full arm that did not finish adoption is an error, not a quiet pass; overhead ratios stay report-only; the first session always runs under --max-cost; is_handoff must accept exactly what brief::handoff prints. The transcript readers (stewards_commands, shell_reads) are best-effort, see the card's gaps before trusting a ritual miss. A new suite is a TOML file under evals/suites/ plus its task prompts; a new harness needs a Driver and its entry in src/harness.rs."

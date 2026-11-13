@@ -12,6 +12,7 @@ baml = "=0.226.3"
 baml-sys = "=0.226.3"
 clap = { version = "4.6.7", features = ["derive"] }
 globset = "0.4.21"
+libc = "0.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 serde_path_to_error = "0.1.20"

@@ -1,11 +1,11 @@
 unit = "next"
 
 [reviewed]
-commit = "2d972b0896b3296afa9472532b7f9f0cf954c19e"
-fingerprint = "sha256:00c526865cbe03cc057d6df328deee8597fc3b1ed50acc8b7fa99b1df6d9c9c3"
-tree = "7ad294bf697961f7f7a6e47bdf35028d4ca7e56c"
-tester = "7ad294bf697961f7f7a6e47bdf35028d4ca7e56c"
-documenter = "7ad294bf697961f7f7a6e47bdf35028d4ca7e56c"
+commit = "7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51"
+fingerprint = "sha256:da51898685a6d057d7bf35f16f218fad12ec83f7867f97a0bb3ab295d2211814"
+tree = "c211008023832e0ac72e06684bffbef57914fd42"
+tester = "c211008023832e0ac72e06684bffbef57914fd42"
+documenter = "c211008023832e0ac72e06684bffbef57914fd42"
 
 [[interface]]
 id = "next"
@@ -15,7 +15,7 @@ contract = "Roles: maintainer if stale/unreviewed; stamped only: tester (interfa
 [[interface]]
 id = "next_run"
 anchor = "src/next.rs::run"
-contract = "`stewards next`: lists the reviewer job and first reviews, or with --roles every per-role job; `--pr` is not implemented; writes briefs unless --no-brief; exits 0 only when there are no jobs and no check failures, else 1."
+contract = "`stewards next`: lists the reviewer job and first reviews, or with --roles every per-role job; `--pr` is not implemented; writes briefs unless --no-brief, each listed with its one-sentence handoff; exits 0 only when there are no jobs and no check failures, else 1."
 
 [[interface]]
 id = "status"
@@ -79,6 +79,10 @@ name = "reviewer_job"
 [[anchor]]
 path = "src/next.rs"
 name = "needs_docs"
+
+[[anchor]]
+path = "src/next.rs"
+name = "Briefs"
 
 [[gap]]
 kind = "future"

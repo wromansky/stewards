@@ -28,6 +28,14 @@ command = "cargo test --test init the_repo_name_is_the_origin_url_last_segment_w
 id = "init-draft-ends-with-next-roles"
 interface = "init-draft"
 given = "a fresh git repo with two source dirs, run `init --draft`"
-expect = "jobs are the architect job and a maintainer first review per unit, and `then` names `stewards next --roles`"
+expect = "jobs are the architect job and a maintainer first review per unit, each with handoff ``Read `<brief path>` and follow it.``, and `then` ends with `run stewards review --roles until it exits 0`"
 level = "integration"
 command = "cargo test --test init_draft draft_on_a_fresh_repo_writes_step_1_and_the_architect_and_first_review_briefs"
+
+[[scenario]]
+id = "guide-unknown-harness-is-generic"
+interface = "guide"
+given = "`guide --harness emacs` (a name not in the harness table)"
+expect = "exit 0, harness null, and the same delegation text as with no harness detected"
+level = "integration"
+command = "cargo test --test guide a_harness_not_in_the_table_gets_the_generic_guidance"

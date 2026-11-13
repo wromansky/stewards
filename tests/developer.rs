@@ -146,7 +146,8 @@ fn two_tasks_with_disjoint_lanes_give_two_briefs_with_their_task_and_lane() {
         let path = root.join(format!(".stewards/briefs/api-developer-{n}.md"));
         assert_eq!(
             v["jobs"][n - 1],
-            json!({"task": n, "title": title, "brief_path": path})
+            json!({"task": n, "title": title, "brief_path": path,
+                   "handoff": format!("Read `{}` and follow it.", path.display())})
         );
         let h = read_header(&path).unwrap();
         assert_eq!((h.n, h.lane), (Some(n), Some(vec![lane.to_string()])));
@@ -402,6 +403,14 @@ fn blocked_on_is_printed_and_the_summary_says_blocked() {
         v["summary"],
         "api developer 1: blocked: need src/store/db.py for the column"
     );
+    // what it printed, for `review` to report, blocked_on and out_of_lane included
+    let mut printed = v.clone();
+    printed.as_object_mut().unwrap().remove("stewards");
+    let result = dir
+        .path()
+        .join(".stewards/briefs/api-developer-1.result.json");
+    let written: Value = serde_json::from_slice(&std::fs::read(result).unwrap()).unwrap();
+    assert_eq!(written, printed);
 }
 
 #[test]

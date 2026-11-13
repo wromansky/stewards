@@ -459,9 +459,21 @@ fn printed_submit_command_does_not_run_a_command_substitution_in_the_path() {
     printed_submit_runs_in("x$(touch pwned)");
 }
 
+/// A backtick could end the handoff's code span, so such a path gets no brief at all.
 #[test]
-fn printed_submit_command_does_not_run_backticks_in_the_path() {
-    printed_submit_runs_in("x`touch pwned`");
+fn a_repo_path_with_a_backtick_gets_no_brief() {
+    let tmp = TempDir::new().unwrap();
+    let root = single_at(&tmp, "x`touch pwned`");
+    assert_unsafe(&root, &["brief", "api", "--role", "maintainer"]);
+    assert!(!root.join(".stewards/briefs").exists());
+}
+
+#[test]
+fn a_repo_path_with_an_invisible_character_gets_no_brief() {
+    let tmp = TempDir::new().unwrap();
+    let root = single_at(&tmp, "x\u{202E}gnp.exe");
+    assert_unsafe(&root, &["brief", "api", "--role", "maintainer"]);
+    assert!(!root.join(".stewards/briefs").exists());
 }
 
 #[test]

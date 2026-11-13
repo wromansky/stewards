@@ -573,7 +573,9 @@ fn propose(repo: &Repo) -> Result<Init> {
 }
 
 /// How adoption finishes: the per-role flow, so each unit's first docs come from its documenter.
-const THEN: &str = "after these jobs, run `stewards next --roles` and dispatch every brief it writes until it lists no jobs";
+const THEN: &str = "start one subagent per job's handoff, giving it exactly that sentence as its whole task; when they have finished, run `stewards review --roles` until it exits 0";
+/// With `--direct`, which submitted these jobs.
+const THEN_DIRECT: &str = "run `stewards review --roles` until it exits 0";
 
 #[derive(Serialize)]
 struct Draft {
@@ -593,6 +595,11 @@ impl Human for Draft {
         for j in &self.jobs {
             let who = format!("{} {}", j.unit, j.role.as_str());
             out.push(format!("- `{}`: {}", who.trim(), j.reasons.join("; ")));
+            out.extend(
+                j.handoff
+                    .as_ref()
+                    .map(|h| format!("  handoff: {}", one_line(h))),
+            );
         }
         out.extend(self.submitted.iter().map(Submitted::render));
         out.push(format!("\nThen: {}.", self.then));
@@ -657,6 +664,8 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         reasons: vec!["init --draft".into()],
         changed: vec![],
         brief_path: None,
+        handoff: None,
+        waiting: false,
         command: if is_workspace {
             format!(
                 "stewards --repo {} brief --role architect --task '{ARCHITECT_TASK}'",
@@ -668,7 +677,7 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         debt_added: vec![],
     }];
     jobs.extend(
-        next::next(&ws, None, false, true)?
+        next::next(&ws, None, next::Briefs::None, true)?
             .jobs
             .into_iter()
             .filter(|j| j.role == Role::Maintainer && j.reasons == ["never reviewed"])
@@ -703,6 +712,7 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         for j in &mut jobs {
             let unit = unit_of(j);
             let (path, _) = brief::write(repo, unit, j.role, Mode::Review, &j.task, &j.snapshot)?;
+            j.handoff = Some(brief::handoff(&path)?);
             j.brief_path = Some(path);
         }
     }
@@ -710,7 +720,7 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         &Draft {
             init,
             jobs,
-            then: THEN,
+            then: if g.direct { THEN_DIRECT } else { THEN },
             submitted,
         },
         g.human,

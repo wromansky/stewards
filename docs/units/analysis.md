@@ -23,9 +23,9 @@ Start from the contract row for the function you touch (route-owner, route-overl
 | route-command | \`stewards route \<paths\>\` maps each path to its owning unit (repo-prefixed in a workspace) or null. Outside every repo\: path\_outside\_repo. Uninitialized sibling repo in a workspace owns nothing; a lone uninitialized repo errors. | [src/route.rs\:\:run](../../src/route.rs#L160) |
 | anchor-resolve | resolve\: first case-sensitive whole-word match of name -\> Found{line} (1-based); no match or empty name -\> DeadName; absolute, ./.. components, symlinked or unreadable path -\> DeadPath. Invalid UTF-8 never panics. | [src/anchors.rs\:\:resolve](../../src/anchors.rs#L143) |
 | anchor-source-window | source\_window(root, anchor, before, after) returns the matched line plus \`before\` lines above and \`after\` below, clamped to the file; None for a dead anchor. | [src/anchors.rs\:\:source\_window](../../src/anchors.rs#L154) |
-| check-fingerprint | fingerprint(tree, unit, router) is \`sha256\:\<hex\>\` over the sorted \`path blob\` lines of the files the unit owns (not merely matches) in the snapshot; is\_stale is true with no \[reviewed\] or a differing fingerprint. | [src/check.rs\:\:fingerprint](../../src/check.rs#L44) |
+| check-fingerprint | fingerprint(tree, unit, router) is \`sha256\:\<hex\>\` over the sorted \`path blob\` lines of the files the unit owns (not merely matches) in the snapshot; is\_stale is true with no \[reviewed\] or a differing fingerprint. | [src/check.rs\:\:fingerprint](../../src/check.rs#L57) |
 | check-stamp | stamp writes \[reviewed\] {commit, fingerprint, tree, tester, documenter} to the unit's card, creating it if missing and keeping the rest; unmarked roles take the old stamp's tree; no commits -\> empty commit; unknown unit errors. | [src/check.rs\:\:stamp](../../src/check.rs#L1) |
-| check-report | check fails on unreviewed, stale, dead\_anchor (outside snapshot or unresolved), unknown\_interface; warns overlap, one anchorless uncovered\_interface per unit and one unowned (each\: 10 sorted + count). A unit filter drops overlap/unowned. \`stewards check\` exits 1 on failures. | [src/check.rs\:\:check\_at](../../src/check.rs#L174) |
+| check-report | check fails on unreviewed, stale, dead\_anchor (outside snapshot or unresolved), unknown\_interface; warns overlap, one anchorless uncovered\_interface per unit and one unowned (each\: 10 sorted + count). A unit filter drops overlap/unowned. \`stewards check\` exits 1 on failures. | [src/check.rs\:\:check\_at](../../src/check.rs#L187) |
 | debt-scan | scan(repo) returns \`simplified\:\` debt lines (case-insensitive, a comment marker \# // -- ; /\* \* \<\!-- earlier on the line) of tracked regular, non-binary files outside .stewards/, keyed by owning unit (None = unowned); tracked-but-deleted files are skipped. \`stewards debt\` prints them per unit. | [src/debt.rs\:\:scan](../../src/debt.rs#L32) |
 | anchor-interface-lines | interface\_lines(text, name)\: sorted 1-based lines of the blocks around each whole-word name (a\:\:b / a.b also matches b)\: down to a dedented line after a blank with brackets closed; up the contiguous run plus one detached doc/attribute run. Empty when absent. | [src/anchors.rs\:\:interface\_lines](../../src/anchors.rs#L71) |
 
@@ -54,4 +54,4 @@ Start from the contract row for the function you touch (route-owner, route-overl
 
 ## Last reviewed
 
-8dba1769c1ed3a9c0ecb3808e5e21f7055caae78
+7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51

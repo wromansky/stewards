@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::check::{invisible, one_line};
+use crate::check::{escape_invisible, invisible, one_line};
 use crate::git;
 use crate::guide;
 use crate::llm::{self, Mode};
@@ -80,18 +80,26 @@ pub fn answer_rel(brief_rel: &str) -> String {
     format!("{stem}.answer.json")
 }
 
+/// The file `submit` writes what it printed to, beside the brief `brief_rel`:
+/// `<stem>.result.json`; `review` reads and removes it.
+pub fn result_rel(brief_rel: &str) -> String {
+    let stem = brief_rel.strip_suffix(".md").expect("a brief is .md");
+    format!("{stem}.result.json")
+}
+
+/// The one sentence a subagent is given for the brief at absolute `path`, the same for every
+/// role and every command that writes a brief: the path in a single-backtick code span, which
+/// `check_root` keeps whole (no backtick, line break, or hidden character can end or hide it).
+pub fn handoff(path: &Path) -> Result<String> {
+    check_root(path)?;
+    Ok(format!("Read `{}` and follow it.", path.display()))
+}
+
 /// Pack and memory text cannot open or close a DATA section or hide text: each invisible
 /// character is shown as `\u{XXXX}`, then every character of a run of three or more `<` or `>`
 /// is backslash-escaped, so only the tool's own marker lines read `<<<DATA` or `DATA>>>`.
 fn data(text: &str) -> String {
-    let mut shown = String::with_capacity(text.len());
-    for c in text.chars() {
-        if invisible(c) {
-            shown += &format!("\\u{{{:04X}}}", c as u32);
-        } else {
-            shown.push(c);
-        }
-    }
+    let shown = escape_invisible(text);
     let chars: Vec<char> = shown.chars().collect();
     let mut out = String::with_capacity(shown.len());
     let mut i = 0;
@@ -119,15 +127,18 @@ pub(crate) fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
 
-/// `unsafe_path` when the repo root has a control character or a line or paragraph separator: a
-/// line break there would put free text among a brief's instructions.
+/// `unsafe_path` when the repo root has a backtick, a control character, a line or paragraph
+/// separator, or an `invisible` character: each could end the handoff's code span, put free
+/// text among a brief's instructions, or hide it.
 pub(crate) fn check_root(root: &Path) -> Result<()> {
-    let breaks = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
-    if root.to_string_lossy().chars().any(breaks) {
+    let bad = |c: char| c == '`' || c.is_control() || invisible(c);
+    if root.to_string_lossy().chars().any(bad) {
         bail!(CliError::new(
             "unsafe_path",
-            format!("the repository path {root:?} contains a control or line separator character"),
-            "move the repository to a path without control or line separator characters",
+            format!(
+                "the repository path {root:?} contains a backtick, a control or line separator character, or an invisible character"
+            ),
+            "move or rename the directory so its path has none of these characters",
         ));
     }
     Ok(())
@@ -378,11 +389,27 @@ pub fn write(
 struct Written {
     path: PathBuf,
     bytes: usize,
+    handoff: String,
+}
+
+impl Written {
+    fn new(path: PathBuf, bytes: usize) -> Result<Written> {
+        Ok(Written {
+            handoff: handoff(&path)?,
+            path,
+            bytes,
+        })
+    }
 }
 
 impl Human for Written {
     fn render(&self) -> String {
-        format!("Wrote `{}` ({} bytes).", self.path.display(), self.bytes)
+        format!(
+            "Wrote `{}` ({} bytes).\nHandoff: {}",
+            self.path.display(),
+            self.bytes,
+            one_line(&self.handoff)
+        )
     }
 }
 
@@ -407,6 +434,7 @@ struct Job {
     task: usize,
     title: String,
     brief_path: PathBuf,
+    handoff: String,
 }
 
 impl Human for Jobs {
@@ -416,10 +444,11 @@ impl Human for Jobs {
             .iter()
             .map(|j| {
                 format!(
-                    "Wrote `{}` (task {}: {}).",
+                    "Wrote `{}` (task {}: {}).\nHandoff: {}",
                     j.brief_path.display(),
                     j.task,
-                    one_line(&j.title)
+                    one_line(&j.title),
+                    one_line(&j.handoff)
                 )
             })
             .collect();
@@ -468,10 +497,12 @@ fn developer(
         let rel = rel_path(Some(unit), Role::Developer, Some(i + 1));
         repo.write(&rel, text.as_bytes())?;
         repo.remove(&answer_rel(&rel))?;
+        let brief_path = repo.root.join(rel);
         jobs.push(Job {
             task: i + 1,
             title: t.title.clone(),
-            brief_path: repo.root.join(rel),
+            handoff: handoff(&brief_path)?,
+            brief_path,
         });
     }
     for rel in developer_files_past(&repo.root, unit, tasks.len())? {
@@ -540,7 +571,7 @@ pub fn run(
         return Ok(ExitCode::SUCCESS);
     }
     let (path, bytes) = write(repo, unit, role, mode, &task, &snapshot)?;
-    emit(&Written { path, bytes }, g.human);
+    emit(&Written::new(path, bytes)?, g.human);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -574,6 +605,6 @@ fn reviewer(
     }
     let bytes = text.len();
     let path = write_text(repo, None, Role::Reviewer, &text)?;
-    emit(&Written { path, bytes }, g.human);
+    emit(&Written::new(path, bytes)?, g.human);
     Ok(ExitCode::SUCCESS)
 }

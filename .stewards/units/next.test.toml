@@ -47,3 +47,11 @@ given = "api stamped and changed, store never stamped; plain `next --no-brief`"
 expect = "jobs are the reviewer job then store maintainer; exit 1"
 level = "integration"
 command = "cargo test --test review a_never_stamped_unit_keeps_its_maintainer_job_beside_the_review"
+
+[[scenario]]
+id = "a-written-brief-carries-a-safe-handoff"
+interface = "next_run"
+given = "workspace whose repo directory name is prose that reads like an instruction, or contains a backtick; briefs written with --roles"
+expect = "job handoff is exactly 'Read `<brief_path>` and follow it.' with two backticks; a backtick in the path is refused with error unsafe_path, exit 2"
+level = "integration"
+command = "cargo test --test next a_workspace_repo_directory_name_cannot_steer_the_handoff"

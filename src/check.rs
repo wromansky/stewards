@@ -41,6 +41,19 @@ pub fn invisible(c: char) -> bool {
         | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{E0000}'..='\u{E007F}')
 }
 
+/// `text` with each `invisible` character shown as `\u{XXXX}`.
+pub fn escape_invisible(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    for c in text.chars() {
+        if invisible(c) {
+            shown += &format!("\\u{{{:04X}}}", c as u32);
+        } else {
+            shown.push(c);
+        }
+    }
+    shown
+}
+
 /// True when the unit has no `[reviewed]`, or its fingerprint differs from `current`.
 pub fn is_stale(reviewed: Option<&Reviewed>, current: &str) -> bool {
     reviewed.is_none_or(|r| r.fingerprint != current)

@@ -825,3 +825,35 @@ fn a_unit_alone_over_the_budget_drops_its_doc_and_scenarios_to_fit() {
     assert!(!text.contains("## Scenarios") && !text.contains("### Overview"));
     assert!(text.contains("not in this review: store"));
 }
+
+#[test]
+fn a_unit_still_over_the_budget_has_its_fenced_bodies_cut_and_says_so_once() {
+    let dir = fixture("single");
+    let d = dir.path();
+    let units = fs::read_to_string(d.join(".stewards/units.toml")).unwrap();
+    let purpose = units
+        .lines()
+        .find(|l| l.starts_with("purpose = "))
+        .unwrap()
+        .to_string();
+    edit(
+        &d.join(".stewards/units.toml"),
+        &purpose,
+        &format!("purpose = \"{}\"", "word ".repeat(12_000)),
+    );
+    stamp_units(d, &["api", "store"]);
+    append(&d.join("src/api/items.py"), "\n# more\n");
+    review_job(d);
+    let h = read_header(&d.join(BRIEF)).unwrap();
+    assert!(h.bytes <= REVIEW_BUDGET, "{}", h.bytes);
+    let text = fs::read_to_string(d.join(BRIEF)).unwrap();
+    assert_eq!(text.matches("fenced bodies cut to ").count(), 1, "{text}");
+    let left_out = text
+        .lines()
+        .find(|l| l.contains("Left out to fit: "))
+        .unwrap();
+    assert!(
+        !left_out.contains("; ;") && !left_out.trim_end().ends_with(';'),
+        "{left_out}"
+    );
+}

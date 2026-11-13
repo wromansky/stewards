@@ -436,9 +436,7 @@ fn assemble(
         );
     }
     // `review` fits the review pack's units together
-    if role == Role::Reviewer {
-        p.bytes = p.render().len();
-    } else {
+    if role != Role::Reviewer {
         p.fit(budget);
     }
     Ok(p)
@@ -892,8 +890,8 @@ impl Pack {
             self.dropped.push("scenarios".into());
         }
         if !fits(self) {
-            let mut cap = self.bodies().map(|b| b.len()).max().unwrap_or(0);
-            self.dropped.push(String::new());
+            let start = self.bodies().map(|b| b.len()).max().unwrap_or(0);
+            let mut cap = start;
             while !fits(self) && cap > 0 {
                 cap /= 2;
                 for body in self.bodies() {
@@ -903,8 +901,10 @@ impl Pack {
                     }
                     body.truncate(end);
                 }
-                *self.dropped.last_mut().expect("pushed above") =
-                    format!("fenced bodies cut to {cap} bytes");
+            }
+            if cap < start {
+                self.dropped
+                    .push(format!("fenced bodies cut to {cap} bytes"));
             }
         }
         self.bytes = self.render().len();

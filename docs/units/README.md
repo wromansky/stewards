@@ -13,6 +13,7 @@
 - [llm](llm.md): Role prompts and answer schemas\: baml\_src is their one source, rendered into src/llm\_schema; answer parsing through the generated types, and direct model calls.
 - [jobs](jobs.md): The brief/submit job cycle\: renders and writes a role's brief with its header, validates the typed answer against it, writes the updates and retires the brief, and appends telemetry.
 - [setup](setup.md): Onboarding and generated files\: init proposes units and writes .stewards, the guide and AGENTS.md block, the per-harness facts table, and docs rendering from unit cards.
+- [eval](eval.md): The eval runner\: suites and their manifests, arm setup, the Pi driver and transcript parser, the ritual gate and overhead report, and the fixture, tasks and seeded-bug repros it runs on.
 
 ## Flows
 

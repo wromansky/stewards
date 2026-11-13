@@ -74,15 +74,7 @@ pub fn next(
         } in role_jobs
         {
             if write_briefs {
-                let (path, _) = brief::write(
-                    repo,
-                    unit.as_deref(),
-                    job.role,
-                    Mode::Review,
-                    &job.task,
-                    &job.snapshot,
-                )?;
-                job.brief_path = Some(path);
+                write_role_brief(repo, unit.as_deref(), &mut job)?;
             }
             jobs.push(job);
         }
@@ -105,16 +97,7 @@ pub fn next(
                 if j.job.role == Role::Maintainer && j.job.reasons == [NEVER_REVIEWED] {
                     let mut job = j.job.clone();
                     if write_briefs {
-                        let unit = j.unit.as_deref();
-                        let (path, _) = brief::write(
-                            repo,
-                            unit,
-                            job.role,
-                            Mode::Review,
-                            &job.task,
-                            &job.snapshot,
-                        )?;
-                        job.brief_path = Some(path);
+                        write_role_brief(repo, j.unit.as_deref(), &mut job)?;
                     }
                     first_reviews.push(job);
                 }
@@ -128,6 +111,12 @@ pub fn next(
         flow_checks: vec![],
         check: check_at(ws, None, &snapshots)?,
     })
+}
+
+fn write_role_brief(repo: &Repo, unit: Option<&str>, job: &mut Job) -> Result<()> {
+    let (path, _) = brief::write(repo, unit, job.role, Mode::Review, &job.task, &job.snapshot)?;
+    job.brief_path = Some(path);
+    Ok(())
 }
 
 const NEVER_REVIEWED: &str = "never reviewed";

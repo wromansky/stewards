@@ -111,3 +111,51 @@ given = "a maintainer brief built for a unit"
 expect = "after the schema and answer path, the brief says a field over its stated cap is rejected and to stay under it"
 level = "integration"
 command = "cargo test --test brief sections_appear_in_frame_order"
+
+[[scenario]]
+id = "review-brief-carries-each-unit"
+interface = "review-brief"
+given = "two stamped units whose interfaces both changed"
+expect = "one review.md brief showing each unit's hunks, card, scenarios, test command and doc"
+level = "integration"
+command = "cargo test --test review review_brief_carries_each_units_hunks_card_scenarios_test_command_and_doc"
+
+[[scenario]]
+id = "review-budget-next-round"
+interface = "review-brief"
+given = "due units past the review budget"
+expect = "the units that fit are covered, the rest named as next round and still due"
+level = "integration"
+command = "cargo test --test review units_past_the_review_budget_are_next_round_and_stay_due"
+
+[[scenario]]
+id = "review-approve-stamps"
+interface = "review-submit"
+given = "a reviewer answer approving every unit"
+expect = "each unit is stamped with tester and documenter marks set, and next lists nothing"
+level = "integration"
+command = "cargo test --test review approving_every_unit_stamps_it_and_sets_both_marks_so_neither_next_lists_anything"
+
+[[scenario]]
+id = "review-changes-fix-task"
+interface = "review-submit"
+given = "changes on one unit and approve on the other"
+expect = "the approved unit is stamped; the other gets its fix task and no stamp"
+level = "integration"
+command = "cargo test --test review changes_on_one_unit_stamps_the_other_and_writes_its_fix_task"
+
+[[scenario]]
+id = "review-older-brief"
+interface = "review-submit"
+given = "an answer whose snapshot is not the brief's"
+expect = "no_brief and nothing written"
+level = "integration"
+command = "cargo test --test review an_answer_to_an_older_review_brief_is_no_brief_and_writes_nothing"
+
+[[scenario]]
+id = "review-header-units"
+interface = "submit-file"
+given = "a review header listing an unstamped, unknown or repeated unit"
+expect = "no_brief"
+level = "integration"
+command = "cargo test --test review a_header_listing_an_unstamped_unknown_or_repeated_unit_is_no_brief"

@@ -18,10 +18,10 @@ Start from the file for the command: src/init.rs for proposing units and draft j
 
 | id | contract | anchor |
 |---|---|---|
-| init | Plain \`init\` refuses (already\_initialized) if units.toml or repo.toml exists; else proposes units from manifest roots, source dirs and co-change history, writes both files, appends missing .gitignore lines, upserts the AGENTS.md block, and reports units, unowned files and paths written. | [src/init.rs\:\:propose](../../src/init.rs#L1) |
-| init-draft | \`init --draft\` runs step 1 only on an uninitialized repo, then briefs the architect naming job and a first review per never-reviewed unit; with --direct it checks every model guard first, then calls and submits each job, and a failure reports how many were already submitted. | [src/init.rs\:\:draft\_jobs](../../src/init.rs#L429) |
+| init | Plain \`init\` refuses (already\_initialized) if units.toml or repo.toml exists; else proposes units, writes both files (repo name\: origin URL's last segment sans .git, else dir name), appends missing .gitignore lines (slashes at either end ignored), upserts the AGENTS.md block, and reports. | [src/init.rs\:\:propose](../../src/init.rs#L1) |
+| init-draft | \`init --draft\` runs step 1 only on an uninitialized repo, briefs the architect naming job and a first review per never-reviewed unit, and ends telling to run \`next --roles\`; with --direct it checks every model guard first, then calls and submits each job; a failure reports how many were submitted. | [src/init.rs\:\:draft\_jobs](../../src/init.rs#L429) |
 | init-hooks-ci | \`init --hooks\` and \`init --ci\` return not\_implemented. | [src/init.rs\:\:not\_implemented](../../src/init.rs#L14) |
-| agents-block | Writes the stewards block at the top of AGENTS.md (creating the file), or replaces the text between existing start/end markers; returns whether the file changed, so a rerun is a no-op. | [src/guide.rs\:\:upsert\_block](../../src/guide.rs#L52) |
+| agents-block | Writes the stewards block at the top of AGENTS.md (creating the file), or replaces the text between existing start/end markers; returns whether the file changed, so a rerun is a no-op. | [src/guide.rs\:\:upsert\_block](../../src/guide.rs#L49) |
 | guide | \`guide\` prints the block's ritual, roles, editing and hygiene paragraphs plus delegation text for the forced (--harness) or detected harness, else the generic text; --all adds every harness's delegation, --errors the error-code table, --glossary the glossary. | [src/guide.rs\:\:run](../../src/guide.rs#L20) |
 | harness-detect | Returns the first harness whose env var prefix matches the current environment; harnesses with an unverified env rule are never detected. | [src/harness.rs\:\:detect](../../src/harness.rs#L166) |
 | harness-by-name | Looks up a harness case-insensitively; an unknown name is harness\_unknown listing the valid names. | [src/harness.rs\:\:by\_name](../../src/harness.rs#L176) |
@@ -32,6 +32,9 @@ Start from the file for the command: src/init.rs for proposing units and draft j
 | id | interface | given | expect | level |
 |---|---|---|---|---|
 | docs-escapes-markup-only | docs | an interface contract containing \| \\ \` \< \> \[ \] \! \* \_ \~ \& \# \: \@ and www\. (any case) | each markup-starting character is backslash-escaped, the table row keeps its 4 separators, and ordinary prose (commas, periods, hyphens, parentheses, slashes, semicolons) has no backslash | integration |
+| init-gitignore-slash-variants | init | a .gitignore that already holds /.stewards/telemetry/ and /.stewards/briefs (leading slash, no trailing slash) | init treats both as present\: .gitignore is unchanged and not listed in wrote | integration |
+| init-repo-name-from-origin | init | a git repo with an origin remote https\://example.invalid/acme/widgets.git | repo.toml name is widgets (origin URL last segment without .git); without an origin it falls back to the directory name | integration |
+| init-draft-ends-with-next-roles | init-draft | a fresh git repo with two source dirs, run \`init --draft\` | jobs are the architect job and a maintainer first review per unit, and \`then\` names \`stewards next --roles\` | integration |
 
 ## Flows
 
@@ -48,4 +51,4 @@ Start from the file for the command: src/init.rs for proposing units and draft j
 
 ## Last reviewed
 
-ccd203c122f389e6b86c83753295c84769496a3e
+2d972b0896b3296afa9472532b7f9f0cf954c19e

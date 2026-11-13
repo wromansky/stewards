@@ -912,8 +912,10 @@ Reviewer:
 > approve only when every changed line traces to the request and nothing
 > fails a rung; an approval has no findings. For each problem give the
 > file (a file of that unit), line, the first rung it fails, what to cut,
-> and the smaller replacement; never flag validation at trust boundaries,
-> error handling that prevents data loss, security, or accessibility. Run
+> and the smaller replacement. Report every problem you can find in this
+> pass: a later round should only confirm the fixes. Never flag validation
+> at trust boundaries, error handling that prevents data loss, security, or
+> accessibility. Run
 > the unit's test command, or with none the repo's test commands, and
 > report it in `check`; with no test command in the pack, `check` is null.
 > A unit whose tests fail is not approved. Keep the card true. Update

@@ -331,8 +331,8 @@ static ERRORS: [ErrorRow; 31] = [
     ),
     e(
         "harness_missing",
-        "`eval` and the harness binary (`pi`) is not on PATH, or pi-subagents is not installed in the Pi agent directory",
-        "install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`)",
+        "`eval` and the harness binary (`pi`, `claude`) is not on PATH, or pi-subagents is not installed in the Pi agent directory",
+        "install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`), or Claude Code (`npm install -g @anthropic-ai/claude-code`)",
     ),
     e(
         "eval_setup_incomplete",

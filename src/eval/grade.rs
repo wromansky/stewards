@@ -76,8 +76,8 @@ pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
         arm,
         runs: runs.len(),
         not_ok: runs.iter().filter(|r| r.status != Status::Ok).count(),
-        main_tokens: median_of(runs, |r| Some(r.main_tokens.sum() as f64)),
-        total_tokens: median_of(runs, |r| Some(r.total_tokens.sum() as f64)),
+        main_tokens: median_of(runs, |r| r.main_tokens.map(|t| t.sum() as f64)),
+        total_tokens: median_of(runs, |r| r.total_tokens.map(|t| t.sum() as f64)),
         files_opened: median_of(runs, |r| Some(r.files_opened.len() as f64)),
         files_opened_tree: median_of(runs, |r| Some(r.files_opened_tree.len() as f64)),
         peak_main_context: median_of(runs, |r| Some(r.peak_main_context as f64)),
@@ -398,19 +398,19 @@ pub fn summarize(
     let bare_totals: Vec<f64> = records
         .iter()
         .filter(|r| r.arm == Arm::Bare && r.role == RunRole::Task)
-        .filter_map(|r| r.result.as_ref())
-        .map(|x| x.total_tokens.sum() as f64)
+        .filter_map(|r| r.result.as_ref()?.total_tokens)
+        .map(|t| t.sum() as f64)
         .collect();
     let adoption_in_bare_tasks = adoption
         .as_ref()
-        .and_then(|a| a.result.as_ref())
+        .and_then(|a| a.result.as_ref()?.total_tokens)
         .zip(median(&bare_totals).filter(|m| *m > 0.0))
-        .map(|(a, m)| a.total_tokens.sum() as f64 / m);
+        .map(|(a, m)| a.sum() as f64 / m);
     Summary {
         results: plan.results.clone(),
         suite: plan.suite.name.clone(),
         commit: plan.suite.commit().map(String::from),
-        harness: "pi",
+        harness: plan.harness,
         harness_setup: plan.harness_setup.clone(),
         model: plan
             .model
@@ -542,8 +542,8 @@ pub fn render(s: &Summary) -> String {
             "adoption ({}): {}, main {}, total {}, ${}",
             a.label,
             a.status.as_str(),
-            num(r.map(|x| x.main_tokens.sum() as f64)),
-            num(r.map(|x| x.total_tokens.sum() as f64)),
+            num(r.and_then(|x| x.main_tokens).map(|t| t.sum() as f64)),
+            num(r.and_then(|x| x.total_tokens).map(|t| t.sum() as f64)),
             usd(r.and_then(|x| x.cost_usd))
         ));
     }

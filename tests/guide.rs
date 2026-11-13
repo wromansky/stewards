@@ -44,7 +44,6 @@ fn pi_is_detected_from_env() {
 fn hermes_is_detected_from_env() {
     let (v, _) = guide(&[("HERMES_HOME", "/x")], &[]);
     assert_eq!(v["harness"], "hermes");
-    assert!(v["delegation"].as_str().unwrap().contains("delegate_task"));
 }
 
 #[test]
@@ -257,6 +256,12 @@ fn second_upsert_changes_nothing() {
 }
 
 #[test]
+fn guide_says_the_block_is_in_agents_md_only() {
+    let (v, _) = guide(&[], &[]);
+    assert_eq!(v["instructions"], stewards::guide::AGENTS_ONLY);
+}
+
+#[test]
 fn block_equals_the_block_in_the_design_record() {
     let design = include_str!("../DESIGN.md");
     let start = design.find("<!-- stewards:start -->").unwrap();
@@ -265,40 +270,18 @@ fn block_equals_the_block_in_the_design_record() {
     assert_eq!(&design[start..end], block());
 }
 
-/// No harness gets other guidance than one stewards does not know: the generic paragraph, plus
-/// at most one sentence naming its subagent tool.
+/// Every harness, known or not, gets the same delegation text, word for word.
 #[test]
-fn every_harness_gets_the_generic_delegation_plus_at_most_its_tool_name() {
+fn every_harness_gets_the_same_delegation() {
     let (generic, _) = guide(&[], &[]);
     let generic = generic["delegation"].as_str().unwrap();
+    assert!(!generic.contains("render"));
     let (v, _) = guide(&[], &["--all"]);
     for d in v["all_delegations"].as_array().unwrap() {
-        let (name, text) = (d["harness"].as_str().unwrap(), d["text"].as_str().unwrap());
-        let hint = text
-            .strip_prefix(generic)
-            .unwrap_or_else(|| panic!("{text}"));
-        let tool = hint
-            .strip_prefix(&format!(" In {name} that is the `"))
-            .and_then(|t| t.strip_suffix("` tool."));
-        assert!(
-            hint.is_empty() || tool.is_some_and(|t| !t.contains(' ')),
-            "{name}: {hint}"
-        );
-        assert!(!text.contains("render"), "{name}: {text}");
+        assert_eq!(d["text"], generic, "{}", d["harness"]);
     }
-}
-
-#[test]
-fn zeroclaw_and_borg_delegation_name_their_spawn_tool() {
-    let zeroclaw = guide(&[], &["--harness", "zeroclaw"]).0;
-    assert!(
-        zeroclaw["delegation"]
-            .as_str()
-            .unwrap()
-            .contains("spawn_subagent")
-    );
-    let borg = guide(&[], &["--harness", "borg"]).0;
-    assert!(borg["delegation"].as_str().unwrap().contains("spawn_agent"));
+    let (unknown, _) = guide(&[], &["--harness", "nosuchharness"]);
+    assert_eq!(unknown["delegation"], generic);
 }
 
 #[test]
@@ -357,10 +340,10 @@ fn upsert_replacing_a_block_keeps_crlf_and_missing_final_newline_outside_it() {
     assert_eq!(text, format!("# Top\r\n{}\r\nend", block()));
 }
 
-/// stewards never starts a session: no source outside the eval driver knows a harness's command
-/// line.
+/// stewards never starts a session and writes only `AGENTS.md`: no source outside the eval driver
+/// knows a harness's command line or instruction file.
 #[test]
-fn no_source_outside_the_eval_knows_a_harness_command_line() {
+fn no_source_outside_the_eval_knows_a_harness_command_line_or_instruction_file() {
     fn files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         for e in std::fs::read_dir(dir).unwrap() {
             let p = e.unwrap().path();
@@ -378,7 +361,14 @@ fn no_source_outside_the_eval_knows_a_harness_command_line() {
     assert!(all.iter().any(|p| p.ends_with("review.rs")));
     for p in all {
         let text = std::fs::read_to_string(&p).unwrap();
-        for flag in ["--dangerously", "--mode json", "exec --json"] {
+        for flag in [
+            "--dangerously",
+            "--mode json",
+            "exec --json",
+            "CLAUDE.md",
+            "GEMINI.md",
+            ".cursorrules",
+        ] {
             assert!(!text.contains(flag), "{} mentions `{flag}`", p.display());
         }
     }

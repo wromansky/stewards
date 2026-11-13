@@ -39,3 +39,19 @@ given = "`guide --harness emacs` (a name not in the harness table)"
 expect = "exit 0, harness null, and the same delegation text as with no harness detected"
 level = "integration"
 command = "cargo test --test guide a_harness_not_in_the_table_gets_the_generic_guidance"
+
+[[scenario]]
+id = "guide-delegation-identical-for-every-harness"
+interface = "guide"
+given = "`guide`, `guide --all`, and `guide --harness nosuchharness`"
+expect = "every all_delegations text and the unknown harness's delegation equal the no-harness delegation word for word"
+level = "integration"
+command = "cargo test --test guide every_harness_gets_the_same_delegation"
+
+[[scenario]]
+id = "init-ends-with-agents-only-note"
+interface = "init"
+given = "a fresh repo with main.py, run `init` and `--human init`"
+expect = "JSON note equals guide::AGENTS_ONLY (which names instruction_files) and the human output contains it"
+level = "integration"
+command = "cargo test --test init init_says_the_block_is_in_agents_md_only_in_json_and_human_output"

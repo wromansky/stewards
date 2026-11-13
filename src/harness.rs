@@ -27,25 +27,13 @@ pub struct Harness {
     pub repo_dir: Option<&'static str>,
     /// Role-file extension; `None` for briefed harnesses.
     pub file_format: Option<&'static str>,
-    /// The name of the tool its agent starts a subagent with, when it is one; `delegation` names
-    /// it as a hint.
-    pub subagent_tool: Option<&'static str>,
     pub model_pin: bool,
     pub env: EnvRule,
     pub verified: &'static str,
 }
 
 /// How to delegate a brief, the same in every harness, known or not.
-const GENERIC_DELEGATION: &str = "Start a fresh-context, general-purpose subagent that can run shell and write files, give it the handoff stewards printed (``Read `<absolute brief path>` and follow it.``) unchanged as its whole task, and wait for its reply: what `submit` printed.";
-
-/// The delegation text for `harness`: `GENERIC_DELEGATION`, plus for a harness in the table only
-/// the name of its subagent tool, so no harness gets other guidance than one it does not know.
-pub fn delegation(harness: Option<&Harness>) -> String {
-    match harness.and_then(|h| Some((h.name, h.subagent_tool?))) {
-        Some((name, tool)) => format!("{GENERIC_DELEGATION} In {name} that is the `{tool}` tool."),
-        None => GENERIC_DELEGATION.to_string(),
-    }
-}
+pub const DELEGATION: &str = "Start a fresh-context, general-purpose subagent that can run shell and write files, give it the handoff stewards printed (``Read `<absolute brief path>` and follow it.``) unchanged as its whole task, and wait for its reply: what `submit` printed.";
 
 const VERIFIED: &str = "2026-10-21";
 
@@ -56,7 +44,6 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: Some("~/.claude/agents"),
         repo_dir: Some(".claude/agents"),
         file_format: Some("md"),
-        subagent_tool: Some("Agent"),
         model_pin: true,
         env: EnvRule::Prefix("CLAUDE_CODE"),
         verified: VERIFIED,
@@ -67,7 +54,6 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: None,
         repo_dir: Some(".cursor/agents"),
         file_format: Some("md"),
-        subagent_tool: Some("Task"),
         model_pin: true,
         env: EnvRule::Unverified,
         verified: VERIFIED,
@@ -78,7 +64,6 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: Some("~/.codex/agents"),
         repo_dir: Some(".codex/agents"),
         file_format: Some("toml"),
-        subagent_tool: None,
         model_pin: true,
         env: EnvRule::Prefix("CODEX_"),
         verified: VERIFIED,
@@ -89,7 +74,6 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: None,
         repo_dir: Some(".github/agents"),
         file_format: Some("agent.md"),
-        subagent_tool: Some("runSubagent"),
         model_pin: true,
         env: EnvRule::Unverified,
         verified: VERIFIED,
@@ -100,7 +84,6 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: Some("~/.gemini/agents"),
         repo_dir: Some(".gemini/agents"),
         file_format: Some("md"),
-        subagent_tool: None,
         model_pin: true,
         env: EnvRule::Unverified,
         verified: VERIFIED,
@@ -111,7 +94,6 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: Some("~/.config/opencode/agents"),
         repo_dir: Some(".opencode/agents"),
         file_format: Some("md"),
-        subagent_tool: Some("Task"),
         model_pin: true,
         env: EnvRule::Unverified,
         verified: VERIFIED,
@@ -122,7 +104,6 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: Some("~/.pi/agent/agents"),
         repo_dir: Some(".pi/agents"),
         file_format: Some("md"),
-        subagent_tool: Some("subagent"),
         model_pin: true,
         env: EnvRule::Prefix("PI_"),
         verified: VERIFIED,
@@ -133,7 +114,6 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: None,
         repo_dir: None,
         file_format: None,
-        subagent_tool: Some("delegate_task"),
         model_pin: false,
         env: EnvRule::Prefix("HERMES_"),
         verified: VERIFIED,
@@ -144,7 +124,6 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: None,
         repo_dir: None,
         file_format: None,
-        subagent_tool: Some("spawn_subagent"),
         model_pin: true,
         env: EnvRule::Unverified,
         verified: VERIFIED,
@@ -155,7 +134,6 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: None,
         repo_dir: None,
         file_format: None,
-        subagent_tool: Some("spawn_agent"),
         model_pin: true,
         env: EnvRule::Unverified,
         verified: VERIFIED,

@@ -1,4 +1,5 @@
 // Graders: pure functions from run records to per-task verdicts.
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -76,8 +77,8 @@ pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
         arm,
         runs: runs.len(),
         not_ok: runs.iter().filter(|r| r.status != Status::Ok).count(),
-        main_tokens: median_of(runs, |r| Some(r.main_tokens.sum() as f64)),
-        total_tokens: median_of(runs, |r| Some(r.total_tokens.sum() as f64)),
+        main_tokens: median_of(runs, |r| r.main_tokens.map(|t| t.sum() as f64)),
+        total_tokens: median_of(runs, |r| r.total_tokens.map(|t| t.sum() as f64)),
         files_opened: median_of(runs, |r| Some(r.files_opened.len() as f64)),
         files_opened_tree: median_of(runs, |r| Some(r.files_opened_tree.len() as f64)),
         peak_main_context: median_of(runs, |r| Some(r.peak_main_context as f64)),
@@ -349,8 +350,9 @@ pub struct Summary {
     pub runs_per_arm: u32,
     pub sessions: usize,
     pub max_cost_usd: Option<f64>,
-    /// Summed from the transcripts' own cost figures; sessions without one add nothing.
-    pub spent_usd: f64,
+    /// Summed from the transcripts' own cost figures; sessions without one add nothing, and with
+    /// no figure at all it is `None` (a harness whose cost is not used), not a spend of zero.
+    pub spent_usd: Option<f64>,
     /// Sessions whose transcript could not be parsed: their cost is unknown, and after one
     /// `--max-cost` stops the eval, since it can no longer bound the spend.
     pub unknown_cost_sessions: Vec<String>,
@@ -368,6 +370,9 @@ pub struct Summary {
     pub thinking_mismatches: Vec<String>,
     /// Runs with a session that recorded no thinking level, as `label: sessions`.
     pub thinking_unknown: Vec<String>,
+    /// When the requested or any recorded thinking level is not `off`: that two harnesses'
+    /// results compare only at one setting, in one plain sentence.
+    pub thinking_comparison: Option<String>,
     /// Shell commands that read git history (`reads_git_history`), as `label: command`
     /// (flagged, not failed).
     pub git_history: Vec<String>,
@@ -398,19 +403,19 @@ pub fn summarize(
     let bare_totals: Vec<f64> = records
         .iter()
         .filter(|r| r.arm == Arm::Bare && r.role == RunRole::Task)
-        .filter_map(|r| r.result.as_ref())
-        .map(|x| x.total_tokens.sum() as f64)
+        .filter_map(|r| r.result.as_ref()?.total_tokens)
+        .map(|t| t.sum() as f64)
         .collect();
     let adoption_in_bare_tasks = adoption
         .as_ref()
-        .and_then(|a| a.result.as_ref())
+        .and_then(|a| a.result.as_ref()?.total_tokens)
         .zip(median(&bare_totals).filter(|m| *m > 0.0))
-        .map(|(a, m)| a.total_tokens.sum() as f64 / m);
+        .map(|(a, m)| a.sum() as f64 / m);
     Summary {
         results: plan.results.clone(),
         suite: plan.suite.name.clone(),
         commit: plan.suite.commit().map(String::from),
-        harness: "pi",
+        harness: plan.harness,
         harness_setup: plan.harness_setup.clone(),
         model: plan
             .model
@@ -425,7 +430,7 @@ pub fn summarize(
         spent_usd: records
             .iter()
             .filter_map(|r| r.result.as_ref().and_then(|x| x.cost_usd))
-            .sum(),
+            .reduce(|a, b| a + b),
         unknown_cost_sessions: unknown_cost.to_vec(),
         stopped_by_max_cost: stopped,
         setup_dir: plan.setup_dir.clone(),
@@ -458,6 +463,7 @@ pub fn summarize(
                 (!s.is_empty()).then(|| format!("{}: {}", r.label, s.join(", ")))
             })
             .collect(),
+        thinking_comparison: thinking_comparison(&plan.thinking, records),
         git_history: records
             .iter()
             .flat_map(|r| {
@@ -483,6 +489,28 @@ pub fn summarize(
     }
 }
 
+/// The summary's sentence on comparing harnesses when thinking was not `off` throughout: Claude
+/// Code sessions run with thinking off, Pi's at its `--thinking` level.
+fn thinking_comparison(requested: &str, records: &[RunRecord]) -> Option<String> {
+    let recorded: BTreeSet<&str> = records
+        .iter()
+        .flat_map(|r| r.result.iter().flat_map(|x| &x.thinking_levels))
+        .map(String::as_str)
+        .collect();
+    if requested == "off" && recorded.iter().all(|t| *t == "off") {
+        return None;
+    }
+    let recorded: Vec<&str> = recorded.into_iter().collect();
+    Some(format!(
+        "Thinking was not off in every session (requested {requested}; recorded {}), and Claude Code sessions run with thinking off: two harnesses' results compare only at the same setting, so run each driver with thinking off (Pi with `--thinking off`) before comparing them.",
+        if recorded.is_empty() {
+            "none".to_string()
+        } else {
+            recorded.join(", ")
+        }
+    ))
+}
+
 fn num(x: Option<f64>) -> String {
     x.map_or("null".into(), |x| format!("{x:.0}"))
 }
@@ -501,11 +529,11 @@ pub fn render(s: &Summary) -> String {
         format!("# eval: {}", s.verdict.as_str()),
         String::new(),
         format!(
-            "{} sessions, model {}, thinking {}, spent ${:.4}{}{}",
+            "{} sessions, model {}, thinking {}, spent {}{}{}",
             s.sessions,
             s.model.as_deref().unwrap_or("(harness default)"),
             s.thinking,
-            s.spent_usd,
+            s.spent_usd.map_or("null".into(), |c| format!("${c:.4}")),
             s.max_cost_usd
                 .map_or(String::new(), |m| format!(" of ${m:.4}")),
             if s.stopped_by_max_cost {
@@ -542,8 +570,8 @@ pub fn render(s: &Summary) -> String {
             "adoption ({}): {}, main {}, total {}, ${}",
             a.label,
             a.status.as_str(),
-            num(r.map(|x| x.main_tokens.sum() as f64)),
-            num(r.map(|x| x.total_tokens.sum() as f64)),
+            num(r.and_then(|x| x.main_tokens).map(|t| t.sum() as f64)),
+            num(r.and_then(|x| x.total_tokens).map(|t| t.sum() as f64)),
             usd(r.and_then(|x| x.cost_usd))
         ));
     }
@@ -594,6 +622,7 @@ pub fn render(s: &Summary) -> String {
             s.thinking_unknown.join("; ")
         ));
     }
+    out.extend(s.thinking_comparison.clone());
     if !s.git_history.is_empty() {
         out.push(format!("git history read: {}", s.git_history.join("; ")));
     }

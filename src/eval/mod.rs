@@ -5,17 +5,19 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::Display;
 use std::hash::BuildHasher;
 use std::os::unix::fs::symlink;
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Output};
+use std::path::{Component, Path, PathBuf};
+use std::process::{Child, Command, ExitCode, Output};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::harness::{self, EnvRule, HARNESSES};
 use crate::model::CommandEntry;
 use crate::output::{CliError, Global, emit, not_implemented};
 
+pub mod claude;
 pub mod grade;
 pub mod pi;
 pub mod suite;
@@ -135,10 +137,11 @@ pub type RitualSteps = BTreeMap<&'static str, bool>;
 /// One session tree parsed from its transcript.
 #[derive(Debug, Clone, Serialize)]
 pub struct Run {
-    /// The parent session only.
-    pub main_tokens: Tokens,
-    /// The parent plus every child session.
-    pub total_tokens: Tokens,
+    /// The parent session only; `None` when the transcript cannot measure it (a Claude Code
+    /// session that ended without its stream's `result` line).
+    pub main_tokens: Option<Tokens>,
+    /// The parent plus every child session; `None` as for `main_tokens`.
+    pub total_tokens: Option<Tokens>,
     /// Cache refreshes over the tree, which do not enter model context: not in the token sums
     /// above; their cost is in `cost_usd`.
     pub cache_warming: Tokens,
@@ -155,8 +158,12 @@ pub struct Run {
     pub shell_commands: Vec<String>,
     /// From the transcripts; `check_green` is set by the runner (`false` until then).
     pub ritual_steps: RitualSteps,
-    /// The harness's own cost figure summed over the tree; `None` when the transcript has none.
+    /// The harness's own cost figure summed over the tree; `None` when the transcript has none
+    /// or the driver does not trust it (see `harness_reported_cost_usd`).
     pub cost_usd: Option<f64>,
+    /// The harness's figure when the driver does not trust it as `cost_usd` (Claude Code 1.0.128
+    /// prices an unknown model id at another model's rates); `None` otherwise.
+    pub harness_reported_cost_usd: Option<f64>,
     pub duration_s: f64,
     /// `provider/model` of the main session, as the transcript names it.
     pub model: Option<String>,
@@ -620,6 +627,87 @@ pub trait Driver {
     /// Parses a transcript; `truncation_ok` (a failed or timed-out session) tolerates an
     /// unparseable last line in each file.
     fn parse(&self, transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run>;
+
+    /// A file (path, contents) this harness needs beside `AGENTS.md` to load it: the runner
+    /// commits it into every arm copy that has an `AGENTS.md` (see `add_context_file`).
+    fn context_file(&self) -> Option<(&'static str, &'static str)> {
+        None
+    }
+}
+
+/// Spawns `cmd` in its own process group and waits for it, killing the group after `limit`.
+/// Returns its status and seconds.
+fn run_session(cmd: &mut Command, limit: Duration) -> Result<(Status, f64)> {
+    std::os::unix::process::CommandExt::process_group(cmd, 0);
+    let started = Instant::now();
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("starting {}", cmd.get_program().to_string_lossy()))?;
+    let status = loop {
+        if let Some(s) = child.try_wait()? {
+            break if s.success() {
+                Status::Ok
+            } else {
+                Status::Failed
+            };
+        }
+        if started.elapsed() >= limit {
+            kill(&mut child);
+            break Status::TimedOut;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    Ok((status, started.elapsed().as_secs_f64()))
+}
+
+/// Kills the session's whole process group, then the child itself; the runner then kills what
+/// left the group (harnesses start shell commands and background subagents in their own groups).
+fn kill(child: &mut Child) {
+    let _ = Command::new("kill")
+        .args(["-KILL", &format!("-{}", child.id())])
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A file's JSON lines; with `truncation_ok` an unparseable last line is dropped and counted.
+fn records(path: &Path, truncation_ok: bool) -> Result<(Vec<Value>, usize)> {
+    let text = std::fs::read_to_string(path).with_context(|| path.display().to_string())?;
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let mut out = vec![];
+    for (n, l) in lines.iter().enumerate() {
+        match serde_json::from_str(l) {
+            Ok(v) => out.push(v),
+            Err(_) if truncation_ok && n + 1 == lines.len() => return Ok((out, 1)),
+            Err(e) => {
+                return Err(e).with_context(|| format!("{}:{}", path.display(), n + 1));
+            }
+        }
+    }
+    Ok((out, 0))
+}
+
+/// A path a session opened, relative to the session's `cwd` (a `..` steps back up); `None` outside
+/// it.
+fn repo_relative(path: &str, cwd: &str) -> Option<String> {
+    let p = Path::new(path);
+    let rel = if p.is_absolute() {
+        p.strip_prefix(cwd).ok()?
+    } else {
+        p
+    };
+    let mut parts = vec![];
+    for c in rel.components() {
+        match c {
+            Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            _ => return None,
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 /// Prepares a harness command to run as a fresh top-level session: drops every variable a harness
@@ -715,6 +803,8 @@ pub struct UnitReview {
 
 /// One eval invocation.
 pub struct Plan {
+    /// The harness table name of the driver the sessions run on.
+    pub harness: &'static str,
     pub tasks: Vec<u32>,
     pub arms: Vec<Arm>,
     pub runs: u32,
@@ -838,6 +928,10 @@ impl Runner<'_> {
         let mut failure = None;
         let mut reviews = vec![];
         if let Some(r) = &mut result {
+            // a timed-out run's counts are partial on every driver, so no median mixes them in
+            if session.status == Status::TimedOut {
+                (r.main_tokens, r.total_tokens) = (None, None);
+            }
             r.files_opened = existing_files(&s.dir, &r.files_opened);
             r.files_opened_tree = existing_files(&s.dir, &r.files_opened_tree);
             if let Some(before) = &gaps_before {
@@ -929,9 +1023,17 @@ struct SessionSpec {
 
 /// Runs the plan sequentially: for a `repo` suite the clone and its one build, then the `full`
 /// setup (when a `full` arm is planned), then per task, per run number, each arm in a fresh copy
-/// at `<work>/<n>/repo`; a task with a `setup` task runs after it in the same copy. Writes
-/// `runs/*.json` as each session ends, then `summary.json` and `summary.md`.
+/// at `<work>/<n>/repo`; a task with a `setup` task runs after it in the same copy. Every planned
+/// task prompt is read first (see `task_prompt`). Writes `runs/*.json` as each session ends, then
+/// `summary.json` and `summary.md`.
 pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
+    let tasks_dir = plan.evals.join(&plan.suite.tasks_dir);
+    for &t in &plan.tasks {
+        task_prompt(&tasks_dir, t)?;
+        if let Some(s) = plan.suite.task(t).and_then(|t| t.setup) {
+            task_prompt(&tasks_dir, s)?;
+        }
+    }
     std::fs::create_dir_all(&plan.work)?;
     let path_off = path_without_stewards(&plan.path, &plan.work.join("p"))?;
     let bin = plan.work.join("b");
@@ -989,6 +1091,7 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
             (Some((source, units, unowned, _)), None) => {
                 let dir = plan.work.join("0/repo");
                 arms_sh(plan, "full", &dir, &path_on, source)?;
+                add_context_file(driver, &dir)?;
                 notes.units = Some(set_full_units(&plan.evals, &dir, units, unowned)?);
                 r.session(SessionSpec {
                     label: "adopt".into(),
@@ -1018,7 +1121,9 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
                 Ok(added) => notes.added_paths = added,
                 Err(e) => return fail(&r, notes, e),
             }
-            if let Err(e) = check_full_units(&dir, unowned) {
+            let mut unowned = unowned.clone();
+            unowned.extend(driver.context_file().map(|(name, _)| name.to_string()));
+            if let Err(e) = check_full_units(&dir, &unowned) {
                 return fail(&r, notes, e);
             }
         }
@@ -1071,6 +1176,7 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
                     (_, Some((source, ..))) => arms_sh(plan, arm.as_str(), &dir, path, source)?,
                     (_, None) => repo_arm_tree(&base, &dir, arm)?,
                 }
+                add_context_file(driver, &dir)?;
                 if fixture.is_none() {
                     link_build_cache(&cache, &dir)?;
                 }
@@ -1117,7 +1223,9 @@ fn write_summary(plan: &Plan, summary: &Summary) -> Result<()> {
     Ok(())
 }
 
-/// The task file `<dir>/NN-*` verbatim.
+/// The task file `<dir>/NN-*` verbatim; a `usage` error when it contains `think` in any case,
+/// since Claude Code turns thinking on from that word in a user message and the arms of every
+/// harness must run at one thinking setting.
 pub fn task_prompt(dir: &Path, task: u32) -> Result<String> {
     let prefix = format!("{task:02}-");
     let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -1132,7 +1240,16 @@ pub fn task_prompt(dir: &Path, task: u32) -> Result<String> {
     let file = names
         .first()
         .with_context(|| format!("no task {task} in {}", dir.display()))?;
-    std::fs::read_to_string(file).with_context(|| file.display().to_string())
+    let text = std::fs::read_to_string(file).with_context(|| file.display().to_string())?;
+    if text.to_lowercase().contains("think") {
+        return Err(CliError::new(
+            "usage",
+            format!("task prompt {} contains `think`", file.display()),
+            "reword it: Claude Code turns thinking on from that word in a user message, so its runs would not compare with another harness's",
+        )
+        .into());
+    }
+    Ok(text)
 }
 
 /// `out` when its command succeeded, else an error naming `what` with its stderr.
@@ -1233,7 +1350,7 @@ fn check_setup_dir(dir: &Path) -> Result<()> {
     }
 }
 
-/// Checks the index of the adopted fixture against its `fixture: initial` (root) commit: only the
+/// Checks the index of the adopted fixture against its `initial` (root) commit: only the
 /// tool's own files (`ADOPTION_OWN`) may change, and new files may appear under the suite's
 /// `tests` globs; anything else is `eval_setup_incomplete`. Returns the added paths outside
 /// `.stewards/` and `docs/units/`.
@@ -1278,7 +1395,7 @@ fn adoption_changes(dir: &Path, test_globs: &[String]) -> Result<Vec<String>> {
     if !stray.is_empty() {
         return Err(setup_error(
             format!(
-                "adoption changed the fixture's code in {} (against `fixture: initial`): {}",
+                "adoption changed the fixture's code in {} (against its `initial` commit): {}",
                 dir.display(),
                 stray.join(", ")
             ),
@@ -1435,9 +1552,9 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .args([
             "-c",
-            "user.name=fixture",
+            "user.name=dev",
             "-c",
-            "user.email=fixture@example.invalid",
+            "user.email=dev@example.invalid",
         ])
         .args(args)
         .current_dir(dir)
@@ -1449,11 +1566,12 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 
 /// Commits the staged adopted state, after removing every gitignored file (build output, briefs,
 /// telemetry), so each `full` run starts from a clean tree as `bare` does. Stamps survive: they
-/// name the tree, not a commit.
+/// name the tree, not a commit. The subject, like every arm commit's, names nothing a session
+/// should not learn from `git log` (Claude Code shows the last five subjects unasked).
 fn commit_adopted(dir: &Path) -> Result<()> {
     git(dir, &["clean", "-fdXq"])?;
     if !git(dir, &["status", "--porcelain"])?.trim().is_empty() {
-        git(dir, &["commit", "-qm", "stewards: adopted"])?;
+        git(dir, &["commit", "-qm", "update"])?;
     }
     Ok(())
 }
@@ -1469,6 +1587,22 @@ pub fn without_developers(agents_md: &str) -> Result<String> {
         bail!("AGENTS.md block has no `{DEVELOPER_LINE}`");
     }
     Ok(agents_md.replace(DEVELOPER_LINE, NO_DEVELOPER_LINE))
+}
+
+/// Commits the driver's `context_file` into `dir` when `dir` has an `AGENTS.md` and not that
+/// file, folded into the last commit with the reflog expired, so the arm's history keeps its shape.
+fn add_context_file(driver: &dyn Driver, dir: &Path) -> Result<()> {
+    let Some((name, text)) = driver.context_file() else {
+        return Ok(());
+    };
+    if !dir.join("AGENTS.md").is_file() || dir.join(name).exists() {
+        return Ok(());
+    }
+    std::fs::write(dir.join(name), text)?;
+    git(dir, &["add", name])?;
+    git(dir, &["commit", "-q", "--amend", "--no-edit"])?;
+    git(dir, &["reflog", "expire", "--expire=now", "--all"])?;
+    Ok(())
 }
 
 /// `cp -a from/. to/`.
@@ -1491,7 +1625,7 @@ fn copy_adopted(from: &Path, to: &Path, arm: Arm) -> Result<()> {
         let agents = to.join("AGENTS.md");
         let text = std::fs::read_to_string(&agents).context("AGENTS.md")?;
         std::fs::write(&agents, without_developers(&text)?)?;
-        git(to, &["commit", "-qam", "eval: no developers"])?;
+        git(to, &["commit", "-qam", "update"])?;
     }
     Ok(())
 }
@@ -1677,8 +1811,14 @@ pub struct Flags<'a> {
 
 pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
     let h = harness::by_name(f.harness.unwrap_or("pi"))?;
-    if h.name != "pi" {
+    if !matches!(h.name, "pi" | "claude-code") {
         return not_implemented(&format!("eval --harness {}", h.name));
+    }
+    if h.name == "claude-code" && f.max_cost.is_some() {
+        return Err(usage(
+            "--max-cost needs a cost figure, and Claude Code's is not used (its cost_usd is null)"
+                .into(),
+        ));
     }
     let full = if f.no_developers {
         Arm::FullNoDevelopers
@@ -1724,16 +1864,24 @@ pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
     let limit = Duration::from_secs(suite.session_minutes * 60);
-    let mut pi = pi::Pi::find(&path, limit)?;
     let work = neutral_work_dir(&std::env::temp_dir());
-    let harness_setup = pi.isolate(&work.join("a"), f.thinking)?;
+    let (driver, harness_setup, thinking): (Box<dyn Driver>, String, &str) = if h.name == "pi" {
+        let mut pi = pi::Pi::find(&path, limit)?;
+        let note = pi.isolate(&work.join("a"), f.thinking)?;
+        (Box::new(pi), note, f.thinking)
+    } else {
+        let mut claude = claude::ClaudeCode::find(&path, limit)?;
+        let note = claude.isolate(&work.join("a"))?;
+        (Box::new(claude), note, "off")
+    };
     let stamp = crate::telemetry::rfc3339(SystemTime::now()).replace(':', "-");
     let plan = Plan {
+        harness: h.name,
         tasks,
         arms,
         runs: f.runs,
         model: f.model.map(str::to_string),
-        thinking: f.thinking.to_string(),
+        thinking: thinking.to_string(),
         max_cost: f.max_cost,
         setup_dir: f.setup_dir.map(Path::to_path_buf),
         results: evals.join("results").join(&stamp),
@@ -1745,7 +1893,7 @@ pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
         path,
         harness_setup: Some(harness_setup),
     };
-    let summary = execute(&pi, &plan)?;
+    let summary = execute(driver.as_ref(), &plan)?;
     emit(&summary, g.human);
     Ok(if summary.verdict == Verdict::Pass {
         ExitCode::SUCCESS

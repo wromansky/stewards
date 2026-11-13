@@ -906,7 +906,7 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `unsafe_path` | a path the tool reads or writes in a repo is not plain names, or passes through a symlink | remove the symlink at `<path>`; stewards never writes through links |
 | `card_changed` | a file `submit` was about to write changed since it was loaded (another submit finished first) | run the same submit again |
 | `no_tasks` | `brief --role developer` with no usable task list for the unit | brief the maintainer again with the change as `--task` |
-| `harness_missing` | `eval` and the harness binary (`pi`) is not on PATH, or pi-subagents is not installed in the Pi agent directory | install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`) |
+| `harness_missing` | `eval` and the harness binary (`pi`, `claude`) is not on PATH, or pi-subagents is not installed in the Pi agent directory | install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`), or Claude Code (`npm install -g @anthropic-ai/claude-code`) |
 | `eval_setup_incomplete` | `eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted | read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0 |
 | `not_implemented` | a command or flag not built yet | use a release that has it |
 | `internal` | any other failure | report a bug |
@@ -1221,16 +1221,23 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   task 5.
 - **Arms, three:** `bare` (no `.stewards/`, no block), `block-only` (block
   present, binary off PATH; ritual and persistence graders `n/a`), `full`.
-- **Runner:** `stewards eval` drives `claude -p --output-format stream-json
-  --verbose`, `codex exec --json`, `pi --mode json` (Pi is built; the
-  other two are stage 4) behind one `Driver` trait (start a session on a
-  prompt in a directory with a model and thinking level and return its
-  transcript; parse it), and parses each transcript
-  to `Run {main_tokens {input, output, cache_read, cache_write},
-  total_tokens {same}, cache_warming {same}, peak_main_context,
+- **Runner:** `stewards eval --harness <pi|claude-code>` (default `pi`)
+  drives `pi --mode json` or `claude -p --output-format stream-json
+  --verbose` (both built; `codex exec --json` is stage 4) behind one
+  `Driver` trait (start a session on a prompt in a directory with a model
+  and thinking level and return its transcript; parse it). The drivers
+  under `src/eval/` are the only place stewards knows a harness's command
+  line; a test keeps their launch flags (`--dangerously`, `--mode json`,
+  `exec --json`) out of the rest of `src/`. Suites, arms,
+  tasks, prompts, graders, the gate, and the summary are the same for both
+  and never branch on the harness: each driver maps its transcript into the
+  same `Run` and the same harness-neutral actions (a shell command, a
+  subagent launch with each child's task). The runner parses each transcript
+  to `Run {main_tokens? {input, output, cache_read, cache_write},
+  total_tokens? {same}, cache_warming {same}, peak_main_context,
   tool_calls[], files_opened[], files_opened_tree[], shell_commands[],
   ritual_steps{status, route, next, review, handoff, handoff_exact,
-  reviewer_submit, check_green}, cost_usd?, duration_s, models[], thinking_levels[],
+  reviewer_submit, check_green}, cost_usd?, harness_reported_cost_usd?, duration_s, models[], thinking_levels[],
   sessions_without_thinking[], subagent_sessions, reviews[],
   git_history_commands[], stop_reason, failed_children[],
   truncated_lines}`.
@@ -1243,8 +1250,44 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   of its parent; `usage` records (cache refreshes, which do not enter
   context) go to `cache_warming` instead, their cost still in `cost_usd`.
   `cost_usd` is Pi's own `cost.total` (its price table, not a bill), `null`
-  when the transcript has none. `peak_main_context` is the largest input +
-  cache read + cache write of any one main-session response.
+  when the transcript has none. For Claude Code the transcript is the
+  session file it persists (`$CLAUDE_CONFIG_DIR/projects/<cwd
+  slug>/<session id>.jsonl`, copied into the run's sessions beside the
+  stream as `stdout.log`): child records carry `isSidechain: true` and each
+  child is the chain of them from one with no sidechain parent. A response
+  is persisted once per content block with its usage so far: its input and
+  cache counts are final, its output count can fall short (the smoke run's
+  records summed 1,980 output tokens against the stream's 2,185), so main
+  tokens are the stream's final `result` line's `usage` (the parent's
+  alone) and total tokens the sum of its `modelUsage` (every request of
+  the process, children included): both exact. A session that ended
+  without that line (killed) has `main_tokens` and `total_tokens` `null`,
+  never the records' short sum; `peak_main_context` still comes from the
+  main records. On either driver a timed-out run's counts are partial, so
+  the runner sets its `main_tokens` and `total_tokens` to `null` (its
+  `cost_usd` stays): its task's token medians are then `null`, and the
+  adoption ratio leaves it out, on Pi and Claude Code alike. Its `models`
+  are the records' models plus every `modelUsage` key, which also names
+  side requests (titles, summaries) made outside the parent and its
+  children, so one on another model is flagged as any model mismatch.
+  Claude Code's `total_cost_usd` prices a model id it does not know at
+  another model's rates (1.0.128 prices `claude-haiku-5-5` at Sonnet's), so
+  its runs record `cost_usd: null` and keep that figure as
+  `harness_reported_cost_usd`; the summary says so, its cost ratios are
+  `null`, and `--max-cost` with this harness is a `usage` error, since no
+  cost can bound the spend. Its records carry no stop reason: a main
+  session failed when the stream's `result` line says `is_error` or its last
+  response is an API error (`isApiErrorMessage`), a child when its last
+  response is one. Files opened are its `Read` tool's `file_path`, its
+  `Grep` tool's `path` (a directory is dropped, as below), each file a
+  `Glob` call matched as the persisted result lists them
+  (`toolUseResult.filenames`; a call without that result counts none), and
+  the shell reads below; a relative path is resolved against the `cwd` of
+  the record that made the call, since a `cd` in one `Bash` call carries
+  over to the next, and every path is then taken relative to the main
+  session's starting directory (a `..` steps back up).
+  `peak_main_context` is the largest input + cache read + cache write of
+  any one main-session response.
   `files_opened` (main session) and `files_opened_tree` (every session)
   count distinct paths relative to each session's cwd, from the `read` tool
   plus simply recognised shell reads (`cat`, `head`, `tail`, `less`, `sed
@@ -1263,7 +1306,8 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `<absolute path of a .md under .stewards/briefs/>` and follow it.``, in
   one of its argument strings), `handoff_exact` (every such launch gives
   each child exactly the handoff as its task, the `task` strings of a
-  pi-subagents call, nothing added), `reviewer_submit` (`stewards submit ...
+  pi-subagents call or the `prompt` of a Claude Code `Task` call, nothing
+  added), `reviewer_submit` (`stewards submit ...
   --role reviewer` in a child session), and `check_green`, which comes
   from the runner: after each `full` (and `full-no-developers`) session it
   runs `stewards next --no-brief` in the run directory and records the
@@ -1297,6 +1341,27 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   and the same parsing; every model used in a session tree is recorded and
   a run where any differs from the requested one (or the main session's) is
   flagged, not failed (the main agent may pass `model` per subagent).
+  Claude Code 1.0.128 has no thinking level, only a token budget from
+  `MAX_THINKING_TOKENS` (the one variable that sets one; the driver
+  removes it from the session's environment) or from words in a user
+  message (`think` alone gives 4,000 tokens, `think hard` 10,000,
+  `ultrathink` 31,999). So its runs request `thinking: off`, `--thinking`
+  does not apply, and each session's effective setting is recorded from
+  its transcript: `on` when a response holds a non-empty `thinking` or a
+  `redacted_thinking` block, `off` otherwise (Haiku 5.5 emits an empty
+  `thinking` block with no budget), unknown for a session with no response
+  but API failures; an `on` session is flagged as any other level. Because
+  of those words, the runner reads every planned task prompt before any
+  session and stops with a `usage` error naming the file when one contains
+  `think` in any case. `--thinking` stays the user's control for Pi, so a
+  run meant to compare with Claude Code uses `--thinking off` on Pi; the
+  summary says in one sentence, whenever the requested or any recorded
+  level is not `off`, that two harnesses' results compare only at the same
+  setting and to run each driver with thinking off. Its children run on the
+  session's model: the driver sets `CLAUDE_CODE_SUBAGENT_MODEL` to
+  `--model`, else to the user's own `model` setting (else its
+  `general-purpose` children run on the harness's built-in default, a
+  retired model here); a child on another model is flagged as for Pi.
   Children get the thinking level too: for Pi the eval's settings set
   pi-subagents' `subagents.defaultThinking` and `maxThinking` to it and an
   `agentOverrides.<name>.thinking` for each bundled agent (`defaultThinking`
@@ -1313,10 +1378,29 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `npm/` package store linked to the user's (a linked `auth.json` shares
   OAuth refreshes instead of rotating the user's token away), and a copied
   `models-store.json`; no global `AGENTS.md`, other extensions, or skills
-  beyond pi-subagents'; the summary records it. Each session gets its own
+  beyond pi-subagents'; the summary records it. For Claude Code, one
+  config directory per invocation (`CLAUDE_CONFIG_DIR`) holds a
+  `settings.json` with only the user's `model` and `.credentials.json`
+  linked to the user's (shared OAuth refreshes, as for Pi): no user
+  `CLAUDE.md`, agents, commands, hooks, plugins, or MCP servers (those live
+  in the user's `.claude.json`, not copied). Claude Code 1.0.128 does not
+  read a project `AGENTS.md`, so for this driver every arm copy with an
+  `AGENTS.md` (`block-only`, `full`, and the adoption copy before its
+  session) also gets a one-line `CLAUDE.md`, `@AGENTS.md`, which imports
+  it; the block text stays only in `AGENTS.md`; the file is folded into
+  the copy's last commit (reflog expired), so the history keeps its shape
+  and the run's `changed` does not see it, and adoption's unowned check
+  accepts it. The summary says so. Each session gets its own
   `CARGO_INSTALL_ROOT` (never on `PATH`), each `full` session its own
   `STEWARDS_HOME` (the other arms none, so the environment names no
-  stewards), and every other harness env prefix is stripped. Runs are sequential, each in a
+  stewards), and every other harness env prefix is stripped (the Claude
+  Code driver also drops `CLAUDECODE`, which an enclosing Claude Code sets
+  for its shell outside the `CLAUDE_CODE` prefix, and
+  `MAX_THINKING_TOKENS`). Claude Code shows a session its git status and
+  last five commit subjects unasked, so every arm commit the runner and
+  `evals/arms.sh` make is subject `initial` or `update`, by `dev
+  <dev@example.invalid>`, naming no eval, `stewards`, fixture, adoption,
+  or block. Runs are sequential, each in a
   fresh copy (made by `evals/arms.sh` from the fixture suite's source
   directory) at `<tmp>/w-<random>/<n>/repo`, a
   path naming no arm, `stewards`, or `eval` (the run record keeps the
@@ -1331,7 +1415,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `stewards init --draft`, start one subagent per handoff it prints, then
   run `stewards review --roles` until it exits 0, recorded as a `setup`
   run. The runner then diffs the adopted state
-  against the `fixture: initial` commit: a changed, deleted, or added file
+  against its `initial` commit: a changed, deleted, or added file
   outside `.stewards/`, `docs/units/`, `AGENTS.md`, and `.gitignore` stops
   the eval with `eval_setup_incomplete` naming the files, except a newly
   added file under the test locations `tests` (`api/test_*.py`,
@@ -1351,11 +1435,13 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   developer` sentence), labelled `full-no-developers`. A task with a `setup` runs in a new
   session in the directory its setup task left: each run of fixture task 6
   first runs task 5 there as a `setup` run. A fixture session has 30
-  minutes, then Pi's process group is killed
+  minutes, then the harness's process group is killed
   and the session recorded `timed_out`. After every session (normal exit,
   failure, or timeout) the runner kills every process whose
   `/proc/<pid>/cwd` is under that session's `<n>/` directory (Pi starts
-  shell commands and background subagents in their own process groups),
+  shell commands and background subagents in their own process groups,
+  Claude Code its shell commands; its subagents run inside its own
+  process),
   waits up to 10 s until none is left, and records how many it killed; a
   survivor stops the eval after the run is recorded. A failed or timed-out
   session is recorded and counted, never retried or dropped. `--max-cost`
@@ -1368,7 +1454,8 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   transcripts, copied there after the run), `summary.json`, and
   `summary.md`, with each task's verdict and gate count, its overhead
   ratios, their medians across tasks, the review outcomes, the flags, and
-  costs to 4 decimals. Each run's work directory is deleted after the run unless
+  costs to 4 decimals (the spend is `null`, not zero, when no run has a
+  cost). Each run's work directory is deleted after the run unless
   `--keep-work`. pi-subagents also leaves run state outside both, under
   `/tmp/pi-subagents-uid-<uid>/` (`async-subagent-runs/`,
   `async-subagent-launches/`, `async-subagent-results/`,
@@ -1437,7 +1524,7 @@ build time. Checklist in `RELEASING.md`.
    `validate` and export (GitHub, then GitLab, Jira, Linear); tree-sitter static
    grammars, then runtime extras; `render` for six harnesses.
 4. **Edges** (`feat/stage-4-edges`): the remaining graders, LLM judges,
-   Claude Code and Codex drivers; git hooks, PR and MR
+   the Codex driver; git hooks, PR and MR
    comments, CI templates; plugin shell, completions, man page, release
    workflow, AUR.
 
@@ -1445,7 +1532,7 @@ One PR per stage, one commit per checkpoint, CI green at each commit, squash
 merge. Rough single-builder effort: 4, 6–7, 3 (2b), 6–8, 5–6 days. The BAML
 spike (risk 1) runs beside stage 1 in a scratch directory, before `llm.rs`
 is designed around it. If scope slips,
-cut in this order: Codex and Claude Code eval drivers → tracker export → extra render
+cut in this order: Codex eval driver → tracker export → extra render
 targets.
 
 Dogfood: stage 1 is verified against a hand-written, uncommitted
@@ -2086,11 +2173,50 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   grammars from source at runtime (needs a C compiler); prebuilt grammar
   libraries load with `libloading`.
 - Drivers (verified 2026-10-20 on claude 2.1.305 and codex-cli 0.154.0; Pi
-  as dated below): Claude Code `claude -p "<prompt>" --output-format stream-json
+  and Claude Code 1.0.128 as dated below): Claude Code 2.1.305 `claude -p
+  "<prompt>" --output-format stream-json
   --verbose --model <m> --max-turns N --max-budget-usd X
   --no-session-persistence` (final `result` line carries `usage`,
   `modelUsage`, `total_cost_usd`, `subagent_stats`; `--bare` skips hooks,
-  CLAUDE.md, plugins). Codex `codex exec --json --skip-git-repo-check -C
+  CLAUDE.md, plugins). Claude Code 1.0.128 (verified 2026-11-13 on
+  `claude-haiku-5-5`, the id `--model` takes; aliases not tried, since they
+  name other models): the eval runs `claude -p --output-format stream-json
+  --verbose --dangerously-skip-permissions [--model <id>] -- "<prompt>"`,
+  stdin closed, in the session's cwd (no cwd flag), with
+  `CLAUDE_CONFIG_DIR` set to the eval's config directory and
+  `CLAUDE_CODE_SUBAGENT_MODEL` to the session's model. This version has no
+  `--bare`, no `--no-session-persistence`, and no thinking flag (a budget
+  only, from `MAX_THINKING_TOKENS` or prompt words). It does not read a
+  project `AGENTS.md` (no such name in its code; a session with one ignored
+  it); a `CLAUDE.md` holding `@AGENTS.md` imports it. Its subagent tool is
+  `Task`, input `{description, prompt, subagent_type}`, the child's task in
+  `prompt` (2.1.305's `Agent`, which `src/harness.rs` names). A
+  `general-purpose` child runs on the built-in default model
+  (`claude-sonnet-4-20250514`, retired: 404) unless
+  `CLAUDE_CODE_SUBAGENT_MODEL` is set; background title requests go to
+  `claude-3-5-haiku-20241022` and also 404, with no tokens or cost.
+  `CLAUDE_CONFIG_DIR` is honoured: a directory holding only
+  `settings.json` and a linked `.credentials.json` authenticates (OAuth),
+  with no MCP servers and only the built-in agents. The stream emits one
+  `assistant` event per content block with partial usage, streams a
+  child's events with `parent_tool_use_id` but not its final message, and
+  ends with a `result` line: `usage` the parent's alone, `modelUsage` the
+  parent's plus the children's, `total_cost_usd` both at its price table,
+  which prices `claude-haiku-5-5` at Sonnet's rates. The persisted session
+  file (`$CLAUDE_CONFIG_DIR/projects/<cwd slug>/<session id>.jsonl`) holds
+  every record with `cwd`, `timestamp`, `uuid`/`parentUuid`, children as
+  `isSidechain: true`, each response once per content block with its usage
+  so far; `stop_reason` is null in every record and an API failure is an
+  assistant record with `isApiErrorMessage: true` and model
+  `<synthetic>`; a response's records carry its final input and cache
+  counts but not always its final output count, which only the stream's
+  `result` line has. An enclosing session gives its shell `CLAUDECODE=1` and
+  `CLAUDE_CODE_ENTRYPOINT` (and `CLAUDE_CONFIG_DIR` when set); this version
+  never reads `CLAUDECODE`, keeps an inherited `CLAUDE_CODE_ENTRYPOINT`
+  (a label in its user agent and telemetry only), and honours
+  `CLAUDE_CONFIG_DIR`, which the eval's isolation relies on. Its `Bash`
+  commands run detached, each in its own process group; its subagents run
+  inside its own process. Codex `codex exec --json --skip-git-repo-check -C
   <dir> -s workspace-write -m <model> "<prompt>"` (`turn.completed{usage}`
   summed across turns; rollout under `~/.codex/sessions/`); this machine's
   ChatGPT-account Codex rejects the configured model ids with 400. Pi

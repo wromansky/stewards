@@ -1,26 +1,26 @@
 unit = "eval"
 
 [reviewed]
-commit = "7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51"
-fingerprint = "sha256:f56e732091bb062f2ae93f096a91e446742f9db959cf01507ae525cabaf4f98a"
-tree = "cdbd17c852acedf786fd6f4d4bdcfcb068fc8105"
-tester = "cdbd17c852acedf786fd6f4d4bdcfcb068fc8105"
-documenter = "cdbd17c852acedf786fd6f4d4bdcfcb068fc8105"
+commit = "da01fc113109d4cff274a2cf280e9381a0a47b50"
+fingerprint = "sha256:2711222fa953ea52544359fbcb5a0b9bddca16ca2048ac2063b63508beca7956"
+tree = "21812a267688b3f3a7e5e1ec37cd103f488c1f3f"
+tester = "21812a267688b3f3a7e5e1ec37cd103f488c1f3f"
+documenter = "21812a267688b3f3a7e5e1ec37cd103f488c1f3f"
 
 [[interface]]
 id = "eval_run"
 anchor = "src/eval/mod.rs::run"
-contract = "`stewards eval`: pi harness only (others not_implemented); arms default to bare, block-only, full (full-no-developers with --no-developers); unknown arm, suite, or task is a usage error; --setup-dir refused for a repo suite; exits 0 only on a pass verdict."
+contract = "`stewards eval`: pi and claude-code (others not_implemented); claude-code runs at thinking off and refuses --max-cost; arms default to bare, block-only, full (full-no-developers with --no-developers); unknown arm, suite, task: usage error; --setup-dir refused for a repo suite; exit 0 only on pass."
 
 [[interface]]
 id = "execute"
 anchor = "src/eval/mod.rs::execute"
-contract = "Runs the plan sequentially: repo clone and one build, the full setup when a full arm is planned, then per task, per run, each arm in a fresh copy (a setup task first in it); writes runs/*.json per session, then summary.json and summary.md; stops before a session over --max-cost."
+contract = "Reads every task prompt first, then runs sequentially: clone and build, full setup, per task, per run, each arm in a fresh copy with the driver's context_file committed; a timed-out run's tokens are null; writes runs/*.json, summary.json, summary.md; stops before a session over --max-cost."
 
 [[interface]]
 id = "driver"
 anchor = "src/eval/mod.rs::Driver"
-contract = "A harness: `start` runs one session in a fresh environment (fresh_session_env) and waits for end or timeout; `parse` turns its transcript into a Run, tolerating a truncated last line only when truncation_ok."
+contract = "A harness: `start` runs one session in a fresh environment (fresh_session_env) and waits for end or timeout; `parse` turns its transcript into a Run, tolerating a truncated last line only if truncation_ok; `context_file` names a file the runner commits beside AGENTS.md (none by default)."
 
 [[interface]]
 id = "pi_parse"
@@ -101,6 +101,21 @@ contract = "Runs stewards next --no-brief in a dir: exit code and job count; wri
 id = "kill_leftovers"
 anchor = "src/eval/mod.rs::kill_leftovers"
 contract = "Kills every process whose cwd is under dir until none remain or 10 s pass; reports killed and survivors; None without /proc."
+
+[[interface]]
+id = "claude_parse"
+anchor = "src/eval/claude.rs::parse"
+contract = "A Claude Code session file plus its stdout.log to a Run: main tokens from result.usage, total from summed modelUsage, both null without a result line; cost_usd null, its figure kept as harness_reported_cost_usd; Read/Grep/Glob/Bash reads per record cwd; thinking on/off; sidechain children."
+
+[[interface]]
+id = "claude_config_dir"
+anchor = "src/eval/claude.rs::config_dir"
+contract = "Writes an isolated Claude Code config dir: settings.json with only the user's model, .credentials.json linked when present; never writes the user's dir; returns a plain note and the user's model."
+
+[[interface]]
+id = "task_prompt"
+anchor = "src/eval/mod.rs::task_prompt"
+contract = "The task file <dir>/NN-* verbatim; an error when none; a usage error when it contains `think` in any case."
 
 [[anchor]]
 path = "src/eval/mod.rs"
@@ -218,6 +233,30 @@ name = "is_handoff"
 path = "src/eval/mod.rs"
 name = "holds_handoff"
 
+[[anchor]]
+path = "src/eval/claude.rs"
+name = "parse"
+
+[[anchor]]
+path = "src/eval/claude.rs"
+name = "config_dir"
+
+[[anchor]]
+path = "src/eval/claude.rs"
+name = "ClaudeCode"
+
+[[anchor]]
+path = "src/eval/mod.rs"
+name = "task_prompt"
+
+[[anchor]]
+path = "src/eval/mod.rs"
+name = "add_context_file"
+
+[[anchor]]
+path = "src/eval/mod.rs"
+name = "run_session"
+
 [[gap]]
 kind = "gap"
 title = "Ritual steps are best-effort from transcripts"
@@ -237,18 +276,24 @@ anchor = "src/eval/mod.rs::reviewed_units"
 note = "simplified: only JSON submit output is read; upgrade if reviewers start passing --human."
 
 [[gap]]
-kind = "future"
-title = "Only the Pi harness is driven"
-anchor = "src/eval/mod.rs::run"
-note = "Any other --harness is not_implemented."
-
-[[gap]]
 kind = "gap"
 title = "Leftover processes are killed only on Linux"
 anchor = "src/eval/mod.rs::kill_leftovers"
 note = "Uses /proc/<pid>/cwd; without /proc nothing is killed and leftovers is None."
 
+[[gap]]
+kind = "future"
+title = "Only the Pi and Claude Code harnesses are driven"
+anchor = "src/eval/mod.rs::run"
+note = "Any other --harness is not_implemented; a new one needs a Driver and a branch in run."
+
+[[gap]]
+kind = "gap"
+title = "Claude Code runs have no trusted cost"
+anchor = "src/eval/claude.rs::parse"
+note = "Claude Code 1.0.128 prices unknown model ids at another model's rates, so cost_usd is null, spent_usd is null for a claude-code eval, and --max-cost is refused for it."
+
 [doc]
-overview = "The eval unit is the runner behind `stewards eval`. It measures whether coding agents do better with stewards than without: it drives a harness (only Pi today) over a suite of tasks in several arms, parses every session transcript into a run record, checks that the full arm followed the ritual, and reports cost and token overhead. It also holds the material it runs on under evals/: the small three-language fixture, the task prompts, the suite manifests, arms.sh, and one reproduction per seeded bug."
-how_it_works = "run (src/eval/mod.rs) accepts only the pi harness, picks the arms (bare, block-only and full by default; full-no-developers with --no-developers), loads the suite manifest from evals/suites/<name>.toml (suite.rs, load) and checks the task numbers. A fixture suite copies evals/fixture; a repo suite clones the stewards repo at a pinned commit and builds it once. pi.rs finds pi and writes an isolated Pi agent dir with only pi-subagents, so the user's own Pi setup is never touched. execute then prepares the full arm once: for a fixture it runs arms.sh full, sets the hand-written units, and runs one adoption session with ADOPT_PROMPT (init --draft, one subagent per printed handoff, then review --roles until it exits 0); with --setup-dir it uses an already adopted copy; a repo suite is already adopted. Adoption must leave the fixture's code unchanged, every tracked file owned and `stewards next` clean, else eval_setup_incomplete. Each task then runs, per run, in every arm in a fresh copy; bare and block-only sessions get a PATH with stewards hidden. The Driver starts a session in a fresh environment and parses its transcript (pi.rs, parse) into a Run: tokens, cost, files opened, stewards commands, subagent launches and their tasks, and reviewer submits. After each session the runner runs `stewards next --no-brief` and kills leftover processes. grade.rs grades each task: an edit task passes only when every full run has no gate misses (it changed files, ran `stewards review`, gave a subagent a handoff, and next exits 0); status, route, next, handoff_exact and reviewer_submit are recorded, not gated, and overhead ratios are reported but never change the verdict. Results go to evals/results/<timestamp>/ as runs/*.json, summary.json and summary.md; a session that would pass --max-cost is not started."
-how_to_change = "Start in src/eval/mod.rs for the command, the plan and the per-session loop; pi.rs for anything about Pi or its transcripts; grade.rs for verdicts and the report; suite.rs for manifest fields. Tests live in tests/eval.rs, with recorded Pi transcripts under tests/fixtures/transcripts/; add a transcript there when the parser must read a new shape. Keep true what the contracts promise: never write the user's Pi agent dir; bare and block-only arms never see stewards on PATH; a full arm that did not finish adoption is an error, not a quiet pass; overhead ratios stay report-only; the first session always runs under --max-cost; is_handoff must accept exactly what brief::handoff prints. The transcript readers (stewards_commands, shell_reads) are best-effort, see the card's gaps before trusting a ritual miss. A new suite is a TOML file under evals/suites/ plus its task prompts; a new harness needs a Driver and its entry in src/harness.rs."
+overview = "The eval unit is the runner behind `stewards eval`. It measures whether coding agents do better with stewards than without: it drives a harness (Pi or Claude Code) over a suite of tasks in several arms, parses every session transcript into a run record, checks that the full arm followed the ritual, and reports cost and token overhead. The graders never branch on the harness. It also holds the material it runs on under evals/: the small three-language fixture, the task prompts, the suite manifests, arms.sh, and one reproduction per seeded bug."
+how_it_works = "run (src/eval/mod.rs) accepts the pi and claude-code harnesses, picks the arms, loads the suite (suite.rs) and checks task numbers. pi.rs writes an isolated Pi agent dir; claude.rs an isolated CLAUDE_CONFIG_DIR with only the user's model and linked credentials. Claude Code runs at thinking off (MAX_THINKING_TOKENS removed) and refuses --max-cost, as its cost is not trusted. execute first reads every task prompt and refuses one containing `think`. It prepares the full arm once (arms.sh full plus an adoption session, --setup-dir, or a pre-adopted repo), then runs each task per run in every arm in a fresh copy; a driver's context_file (Claude Code's CLAUDE.md importing AGENTS.md) is folded into the last commit, and every commit has a neutral subject and author. Each Driver starts a session (run_session, killing its group on timeout) and parses its transcript into a Run: tokens (null when unmeasurable or timed out), cost, files opened per record cwd, stewards commands, subagent launches, reviewer submits, models and thinking. After each session the runner runs `stewards next --no-brief` and kills leftovers. grade.rs grades each task on gate misses only; overhead ratios are report-only; spent_usd is null when no run has a cost. Results go to evals/results/<timestamp>/."
+how_to_change = "Start in src/eval/mod.rs for the command, the plan, shared session helpers and the per-session loop; pi.rs or claude.rs for a harness and its transcripts; grade.rs for verdicts and the report; suite.rs for manifest fields. Tests live in tests/eval.rs, with recorded transcripts under tests/fixtures/transcripts/ (claude-code/ holds session files plus stdout.log); add one when a parser must read a new shape. Keep true: never write the user's Pi or Claude Code config; bare and block-only arms never see stewards on PATH; unfinished adoption is an error; overhead ratios stay report-only; graders never branch on the harness; no task prompt contains `think`; commit subjects name nothing; the first session always runs under --max-cost; is_handoff accepts exactly what brief::handoff prints. A new harness needs a Driver, a branch in run, and its entry in src/harness.rs."

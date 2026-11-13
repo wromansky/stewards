@@ -2,17 +2,17 @@
 use std::collections::{BTreeSet, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::{
-    Action, Driver, FAILED_STOPS, ReviewSubmit, Run, Session, Status, Tokens, fresh_session_env,
-    is_reviewer_submit, reads_git_history, reviewed_units, ritual_steps, shell_reads,
-    stewards_commands,
+    Action, Driver, FAILED_STOPS, ReviewSubmit, Run, Session, Tokens, fresh_session_env,
+    is_reviewer_submit, reads_git_history, records, repo_relative, reviewed_units, ritual_steps,
+    run_session, shell_reads, stewards_commands,
 };
 use crate::output::CliError;
 
@@ -177,45 +177,17 @@ impl Driver for Pi {
         if let Some(a) = &self.agent_dir {
             cmd.env("PI_CODING_AGENT_DIR", a);
         }
-        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-        let started = Instant::now();
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("starting {}", self.bin.display()))?;
-        let status = loop {
-            if let Some(s) = child.try_wait()? {
-                break if s.success() {
-                    Status::Ok
-                } else {
-                    Status::Failed
-                };
-            }
-            if started.elapsed() >= self.limit {
-                kill(&mut child);
-                break Status::TimedOut;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        };
+        let (status, duration_s) = run_session(&mut cmd, self.limit)?;
         Ok(Session {
             status,
             transcript: top_level(sessions)?.into_iter().next(),
-            duration_s: started.elapsed().as_secs_f64(),
+            duration_s,
         })
     }
 
     fn parse(&self, transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run> {
         parse(transcript, duration_s, truncation_ok)
     }
-}
-
-/// Kills the session's whole process group, then the child itself; the runner then kills what
-/// left the group (Pi starts shell commands and background subagents in their own groups).
-fn kill(child: &mut Child) {
-    let _ = Command::new("kill")
-        .args(["-KILL", &format!("-{}", child.id())])
-        .status();
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// The `.jsonl` files directly in a session directory, sorted.
@@ -226,23 +198,6 @@ fn top_level(sessions: &Path) -> Result<Vec<PathBuf>> {
         .collect();
     files.sort();
     Ok(files)
-}
-
-/// A file's records; with `truncation_ok` an unparseable last line is dropped and counted.
-fn records(path: &Path, truncation_ok: bool) -> Result<(Vec<Value>, usize)> {
-    let text = std::fs::read_to_string(path).with_context(|| path.display().to_string())?;
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    let mut out = vec![];
-    for (n, l) in lines.iter().enumerate() {
-        match serde_json::from_str(l) {
-            Ok(v) => out.push(v),
-            Err(_) if truncation_ok && n + 1 == lines.len() => return Ok((out, 1)),
-            Err(e) => {
-                return Err(e).with_context(|| format!("{}:{}", path.display(), n + 1));
-            }
-        }
-    }
-    Ok((out, 0))
 }
 
 /// Every child session file: `*.jsonl` anywhere under `<transcript without .jsonl>/`, sorted, so
@@ -288,25 +243,6 @@ fn tokens(u: &Value) -> Tokens {
         cache_read: n("cacheRead"),
         cache_write: n("cacheWrite"),
     }
-}
-
-/// A path a session opened, relative to the session's `cwd`; `None` outside it.
-fn repo_relative(path: &str, cwd: &str) -> Option<String> {
-    let p = Path::new(path);
-    let rel = if p.is_absolute() {
-        p.strip_prefix(cwd).ok()?
-    } else {
-        p
-    };
-    let mut parts = vec![];
-    for c in rel.components() {
-        match c {
-            Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
-            Component::CurDir => {}
-            _ => return None,
-        }
-    }
-    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 /// The tool calls of one session's records, in order.
@@ -586,8 +522,8 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         )
     });
     Ok(Run {
-        main_tokens,
-        total_tokens,
+        main_tokens: Some(main_tokens),
+        total_tokens: Some(total_tokens),
         cache_warming,
         peak_main_context,
         tool_calls: tool_names,
@@ -596,6 +532,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         shell_commands,
         ritual_steps: ritual_steps(&all),
         cost_usd: cost,
+        harness_reported_cost_usd: None,
         duration_s,
         model,
         models: models.into_iter().collect(),

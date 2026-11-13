@@ -72,7 +72,7 @@ pub fn upsert_block(repo: &Repo) -> anyhow::Result<bool> {
 #[derive(Serialize)]
 struct Delegation {
     harness: &'static str,
-    text: String,
+    text: &'static str,
 }
 
 #[derive(Serialize)]
@@ -100,7 +100,7 @@ struct Guide {
     hygiene: &'static str,
     adoption: &'static str,
     instructions: &'static str,
-    delegation: String,
+    delegation: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     all_delegations: Option<Vec<Delegation>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -165,13 +165,13 @@ pub fn run(
         hygiene: parts[5],
         adoption: ADOPTION,
         instructions: AGENTS_ONLY,
-        delegation: harness::delegation().to_string(),
+        delegation: harness::DELEGATION,
         all_delegations: all.then(|| {
             HARNESSES
                 .iter()
                 .map(|h| Delegation {
                     harness: h.name,
-                    text: harness::delegation().to_string(),
+                    text: harness::DELEGATION,
                 })
                 .collect()
         }),

@@ -302,6 +302,11 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
             }
         }
 
+        // Overlaps, unowned files and instruction files belong to no single unit, so a filter
+        // drops them.
+        if filter.is_some() {
+            continue;
+        }
         // A missing, linked, or oversize file reads as an error and warns like one without the text.
         for file in &loaded.repo.instruction_files {
             let points = repo
@@ -320,10 +325,6 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
             }
         }
 
-        // Overlaps and unowned files belong to no single unit, so a filter drops them.
-        if filter.is_some() {
-            continue;
-        }
         for (path, units) in router.overlaps(&tracked) {
             let units: Vec<_> = units.iter().map(|u| ws.display_name(repo, u)).collect();
             report.warnings.push(Finding {

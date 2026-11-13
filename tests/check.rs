@@ -494,6 +494,17 @@ fn a_listed_instruction_file_that_mentions_agents_md_does_not_warn() {
 }
 
 #[test]
+fn a_unit_filter_drops_instructions_unlinked() {
+    let repo = fixture("single");
+    fs::write(repo.path().join("OTHER.md"), "rules\n").unwrap();
+    assert_eq!(unlinked(repo.path(), "[\"OTHER.md\"]"), ["OTHER.md"]);
+    let ws = discover(repo.path(), None).unwrap();
+    let report = check(&ws, Some("store")).unwrap();
+    let kinds: Vec<&str> = report.warnings.iter().map(|w| w.kind).collect();
+    assert!(!kinds.contains(&"instructions_unlinked"), "{kinds:?}");
+}
+
+#[test]
 fn a_missing_listed_instruction_file_warns() {
     let repo = fixture("single");
     assert_eq!(

@@ -33,13 +33,7 @@ pub struct Harness {
 }
 
 /// How to delegate a brief, the same in every harness, known or not.
-const GENERIC_DELEGATION: &str = "Start a fresh-context, general-purpose subagent that can run shell and write files, give it the handoff stewards printed (``Read `<absolute brief path>` and follow it.``) unchanged as its whole task, and wait for its reply: what `submit` printed.";
-
-/// The delegation text for `harness`: `GENERIC_DELEGATION`, plus for a harness in the table only
-/// the name of its subagent tool, so no harness gets other guidance than one it does not know.
-pub fn delegation() -> &'static str {
-    GENERIC_DELEGATION
-}
+pub const DELEGATION: &str = "Start a fresh-context, general-purpose subagent that can run shell and write files, give it the handoff stewards printed (``Read `<absolute brief path>` and follow it.``) unchanged as its whole task, and wait for its reply: what `submit` printed.";
 
 const VERIFIED: &str = "2026-10-21";
 

@@ -31,3 +31,19 @@ given = "stamped unit whose interface name was removed from its file, or sits in
 expect = "tester and documenter jobs fire with reason 'interface file changed'"
 level = "integration"
 command = "cargo test --test next interface_name_removed_from_its_file_falls_back_to_the_file_trigger"
+
+[[scenario]]
+id = "plain-next-folds-stamped-units-into-one-reviewer-job"
+interface = "next"
+given = "two stamped units whose interfaces changed; plain `next --no-brief`"
+expect = "one job, role reviewer, empty unit, command 'stewards brief --role reviewer'; its reasons are every maintainer/tester/documenter reason of `next --roles` led by the unit name; architect false; exit 1"
+level = "integration"
+command = "cargo test --test review next_lists_one_reviewer_job_naming_each_due_unit_and_why"
+
+[[scenario]]
+id = "never-stamped-unit-keeps-its-maintainer-job-beside-the-review"
+interface = "next"
+given = "api stamped and changed, store never stamped; plain `next --no-brief`"
+expect = "jobs are the reviewer job then store maintainer; exit 1"
+level = "integration"
+command = "cargo test --test review a_never_stamped_unit_keeps_its_maintainer_job_beside_the_review"

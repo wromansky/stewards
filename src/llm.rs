@@ -36,6 +36,7 @@ pub enum Answer {
     Documenter(types::DocumenterAnswer),
     Validator(types::ValidatorAnswer),
     Architect(types::ArchitectAnswer),
+    Review(types::ReviewAnswer),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -55,6 +56,7 @@ pub fn role_text(role: Role, mode: Mode) -> &'static str {
         (Role::Documenter, _) => include_str!("llm_schema/documenter.role.txt"),
         (Role::Validator, _) => include_str!("llm_schema/validator.role.txt"),
         (Role::Architect, _) => include_str!("llm_schema/architect.role.txt"),
+        (Role::Reviewer, _) => include_str!("llm_schema/reviewer.role.txt"),
     }
 }
 
@@ -70,6 +72,7 @@ pub fn output_format(role: Role, mode: Mode) -> &'static str {
         (Role::Documenter, _) => include_str!("llm_schema/documenter.schema.txt"),
         (Role::Validator, _) => include_str!("llm_schema/validator.schema.txt"),
         (Role::Architect, _) => include_str!("llm_schema/architect.schema.txt"),
+        (Role::Reviewer, _) => include_str!("llm_schema/reviewer.schema.txt"),
     }
 }
 
@@ -84,6 +87,7 @@ pub fn parse(role: Role, mode: Mode, text: &str) -> Result<Answer, Vec<FieldErro
         (Role::Documenter, _) => typed(text, &example).map(Answer::Documenter),
         (Role::Validator, _) => typed(text, &example).map(Answer::Validator),
         (Role::Architect, _) => typed(text, &example).map(Answer::Architect),
+        (Role::Reviewer, _) => typed(text, &example).map(Answer::Review),
     }?;
     let value: Value = serde_json::from_str(text).expect("typed() accepted it as one JSON value");
     // The generated types do not deny unknown fields, so compare the input with what serde kept.
@@ -257,6 +261,19 @@ fn example(role: Role, mode: Mode) -> Value {
             "unit_proposals": [{"name": "auth", "purpose": "login and tokens", "paths": ["src/auth/**"]}],
             "explanation": "Two steps, api then store."
         }),
+        (Role::Reviewer, _) => json!({
+            "snapshot": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+            "units": [{
+                "unit": "api",
+                "verdict": "changes",
+                "findings": [{"file": "src/api.rs", "line": 12, "rung": "stdlib", "cut": "the hand-rolled join", "replace_with": "slice::join"}],
+                "card_patch": card_patch,
+                "check": {"command": "cargo test api", "pass": true, "output": "1 passed"},
+                "scenario_patch": [{"id": "create-ok", "interface": "create-item", "given": "a valid body", "expect": "201", "level": "integration", "command": "cargo test create_ok"}],
+                "bugs": [{"title": "count off by one", "repro": "cargo test count", "evidence": "expected 2, got 3", "interface": "create-item"}],
+                "doc": {"overview": "Serves items over HTTP.", "how_it_works": "Requests enter at src/api.rs::router.", "how_to_change": "Start at the router; keep status codes stable."}
+            }]
+        }),
     };
     v["pulled_anchors"] = json!(["src/api.rs::router"]);
     v["notes"] = json!("");
@@ -331,7 +348,7 @@ pub fn direct_guards(role: Role) -> Result<(&'static str, String, String)> {
 }
 
 /// Calls the role's model through BAML (`--direct`) and returns the answer as JSON text.
-/// `unit` fills the role text; the architect ignores it.
+/// `unit` fills the role text; the architect and the reviewer ignore it.
 pub fn direct(role: Role, mode: Mode, unit: &str, brief_text: &str) -> Result<String> {
     let (provider, model, key) = direct_guards(role)?;
 
@@ -382,6 +399,12 @@ pub fn direct(role: Role, mode: Mode, unit: &str, brief_text: &str) -> Result<St
         ),
         (Role::Architect, _) => Answer::Architect(
             B.Architect
+                .with_client_registry(&registry)
+                .call(brief_text)
+                .map_err(call_failed)?,
+        ),
+        (Role::Reviewer, _) => Answer::Review(
+            B.Reviewer
                 .with_client_registry(&registry)
                 .call(brief_text)
                 .map_err(call_failed)?,
@@ -484,6 +507,11 @@ mod tests {
                 B.ArchitectSchema.build_request(),
                 B.Architect.build_request("BRIEF"),
             ),
+            (
+                "reviewer",
+                B.ReviewerSchema.build_request(),
+                B.Reviewer.build_request("BRIEF"),
+            ),
         ];
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llm_schema");
         for (stem, schema, role) in shapes {
@@ -522,6 +550,7 @@ mod tests {
             (Role::Documenter, Mode::Review),
             (Role::Validator, Mode::Review),
             (Role::Architect, Mode::Review),
+            (Role::Reviewer, Mode::Review),
         ] {
             assert!(
                 !example(role, mode).to_string().contains("null"),
@@ -539,6 +568,7 @@ mod tests {
             Role::Documenter,
             Role::Validator,
             Role::Architect,
+            Role::Reviewer,
         ] {
             for mode in [Mode::Review, Mode::Explain] {
                 let text = example(role, mode).to_string();

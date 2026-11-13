@@ -572,11 +572,15 @@ fn propose(repo: &Repo) -> Result<Init> {
     })
 }
 
+/// How adoption finishes: the per-role flow, so each unit's first docs come from its documenter.
+const THEN: &str = "after these jobs, run `stewards next --roles` and dispatch every brief it writes until it lists no jobs";
+
 #[derive(Serialize)]
 struct Draft {
     #[serde(flatten)]
     init: Option<Init>,
     jobs: Vec<Job>,
+    then: &'static str,
     /// What each job's submit printed, with `--direct`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     submitted: Vec<Submitted>,
@@ -591,6 +595,7 @@ impl Human for Draft {
             out.push(format!("- `{}`: {}", who.trim(), j.reasons.join("; ")));
         }
         out.extend(self.submitted.iter().map(Submitted::render));
+        out.push(format!("\nThen: {}.", self.then));
         out.join("\n")
     }
 }
@@ -663,7 +668,7 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         debt_added: vec![],
     }];
     jobs.extend(
-        next::next(&ws, None, false)?
+        next::next(&ws, None, false, true)?
             .jobs
             .into_iter()
             .filter(|j| j.role == Role::Maintainer && j.reasons == ["never reviewed"])
@@ -705,6 +710,7 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         &Draft {
             init,
             jobs,
+            then: THEN,
             submitted,
         },
         g.human,

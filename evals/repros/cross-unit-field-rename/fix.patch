@@ -1,0 +1,19 @@
+--- a/client/client.ts
++++ b/client/client.ts
+@@ -18,14 +18,14 @@
+ 
+ type ApiItem = {
+   id: string;
+-  name: string;
++  label: string;
+   createdAt: number;
+ };
+ 
+ function toItem(raw: ApiItem): Item {
+   return {
+     id: raw.id,
+-    name: raw.name,
++    name: raw.label,
+     createdAt: raw.createdAt,
+   };
+ }

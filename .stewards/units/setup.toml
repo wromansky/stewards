@@ -1,11 +1,11 @@
 unit = "setup"
 
 [reviewed]
-commit = "e68ec0e8d29e804bf3091e0216bb44f63665e6b9"
-fingerprint = "sha256:b86941e8b7ab5c6b3d34cddd1d385f810502fc63731cce79efefb71adb1c2c75"
-tree = "f1cda9ed982949caf35f104e87c550cbc0de8c64"
-tester = "31699766f1eb860c4a2b682ed8972c37b2353fd3"
-documenter = "9accf285b176bb116f2831baec6f4e7e87c25f85"
+commit = "2d972b0896b3296afa9472532b7f9f0cf954c19e"
+fingerprint = "sha256:662f60338db79e9a40cf36eb6c4fa2967e140b5334a4b0d6fa0a84ce2deeaad6"
+tree = "a51d26de8be8f823771500c48305f444fd697fd9"
+tester = "a51d26de8be8f823771500c48305f444fd697fd9"
+documenter = "a51d26de8be8f823771500c48305f444fd697fd9"
 
 [[interface]]
 id = "init"
@@ -15,7 +15,7 @@ contract = "Plain `init` refuses (already_initialized) if units.toml or repo.tom
 [[interface]]
 id = "init-draft"
 anchor = "src/init.rs::draft_jobs"
-contract = "`init --draft` runs step 1 only on an uninitialized repo, then briefs the architect naming job and a first review per never-reviewed unit; with --direct it checks every model guard first, then calls and submits each job, and a failure reports how many were already submitted."
+contract = "`init --draft` runs step 1 only on an uninitialized repo, briefs the architect naming job and a first review per never-reviewed unit, and ends telling to run `next --roles`; with --direct it checks every model guard first, then calls and submits each job; a failure reports how many were submitted."
 
 [[interface]]
 id = "init-hooks-ci"

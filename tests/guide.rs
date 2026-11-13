@@ -297,9 +297,10 @@ fn zeroclaw_and_borg_delegation_name_their_spawn_tool() {
 }
 
 #[test]
-fn guide_output_names_all_six_roles() {
+fn guide_output_names_all_seven_roles() {
     let (v, _) = guide(&[], &[]);
     let roles = v["roles"].as_str().unwrap();
+    assert!(roles.contains("- reviewer:"), "{roles}");
     for role in [
         "maintainer",
         "tester",
@@ -308,8 +309,17 @@ fn guide_output_names_all_six_roles() {
         "architect",
         "developer",
     ] {
-        assert!(roles.contains(&format!("- {role}:")), "{role}");
+        assert!(roles.contains(role), "{role}");
     }
+}
+
+#[test]
+fn block_equals_the_block_in_this_repositorys_agents_md() {
+    let agents = include_str!("../AGENTS.md");
+    assert!(
+        agents.starts_with(block()),
+        "AGENTS.md does not start with the block"
+    );
 }
 
 #[test]

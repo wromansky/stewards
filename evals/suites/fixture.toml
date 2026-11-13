@@ -1,0 +1,34 @@
+# The small three-language fixture (`evals/fixture/`, about 400 lines). `arms.sh`
+# copies it for each arm; the `full` arm is `stewards init`, the hand-set units,
+# then an adoption session.
+tasks_dir = "tasks"
+session_minutes = 30
+
+[source]
+kind = "fixture"
+dir = "fixture"
+units = "full-units.toml"
+unowned = [".gitignore", "AGENTS.md"]
+tests = ["api/test_*.py", "client/*.test.ts", "cli/tests/**"]
+
+[[task]]
+number = 1
+
+[[task]]
+number = 2
+
+[[task]]
+number = 3
+
+[[task]]
+number = 4
+read_only = true
+
+[[task]]
+number = 5
+
+[[task]]
+number = 6
+read_only = true
+setup = 5
+files_opened_vs_bare = 4

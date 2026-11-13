@@ -1,0 +1,6 @@
+Add a `priority` field to items so it can be set when an item is created and
+shown wherever items appear, across the API, the TypeScript client, and the
+CLI.
+
+This touches all three parts, so plan the change across them before
+implementing, and update the tests.

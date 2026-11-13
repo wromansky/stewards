@@ -1,7 +1,7 @@
 [[unit]]
 name = "cli"
 purpose = "The stewards binary: clap command parsing and dispatch, global flags (--human, --repo, -C, --direct), the JSON envelope and markdown output, CLI errors, and the shared test helpers."
-paths = ["src/main.rs", "src/lib.rs", "src/output.rs", "src/completions.rs", "src/eval.rs", "src/render.rs", "src/review.rs", "src/validate.rs", "tests/skeleton.rs", "tests/common/**"]
+paths = ["src/main.rs", "src/lib.rs", "src/output.rs", "src/completions.rs", "src/render.rs", "src/review.rs", "src/validate.rs", "tests/skeleton.rs", "tests/common/**"]
 
 [[unit]]
 name = "model"
@@ -36,9 +36,14 @@ paths = ["src/llm.rs", "baml_src/**", "src/baml_client/**", "src/llm_schema/**",
 [[unit]]
 name = "jobs"
 purpose = "The brief/submit job cycle: renders and writes a role's brief with its header, validates the typed answer against it, writes the updates and retires the brief, and appends telemetry."
-paths = ["src/brief.rs", "src/submit.rs", "src/telemetry.rs", "tests/brief.rs", "tests/submit.rs", "tests/submit_roles.rs", "tests/developer.rs"]
+paths = ["src/brief.rs", "src/submit.rs", "src/telemetry.rs", "tests/brief.rs", "tests/submit.rs", "tests/submit_roles.rs", "tests/developer.rs", "tests/review.rs"]
 
 [[unit]]
 name = "setup"
 purpose = "Onboarding and generated files: init proposes units and writes .stewards, the guide and AGENTS.md block, the per-harness facts table, and docs rendering from unit cards."
 paths = ["src/init.rs", "src/guide.rs", "src/harness.rs", "src/docs.rs", "tests/init.rs", "tests/init_draft.rs", "tests/guide.rs", "tests/docs.rs", "tests/fixtures/docs/**"]
+
+[[unit]]
+name = "eval"
+purpose = "The eval runner: suites and their manifests, arm setup, the Pi driver and transcript parser, the ritual gate and overhead report, and the fixture, tasks and seeded-bug repros it runs on."
+paths = ["src/eval/**", "tests/eval.rs", "tests/fixtures/transcripts/**", "evals/**"]

@@ -19,7 +19,7 @@ command = "cargo test --test llm output_format_names_every_field"
 [[scenario]]
 id = "parse-accepts-every-shape"
 interface = "parse-answer"
-given = "a valid answer for each of the 7 role/mode shapes"
+given = "a valid answer for each of the 8 role/mode shapes, the reviewer's ReviewAnswer included"
 expect = "parse returns Ok"
 level = "unit"
 command = "cargo test --test llm every_answer_shape_parses"

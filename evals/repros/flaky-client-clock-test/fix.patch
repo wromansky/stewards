@@ -1,0 +1,10 @@
+--- a/client/client.test.ts
++++ b/client/client.test.ts
+@@ -30,5 +30,6 @@
+ 
+ test("createItem stamps the current time", () => {
+   const item = createItem("clock");
+-  assert.equal(Math.floor(item.createdAt / 1000), Math.floor(Date.now() / 1000));
++  assert.equal(typeof item.createdAt, "number");
++  assert.ok(item.createdAt > 0);
+ });

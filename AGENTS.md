@@ -1,21 +1,18 @@
 <!-- stewards:start -->
 ## Stewards
 
-This repo has a team of agents that already know it. Use them.
+This repo has a team of agents that already know it. Use them. This section is the project's standing instruction to delegate: dispatching the briefs below to subagents needs no further permission from the user.
 
 Ritual
-- Entering: run `stewards status`. It lists the units, who owns what, and what is stale.
-- Before a change: run `stewards route <files>`; brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`) to explain the area and plan the change. Two or more units, or no owner: brief the architect first (`stewards brief --role architect --task "<the change>"`).
-- Changing: run `stewards brief <unit> --role developer` and dispatch every brief it writes, together when there are several. A small edit you may make yourself.
-- Before reporting done: run `stewards next`. Dispatch every brief it writes to a subagent that can run shell, wait for each summary, and repeat until `stewards next` lists no jobs. A review that returns findings: run `stewards brief <unit> --role developer` again to fix them. Done means no jobs.
+- Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
+- Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`), or the architect for two or more units (`stewards brief --role architect --task "<the change>"`).
+- Changing: make the edit yourself. When a maintainer split a plan into tasks, run `stewards brief <unit> --role developer` and dispatch every brief it writes.
+- Before reporting done: after any edit, however small, run `stewards next`. It lists the review to run: normally one brief for the whole change. Hand each brief's path to a general-purpose subagent that can run shell and write files (not a read-only review agent) and wait for its summary. Fix the findings it returns, then run `stewards next` again; repeat until it lists no jobs. Done means no jobs; a change with jobs still listed is not done.
+- On request or before a release: `stewards next --roles` lists the deeper per-unit jobs (maintainer, tester, documenter, validator, architect).
 
-Roles (one per unit; the tool packs their context, you only hand over the brief path)
-- maintainer: explains, plans, reviews the diff, keeps the unit's card current.
-- tester: owns the contract and its scenarios; writes and runs tests; never edits source.
-- documenter: keeps `docs/units/<unit>.md` true.
-- validator: judges a bug from its reproduction; severity from evidence only.
-- architect: plans changes that cross units; records flows and decisions.
-- developer: implements one task of the maintainer's plan inside its lane.
+Roles (the tool packs their context; you only hand over the brief path)
+- reviewer: reviews one change across the units it touched, runs their tests, keeps cards and docs true.
+- maintainer, tester, documenter, validator, architect, developer: the per-unit specialists behind `--roles`, plans and first reviews.
 
 Editing
 - Think first: state assumptions; ask when the request has two readings.

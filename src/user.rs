@@ -22,7 +22,7 @@ impl Config {
 }
 
 /// One `[[entry]]` of `memory.toml`; an absent filter matches everything.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Entry {
     pub text: String,
     pub languages: Option<Vec<String>>,

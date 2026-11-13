@@ -1,0 +1,5 @@
+Add a `--unit <name>` option to `stewards debt` so it lists only that
+unit's `simplified:` comments.
+
+An unknown unit name should be an error in the same style the other
+commands use. Add a test.

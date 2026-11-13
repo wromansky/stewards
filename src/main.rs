@@ -92,12 +92,15 @@ enum Command {
     },
     /// Record [reviewed] at the current snapshot (human override)
     Stamp { unit: String },
-    /// Find stale units, write review briefs, print the jobs
+    /// Find what changed, write the review brief, print the jobs
     Next {
         #[arg(long)]
         task: Option<String>,
         #[arg(long)]
         no_brief: bool,
+        /// The per-unit jobs (maintainer, tester, documenter, validator, architect) instead of one review
+        #[arg(long)]
+        roles: bool,
         #[arg(long)]
         no_run: bool,
         #[arg(long)]
@@ -121,7 +124,7 @@ enum Command {
     Debt,
     /// Render docs/units/<unit>.md and the index
     Docs { unit: Option<String> },
-    /// Write the six native role agents
+    /// Write the seven native role agents
     Render {
         #[arg(long)]
         harness: String,
@@ -132,12 +135,33 @@ enum Command {
     Eval {
         #[arg(long)]
         harness: Option<String>,
+        /// The suite manifest under evals/suites/
+        #[arg(long, default_value = "fixture")]
+        suite: String,
+        /// bare, block-only, or full; all three when omitted
         #[arg(long)]
         arm: Option<String>,
+        /// Repeatable; every task of the suite when omitted
         #[arg(long)]
-        task: Option<u32>,
+        task: Vec<u32>,
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
+        runs: u32,
         #[arg(long, value_name = "usd")]
         max_cost: Option<f64>,
+        /// The full arm with the developer role switched off
+        #[arg(long)]
+        no_developers: bool,
+        #[arg(long, value_name = "id")]
+        model: Option<String>,
+        /// The thinking level of every session
+        #[arg(long, default_value = "medium", value_parser = ["off", "minimal", "low", "medium", "high", "xhigh", "max"])]
+        thinking: String,
+        /// An adopted fixture to copy for the full arm (fixture suites)
+        #[arg(long, value_name = "dir")]
+        setup_dir: Option<PathBuf>,
+        /// Keep each run's fixture copy instead of deleting it after the run
+        #[arg(long)]
+        keep_work: bool,
     },
     /// Shell completions
     Completions { shell: String },
@@ -233,9 +257,10 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
         Command::Next {
             task,
             no_brief,
+            roles,
             no_run,
             pr,
-        } => next::run(g, task.as_deref(), no_brief, no_run, pr),
+        } => next::run(g, task.as_deref(), no_brief, roles, no_run, pr),
         Command::Check => check::run(g),
         Command::Validate { report, export } => validate::run(g, report.as_deref(), export),
         Command::Review { pr } => review::run(g, pr),
@@ -247,10 +272,32 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
         } => render::run(g, &harness, repo_level),
         Command::Eval {
             harness,
+            suite,
             arm,
             task,
+            runs,
             max_cost,
-        } => eval::run(g, harness.as_deref(), arm.as_deref(), task, max_cost),
+            no_developers,
+            model,
+            thinking,
+            setup_dir,
+            keep_work,
+        } => eval::run(
+            g,
+            eval::Flags {
+                harness: harness.as_deref(),
+                suite: &suite,
+                arm: arm.as_deref(),
+                tasks: &task,
+                runs,
+                max_cost,
+                no_developers,
+                model: model.as_deref(),
+                thinking: &thinking,
+                setup_dir: setup_dir.as_deref(),
+                keep_work,
+            },
+        ),
         Command::Completions { shell } => completions::run(g, &shell, Cli::command()),
     }
 }

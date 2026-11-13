@@ -28,7 +28,11 @@ fn run(dir: &Path, home: &Path, args: &[&str]) -> (i32, Value) {
 
 /// Writes the review brief for api with `next`.
 fn review_job(dir: &Path, home: &Path) {
-    let (code, v) = run(dir, home, &["next", "--task", "add a count endpoint"]);
+    let (code, v) = run(
+        dir,
+        home,
+        &["next", "--roles", "--task", "add a count endpoint"],
+    );
     assert_eq!(code, 1, "{v}");
     assert!(dir.join(".stewards/briefs/api-maintainer.md").is_file());
 }

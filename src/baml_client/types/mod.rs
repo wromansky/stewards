@@ -59,6 +59,8 @@ pub enum Types {
 
     PlanStep(PlanStep),
 
+    ReviewAnswer(ReviewAnswer),
+
     Scenario(Scenario),
 
     ScenarioResult(ScenarioResult),
@@ -68,6 +70,8 @@ pub enum Types {
     TesterAnswer(TesterAnswer),
 
     UnitProposal(UnitProposal),
+
+    UnitReview(UnitReview),
 
     ValidatorAnswer(ValidatorAnswer),
 
@@ -121,6 +125,8 @@ impl ::baml::KnownTypes for Types {
 
             Self::PlanStep(_) => "PlanStep",
 
+            Self::ReviewAnswer(_) => "ReviewAnswer",
+
             Self::Scenario(_) => "Scenario",
 
             Self::ScenarioResult(_) => "ScenarioResult",
@@ -130,6 +136,8 @@ impl ::baml::KnownTypes for Types {
             Self::TesterAnswer(_) => "TesterAnswer",
 
             Self::UnitProposal(_) => "UnitProposal",
+
+            Self::UnitReview(_) => "UnitReview",
 
             Self::ValidatorAnswer(_) => "ValidatorAnswer",
 

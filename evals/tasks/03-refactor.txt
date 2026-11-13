@@ -1,0 +1,7 @@
+The items API code has grown a bit tangled between the store functions and
+the command-line handling. Refactor it for clarity.
+
+Keep the behavior and the public interface exactly the same. Someday we may
+want to swap the in-memory store for another storage backend, so it would be
+nice if the store boundary stayed easy to replace. Run the existing tests to
+show nothing changed.

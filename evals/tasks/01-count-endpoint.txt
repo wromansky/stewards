@@ -1,0 +1,6 @@
+Add a `count` endpoint to the items API.
+
+It should return the number of items currently stored. Follow the existing
+style of create/list/get, expose it the same way (as a function and through
+the command-line entry point), and add a test with the existing test
+framework.

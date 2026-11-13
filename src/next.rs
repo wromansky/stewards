@@ -11,14 +11,14 @@ use crate::check::{CheckReport, changed_since, check_at, one_line, stale_files};
 use crate::debt::{DebtItem, is_debt_line};
 use crate::git;
 use crate::llm::Mode;
-use crate::model::{Anchor, GapKind, Interface, Role};
+use crate::model::{Anchor, GapKind, Interface, Role, UnitCard};
 use crate::output::{Global, Human, emit, not_implemented};
 use crate::route::Router;
-use crate::workspace::{Workspace, here};
+use crate::workspace::{Repo, Workspace, here};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Job {
-    /// Empty for the architect.
+    /// Empty for the architect and the reviewer.
     pub unit: String,
     pub role: Role,
     pub task: String,
@@ -47,11 +47,219 @@ pub struct NextReport {
     pub check: CheckReport,
 }
 
-/// With `write_briefs`, writes each job's brief and fills its `brief_path`.
-pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<NextReport> {
-    let mut jobs = Vec::new();
-    // Stamped units changed since their stamps: (name, repo name, task, snapshot, changed files).
-    let mut moved: Vec<(String, String, String, String, Vec<String>)> = Vec::new();
+/// A per-role job with its repo and its plain unit name (`None` for the architect).
+struct RoleJob<'a> {
+    repo: &'a Repo,
+    unit: Option<String>,
+    job: Job,
+}
+
+/// The jobs due. With `roles`, one job per unit and role as `next --roles` lists them; without,
+/// each repo's stamped units those jobs name are folded into one reviewer job, and only a
+/// never-stamped unit keeps its own (maintainer) job. With `write_briefs`, writes each job's brief
+/// and fills its `brief_path`.
+pub fn next(
+    ws: &Workspace,
+    task: Option<&str>,
+    write_briefs: bool,
+    roles: bool,
+) -> Result<NextReport> {
+    let (role_jobs, snapshots) = role_jobs(ws, task)?;
+    let mut jobs = vec![];
+    if roles {
+        for RoleJob {
+            repo,
+            unit,
+            mut job,
+        } in role_jobs
+        {
+            if write_briefs {
+                write_role_brief(repo, unit.as_deref(), &mut job)?;
+            }
+            jobs.push(job);
+        }
+    } else {
+        let mut first_reviews = vec![];
+        for repo in &ws.repos {
+            let of_repo: Vec<&RoleJob> = role_jobs
+                .iter()
+                .filter(|j| std::ptr::eq(j.repo, repo))
+                .collect();
+            let due = due_for_review(&of_repo);
+            let Some(first) = of_repo.first() else {
+                continue;
+            };
+            if !due.is_empty() {
+                let (task, snapshot) = (&first.job.task, &first.job.snapshot);
+                jobs.push(reviewer_job(ws, repo, &due, task, snapshot, write_briefs)?);
+            }
+            for j in of_repo {
+                if j.job.role == Role::Maintainer && j.job.reasons == [NEVER_REVIEWED] {
+                    let mut job = j.job.clone();
+                    if write_briefs {
+                        write_role_brief(repo, j.unit.as_deref(), &mut job)?;
+                    }
+                    first_reviews.push(job);
+                }
+            }
+        }
+        jobs.extend(first_reviews);
+    }
+    Ok(NextReport {
+        architect: jobs.iter().any(|j| j.role == Role::Architect),
+        jobs,
+        flow_checks: vec![],
+        check: check_at(ws, None, &snapshots)?,
+    })
+}
+
+fn write_role_brief(repo: &Repo, unit: Option<&str>, job: &mut Job) -> Result<()> {
+    let (path, _) = brief::write(repo, unit, job.role, Mode::Review, &job.task, &job.snapshot)?;
+    job.brief_path = Some(path);
+    Ok(())
+}
+
+const NEVER_REVIEWED: &str = "never reviewed";
+
+/// A unit the review brief covers and the reasons it is due.
+pub type DueUnit = (String, Vec<String>);
+
+/// A stamped unit the reviewer covers, with why: the reasons of its maintainer (stale), tester,
+/// and documenter jobs.
+struct Due {
+    unit: String,
+    reasons: Vec<String>,
+    changed: Vec<String>,
+    debt_added: Vec<DebtItem>,
+}
+
+/// The stamped units of one repo's per-role `jobs` that have a maintainer, tester, or documenter
+/// job, in units.toml order.
+fn due_for_review(jobs: &[&RoleJob]) -> Vec<Due> {
+    let mut due: Vec<Due> = vec![];
+    for j in jobs {
+        let stamped_review = match j.job.role {
+            Role::Maintainer => j.job.reasons != [NEVER_REVIEWED],
+            Role::Tester | Role::Documenter => true,
+            _ => false,
+        };
+        let Some(unit) = j.unit.as_ref().filter(|_| stamped_review) else {
+            continue;
+        };
+        let at = match due.iter().position(|d| &d.unit == unit) {
+            Some(at) => at,
+            None => {
+                due.push(Due {
+                    unit: unit.clone(),
+                    reasons: vec![],
+                    changed: vec![],
+                    debt_added: vec![],
+                });
+                due.len() - 1
+            }
+        };
+        let d = &mut due[at];
+        for r in &j.job.reasons {
+            if !d.reasons.contains(r) {
+                d.reasons.push(r.clone());
+            }
+        }
+        for c in &j.job.changed {
+            if !d.changed.contains(c) {
+                d.changed.push(c.clone());
+            }
+        }
+        d.debt_added.extend(j.job.debt_added.iter().cloned());
+    }
+    due
+}
+
+/// The one reviewer job of `repo` for the `due` units its review brief covers; the units over the
+/// review budget are named as next round and stay due.
+fn reviewer_job(
+    ws: &Workspace,
+    repo: &Repo,
+    due: &[Due],
+    task: &str,
+    snapshot: &str,
+    write_brief: bool,
+) -> Result<Job> {
+    let units: Vec<DueUnit> = due
+        .iter()
+        .map(|d| (d.unit.clone(), d.reasons.clone()))
+        .collect();
+    let (text, pack) = brief::build_review(repo, &units, task, snapshot)?;
+    let brief_path = if write_brief {
+        Some(brief::write_text(repo, None, Role::Reviewer, &text)?)
+    } else {
+        None
+    };
+    let covered = &due[..pack.units.len()];
+    let mut reasons: Vec<String> = covered
+        .iter()
+        .flat_map(|d| {
+            let name = ws.display_name(repo, &d.unit);
+            d.reasons.iter().map(move |r| format!("{name}: {r}"))
+        })
+        .collect();
+    if !pack.next_round.is_empty() {
+        let later: Vec<String> = pack
+            .next_round
+            .iter()
+            .map(|u| ws.display_name(repo, u))
+            .collect();
+        reasons.push(format!(
+            "next round, over the review budget: {}",
+            later.join(", ")
+        ));
+    }
+    Ok(Job {
+        unit: String::new(),
+        role: Role::Reviewer,
+        task: task.to_string(),
+        snapshot: snapshot.to_string(),
+        reasons,
+        changed: covered.iter().flat_map(|d| d.changed.clone()).collect(),
+        brief_path,
+        command: if ws.is_workspace {
+            format!("stewards --repo {} brief --role reviewer", repo.name)
+        } else {
+            "stewards brief --role reviewer".into()
+        },
+        debt_added: covered.iter().flat_map(|d| d.debt_added.clone()).collect(),
+    })
+}
+
+/// The snapshot, task, and the stamped units of `repo` due for review (units.toml order) with
+/// their reasons, for `brief --role reviewer` and `pack --role reviewer`.
+pub fn review_due(repo: &Repo, task: Option<&str>) -> Result<(String, String, Vec<DueUnit>)> {
+    let ws = Workspace {
+        repos: vec![Repo {
+            name: repo.name.clone(),
+            root: repo.root.clone(),
+            loaded: Some(repo.loaded()?.clone()),
+        }],
+        is_workspace: false,
+        selected: true,
+    };
+    let (jobs, snapshots) = role_jobs(&ws, task)?;
+    let task = match task {
+        Some(t) => t.to_string(),
+        None => git::task_text(&repo.root)?,
+    };
+    let jobs: Vec<&RoleJob> = jobs.iter().collect();
+    let due = due_for_review(&jobs)
+        .into_iter()
+        .map(|d| (d.unit, d.reasons))
+        .collect();
+    Ok((snapshots[0].clone(), task, due))
+}
+
+/// Every job `next --roles` lists, and each repo's snapshot.
+fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'a>>, Vec<String>)> {
+    let mut jobs: Vec<RoleJob> = Vec::new();
+    // Stamped units changed since their stamps: (name, repo, task, snapshot, changed files).
+    let mut moved: Vec<(String, &Repo, String, String, Vec<String>)> = Vec::new();
     let mut snapshots = Vec::new();
     for (repo, loaded) in ws.loaded_repos()? {
         let root = &repo.root;
@@ -71,7 +279,7 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
             })
         };
         for def in &loaded.units {
-            let first_job = jobs.len();
+            let mut unit_jobs = vec![];
             let name = ws.display_name(repo, &def.name);
             let owns = |path: &str| router.owner(path) == Some(def.name.as_str());
             let since = |tree: Option<&String>| {
@@ -126,7 +334,7 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
                 let reason = if reviewed.is_some() {
                     "stale"
                 } else {
-                    "never reviewed"
+                    NEVER_REVIEWED
                 };
                 if reviewed.is_some() {
                     // paths of several repos share the architect's list, so name the repo
@@ -140,15 +348,9 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
                             }
                         })
                         .collect();
-                    moved.push((
-                        name.clone(),
-                        repo.name.clone(),
-                        task.clone(),
-                        snapshot.clone(),
-                        changed,
-                    ));
+                    moved.push((name.clone(), repo, task.clone(), snapshot.clone(), changed));
                 }
-                jobs.push(Job {
+                unit_jobs.push(Job {
                     debt_added,
                     ..job(Role::Maintainer, vec![reason.into()], changed)
                 });
@@ -172,25 +374,17 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
             }
             // a never-stamped unit's first review comes first: a mark needs a `[reviewed]` block
             if reviewed.is_some() && !changed.is_empty() {
-                jobs.push(job(Role::Tester, reasons, changed));
+                unit_jobs.push(job(Role::Tester, reasons, changed));
             }
 
             let documenter_mark = reviewed.and_then(|r| r.documenter.as_ref()).or(stamp);
             let ((mut reasons, changed), _) = touched(documenter_mark)?;
             // a card a first review drafted has an interface to document
-            let no_docs = card.is_some_and(|c| {
-                !c.interface.is_empty()
-                    && c.doc.as_ref().is_none_or(|d| {
-                        [&d.overview, &d.how_it_works, &d.how_to_change]
-                            .iter()
-                            .all(|s| s.trim().is_empty())
-                    })
-            });
-            if no_docs {
+            if card.is_some_and(needs_docs) {
                 reasons.push("no docs yet".into());
             }
             if reviewed.is_some() && !reasons.is_empty() {
-                jobs.push(job(Role::Documenter, reasons, changed));
+                unit_jobs.push(job(Role::Documenter, reasons, changed));
             }
 
             let bug = card.and_then(|c| {
@@ -200,59 +394,59 @@ pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool) -> Result<Ne
             });
             if let Some(bug) = bug {
                 let reasons = vec![format!("bug not judged: {}", bug.title)];
-                jobs.push(job(Role::Validator, reasons, vec![]));
+                unit_jobs.push(job(Role::Validator, reasons, vec![]));
             }
-            if write_briefs {
-                for j in &mut jobs[first_job..] {
-                    let unit = Some(def.name.as_str());
-                    let (path, _) =
-                        brief::write(repo, unit, j.role, Mode::Review, &j.task, &j.snapshot)?;
-                    j.brief_path = Some(path);
-                }
-            }
+            jobs.extend(unit_jobs.into_iter().map(|job| RoleJob {
+                repo,
+                unit: Some(def.name.clone()),
+                job,
+            }));
         }
     }
 
     // No plans exist yet, so no plan ever covers the moved units.
-    let architect = moved.len() >= 2;
-    if architect {
+    if moved.len() >= 2 {
         let names: Vec<&str> = moved.iter().map(|(n, ..)| n.as_str()).collect();
-        let (_, repo_name, task, snapshot, _) = &moved[0];
-        let brief_path = if write_briefs {
-            let repo = ws.repos.iter().find(|r| &r.name == repo_name);
-            let repo = repo.expect("moved names a loaded repo");
-            Some(brief::write(repo, None, Role::Architect, Mode::Review, task, snapshot)?.0)
-        } else {
-            None
+        let (_, repo, task, snapshot, _) = &moved[0];
+        let repo_name = &repo.name;
+        let job = Job {
+            unit: String::new(),
+            role: Role::Architect,
+            task: task.clone(),
+            snapshot: snapshot.clone(),
+            reasons: vec![format!(
+                "units changed since their stamps: {}",
+                names.join(", ")
+            )],
+            changed: moved.iter().flat_map(|(.., c)| c.clone()).collect(),
+            brief_path: None,
+            command: if ws.is_workspace {
+                format!("stewards --repo {repo_name} brief --role architect")
+            } else {
+                "stewards brief --role architect".into()
+            },
+            debt_added: vec![],
         };
         jobs.insert(
             0,
-            Job {
-                unit: String::new(),
-                role: Role::Architect,
-                task: task.clone(),
-                snapshot: snapshot.clone(),
-                reasons: vec![format!(
-                    "units changed since their stamps: {}",
-                    names.join(", ")
-                )],
-                changed: moved.iter().flat_map(|(.., c)| c.clone()).collect(),
-                brief_path,
-                command: if ws.is_workspace {
-                    format!("stewards --repo {repo_name} brief --role architect")
-                } else {
-                    "stewards brief --role architect".into()
-                },
-                debt_added: vec![],
+            RoleJob {
+                repo,
+                unit: None,
+                job,
             },
         );
     }
-    Ok(NextReport {
-        jobs,
-        architect,
-        flow_checks: vec![],
-        check: check_at(ws, None, &snapshots)?,
-    })
+    Ok((jobs, snapshots))
+}
+
+/// A card with an interface and no doc section written: `next` lists it until one is.
+pub(crate) fn needs_docs(card: &UnitCard) -> bool {
+    !card.interface.is_empty()
+        && card.doc.as_ref().is_none_or(|d| {
+            [&d.overview, &d.how_it_works, &d.how_to_change]
+                .iter()
+                .all(|s| s.trim().is_empty())
+        })
 }
 
 /// Extensions of the languages `anchors::interface_lines`'s block rule was written for.
@@ -355,6 +549,7 @@ pub fn run(
     g: &Global,
     task: Option<&str>,
     no_brief: bool,
+    roles: bool,
     _no_run: bool,
     pr: Option<u64>,
 ) -> Result<ExitCode> {
@@ -362,7 +557,7 @@ pub fn run(
         return not_implemented("next --pr");
     }
     let (_, ws) = here(g)?;
-    let report = next(&ws, task, !no_brief)?;
+    let report = next(&ws, task, !no_brief, roles)?;
     emit(&report, g.human);
     Ok(
         if report.jobs.is_empty() && report.check.failures.is_empty() {

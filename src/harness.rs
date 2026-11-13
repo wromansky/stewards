@@ -35,7 +35,7 @@ pub struct Harness {
 }
 
 /// Used when no harness is detected.
-pub const GENERIC_DELEGATION: &str = "Start a fresh-context subagent that can run shell, give it the absolute brief path and nothing else, and wait for its one-line summary.";
+pub const GENERIC_DELEGATION: &str = "Start a fresh-context subagent that can run shell, give it the absolute brief path and nothing else, and wait for its reply: what `submit` printed.";
 
 const VERIFIED: &str = "2026-10-21";
 
@@ -49,7 +49,7 @@ pub static HARNESSES: [Harness; 10] = [
         spawn_tool: "Agent tool",
         model_pin: true,
         env: EnvRule::Prefix("CLAUDE_CODE"),
-        delegation: "Run `stewards render --harness claude-code` once (add `--repo-level` for a team). Then start the role's agent with the Agent tool, give it the absolute brief path and nothing else, and wait for its one-line summary.",
+        delegation: "Run `stewards render --harness claude-code` once (add `--repo-level` for a team). Then start the role's agent with the Agent tool, give it the absolute brief path and nothing else, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -61,7 +61,7 @@ pub static HARNESSES: [Harness; 10] = [
         spawn_tool: "Task tool",
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "Run `stewards render --harness cursor --repo-level` once. Then start the role's agent with the Task tool, give it the absolute brief path and nothing else, and wait for its one-line summary.",
+        delegation: "Run `stewards render --harness cursor --repo-level` once. Then start the role's agent with the Task tool, give it the absolute brief path and nothing else, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -73,7 +73,7 @@ pub static HARNESSES: [Harness; 10] = [
         spawn_tool: "spawn tool",
         model_pin: true,
         env: EnvRule::Prefix("CODEX_"),
-        delegation: "Run `stewards render --harness codex` once (add `--repo-level` for a team). Then start the role's agent with the spawn tool, give it the absolute brief path and nothing else, and wait for its one-line summary.",
+        delegation: "Run `stewards render --harness codex` once (add `--repo-level` for a team). Then start the role's agent with the spawn tool, give it the absolute brief path and nothing else, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -85,7 +85,7 @@ pub static HARNESSES: [Harness; 10] = [
         spawn_tool: "runSubagent",
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "Run `stewards render --harness copilot --repo-level` once. Then start the role's agent with `runSubagent`, give it the absolute brief path and nothing else, and wait for its one-line summary.",
+        delegation: "Run `stewards render --harness copilot --repo-level` once. Then start the role's agent with `runSubagent`, give it the absolute brief path and nothing else, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -97,7 +97,7 @@ pub static HARNESSES: [Harness; 10] = [
         spawn_tool: "@name",
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "Run `stewards render --harness gemini` once (add `--repo-level` for a team). Then call the role's agent with `@name`, give it the absolute brief path and nothing else, and wait for its one-line summary.",
+        delegation: "Run `stewards render --harness gemini` once (add `--repo-level` for a team). Then call the role's agent with `@name`, give it the absolute brief path and nothing else, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -109,7 +109,7 @@ pub static HARNESSES: [Harness; 10] = [
         spawn_tool: "Task tool",
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "Run `stewards render --harness opencode` once (add `--repo-level` for a team). Then start the role's agent with the Task tool, give it the absolute brief path and nothing else, and wait for its one-line summary.",
+        delegation: "Run `stewards render --harness opencode` once (add `--repo-level` for a team). Then start the role's agent with the Task tool, give it the absolute brief path and nothing else, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -121,7 +121,7 @@ pub static HARNESSES: [Harness; 10] = [
         spawn_tool: "subagent tool",
         model_pin: true,
         env: EnvRule::Prefix("PI_"),
-        delegation: "Needs pi-subagents (`pi install npm:pi-subagents`). Run `stewards render --harness pi` once (add `--repo-level` for a team). Then start the role's agent with the `subagent` tool, give it the absolute brief path and nothing else, and wait for its one-line summary.",
+        delegation: "Needs pi-subagents (`pi install npm:pi-subagents`). Start its `worker` agent with the `subagent` tool, give it the absolute brief path and nothing else, and wait for its reply: what `submit` printed. Do not hand a brief to pi-subagents' bundled `reviewer` agent: it is read-only and cannot write the answer or run `submit`.",
         verified: VERIFIED,
     },
     Harness {

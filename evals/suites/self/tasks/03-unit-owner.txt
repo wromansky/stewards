@@ -1,0 +1,6 @@
+Units should be able to name an owner.
+
+Add an optional `owner` text field to a unit in `.stewards/units.toml`.
+Show it in `stewards status` (JSON and `--human`) and at the top of the
+unit's generated docs page. Existing files without the field must keep
+working. Add tests.

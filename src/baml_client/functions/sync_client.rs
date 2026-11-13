@@ -180,6 +180,14 @@ baml_function_sync!(
 baml_function_sync!(MaintainerReviewSchema() -> (stream_types::MaintainerReviewAnswer, types::MaintainerReviewAnswer));
 
 baml_function_sync!(
+    Reviewer(
+        brief: impl AsRef<str> + BamlEncode,
+    ) -> (stream_types::ReviewAnswer, types::ReviewAnswer)
+);
+
+baml_function_sync!(ReviewerSchema() -> (stream_types::ReviewAnswer, types::ReviewAnswer));
+
+baml_function_sync!(
     Tester(
         unit: impl AsRef<str> + BamlEncode,
         brief: impl AsRef<str> + BamlEncode,
@@ -225,6 +233,10 @@ pub struct BamlSyncClient {
 
     pub MaintainerReviewSchema: MaintainerReviewSchema,
 
+    pub Reviewer: Reviewer,
+
+    pub ReviewerSchema: ReviewerSchema,
+
     pub Tester: Tester,
 
     pub TesterSchema: TesterSchema,
@@ -258,6 +270,10 @@ impl BamlSyncClient {
             MaintainerReview: MaintainerReview::new(),
 
             MaintainerReviewSchema: MaintainerReviewSchema::new(),
+
+            Reviewer: Reviewer::new(),
+
+            ReviewerSchema: ReviewerSchema::new(),
 
             Tester: Tester::new(),
 
@@ -311,6 +327,14 @@ impl BamlSyncClient {
             },
 
             MaintainerReviewSchema: MaintainerReviewSchema {
+                options: options.clone(),
+            },
+
+            Reviewer: Reviewer {
+                options: options.clone(),
+            },
+
+            ReviewerSchema: ReviewerSchema {
                 options: options.clone(),
             },
 

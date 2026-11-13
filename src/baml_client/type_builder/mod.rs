@@ -201,6 +201,15 @@ impl TypeBuilder {
         )
     }
 
+    /// Access the `ReviewAnswer` class builder.
+    pub fn ReviewAnswer(&self) -> ReviewAnswerClassBuilder {
+        ReviewAnswerClassBuilder::new(
+            self.inner
+                .get_class("ReviewAnswer")
+                .expect("class ReviewAnswer is defined in schema"),
+        )
+    }
+
     /// Access the `Scenario` class builder.
     pub fn Scenario(&self) -> ScenarioClassBuilder {
         ScenarioClassBuilder::new(
@@ -243,6 +252,15 @@ impl TypeBuilder {
             self.inner
                 .get_class("UnitProposal")
                 .expect("class UnitProposal is defined in schema"),
+        )
+    }
+
+    /// Access the `UnitReview` class builder.
+    pub fn UnitReview(&self) -> UnitReviewClassBuilder {
+        UnitReviewClassBuilder::new(
+            self.inner
+                .get_class("UnitReview")
+                .expect("class UnitReview is defined in schema"),
         )
     }
 

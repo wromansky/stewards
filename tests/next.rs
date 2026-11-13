@@ -66,7 +66,7 @@ fn set_documenter_mark(dir: &Path, unit: &str, tree: &str) {
 }
 
 fn snapshot(dir: &Path) -> String {
-    run(dir, &["next"]).1["jobs"][0]["snapshot"]
+    run(dir, &["next", "--roles"]).1["jobs"][0]["snapshot"]
         .as_str()
         .unwrap()
         .to_string()
@@ -81,7 +81,7 @@ fn add_gaps(dir: &Path, unit: &str, gaps: &str) {
 fn never_stamped_unit_gets_a_maintainer_job_listing_all_its_files() {
     let repo = fixture("single");
     stamp_units(repo.path(), &["api"]);
-    let (code, v) = run(repo.path(), &["next"]);
+    let (code, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(code, 1);
     let job = &v["jobs"][0];
     assert_eq!(
@@ -111,7 +111,7 @@ fn never_stamped_units_get_only_maintainer_and_validator_jobs() {
         "store",
         "[[gap]]\nkind = \"bug\"\ntitle = \"save loses items\"\n",
     );
-    let (code, v) = run(repo.path(), &["next", "--no-brief"]);
+    let (code, v) = run(repo.path(), &["next", "--roles", "--no-brief"]);
     assert_eq!(code, 1);
     assert_eq!(
         jobs(&v),
@@ -127,7 +127,7 @@ fn never_stamped_units_get_only_maintainer_and_validator_jobs() {
 fn everything_stamped_and_unchanged_has_no_jobs() {
     let repo = fixture("single");
     stamp_units(repo.path(), &["api", "store"]);
-    let (code, v) = run(repo.path(), &["next"]);
+    let (code, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(code, 0, "{v}");
     assert!(jobs(&v).is_empty());
     assert_eq!(v["architect"], false);
@@ -138,7 +138,7 @@ fn non_interface_non_test_edit_gives_only_a_maintainer_job() {
     let repo = fixture("single");
     stamp_units(repo.path(), &["api", "store"]);
     fs::write(repo.path().join("src/store/README.md"), "changed\n").unwrap();
-    let (code, v) = run(repo.path(), &["next"]);
+    let (code, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(code, 1);
     assert_eq!(jobs(&v), pairs(&[("store", "maintainer")]));
     assert_eq!(strings(&v["jobs"][0]["reasons"]), ["stale"]);
@@ -151,7 +151,7 @@ fn a_changed_file_with_a_quoted_name_does_not_stop_next_listing_jobs() {
     let repo = fixture("single");
     stamp_units(repo.path(), &["api", "store"]);
     fs::write(repo.path().join("src/store/q\"uote.py"), "x = 1\n").unwrap();
-    let (code, v) = run(repo.path(), &["next"]);
+    let (code, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(code, 1, "{v}");
     assert_eq!(jobs(&v), pairs(&[("store", "maintainer")]));
 }
@@ -165,7 +165,7 @@ fn interface_body_edit_gives_maintainer_tester_documenter() {
         "_items.append(item)",
         "_items.insert(0, item)",
     );
-    let (_, v) = run(repo.path(), &["next"]);
+    let (_, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(
         jobs(&v),
         pairs(&[
@@ -197,7 +197,7 @@ fn store_jobs_after(prepare: (&str, &str), change: (&str, &str)) -> Vec<(String,
 
 /// `(role, reasons)` of each job `next` lists in `dir`.
 fn role_jobs(dir: &Path) -> Vec<(String, Vec<String>)> {
-    let (_, v) = run(dir, &["next", "--no-brief"]);
+    let (_, v) = run(dir, &["next", "--roles", "--no-brief"]);
     v["jobs"]
         .as_array()
         .unwrap()
@@ -560,7 +560,7 @@ fn restamping_keeps_the_pending_tester_and_documenter_jobs() {
         "_items.insert(0, item)",
     );
     stamp_units(repo.path(), &["store"]);
-    let (code, v) = run(repo.path(), &["next"]);
+    let (code, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(
         jobs(&v),
         pairs(&[("store", "tester"), ("store", "documenter")])
@@ -577,7 +577,7 @@ fn test_root_edit_gives_maintainer_and_tester() {
         "== 1",
         "== 1  # first",
     );
-    let (_, v) = run(repo.path(), &["next"]);
+    let (_, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(
         jobs(&v),
         pairs(&[("store", "maintainer"), ("store", "tester")])
@@ -599,7 +599,7 @@ fn tester_mark_after_the_change_suppresses_the_tester_job() {
     );
     let tree = snapshot(repo.path());
     set_tester_mark(repo.path(), "store", &tree);
-    let (_, v) = run(repo.path(), &["next"]);
+    let (_, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(
         jobs(&v),
         pairs(&[("store", "maintainer"), ("store", "documenter")])
@@ -617,7 +617,7 @@ fn documenter_mark_after_the_change_suppresses_the_documenter_job() {
     );
     let tree = snapshot(repo.path());
     set_documenter_mark(repo.path(), "store", &tree);
-    let (_, v) = run(repo.path(), &["next"]);
+    let (_, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(
         jobs(&v),
         pairs(&[("store", "maintainer"), ("store", "tester")])
@@ -633,7 +633,7 @@ fn dead_anchor_on_a_fresh_unit_has_no_jobs_but_next_exits_1() {
         "count_items",
         "gone",
     );
-    let (code, v) = run(repo.path(), &["next"]);
+    let (code, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(code, 1, "{v}");
     assert!(jobs(&v).is_empty(), "{v}");
     assert_eq!(v["check"]["failures"][0]["kind"], "dead_anchor");
@@ -648,7 +648,7 @@ fn scenario_naming_an_unknown_interface_has_no_jobs_but_next_exits_1() {
         "interface = \"save-item\"",
         "interface = \"no-such-interface\"",
     );
-    let (code, v) = run(repo.path(), &["next"]);
+    let (code, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(code, 1, "{v}");
     assert!(jobs(&v).is_empty(), "{v}");
     assert_eq!(v["check"]["failures"][0]["kind"], "unknown_interface");
@@ -663,7 +663,7 @@ fn human_output_keeps_card_text_on_one_line() {
         "[[gap]]\nkind = \"bug\"\ntitle = \"x\\n- `fake`: job\"\n",
     );
     stamp_units(repo.path(), &["api", "store"]);
-    let out = stewards(repo.path(), &["next", "--human"]);
+    let out = stewards(repo.path(), &["next", "--roles", "--human"]);
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("bug not judged: x - `fake`: job"), "{text}");
 }
@@ -686,7 +686,7 @@ fn fresh_unit_with_an_older_tester_mark_still_gets_a_tester_job() {
         "_items.insert(0, item)",
     );
     stamp_units(repo.path(), &["store"]);
-    let (code, v) = run(repo.path(), &["next"]);
+    let (code, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(code, 1);
     // the documenter has no mark, so it keeps measuring from the stamp it had before the restamp
     assert_eq!(
@@ -705,7 +705,7 @@ fn two_stamped_changed_units_set_architect() {
         "router = []",
         "router = [1]",
     );
-    let (_, v) = run(repo.path(), &["next"]);
+    let (_, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(v["architect"], true);
     let job = &v["jobs"][0];
     assert_eq!(
@@ -724,7 +724,7 @@ fn never_stamped_unit_does_not_count_toward_architect() {
         "router = []",
         "router = [1]",
     );
-    let (_, v) = run(repo.path(), &["next"]);
+    let (_, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(v["architect"], false);
     assert!(!jobs(&v).iter().any(|(_, r)| r == "architect"));
 }
@@ -738,7 +738,7 @@ fn unjudged_bugs_give_one_validator_job_for_the_first() {
         "[[gap]]\nkind = \"bug\"\ntitle = \"save loses items\"\n\n[[gap]]\nkind = \"bug\"\ntitle = \"count is off\"\n",
     );
     stamp_units(repo.path(), &["api", "store"]);
-    let (code, v) = run(repo.path(), &["next"]);
+    let (code, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(code, 1);
     assert_eq!(jobs(&v), pairs(&[("store", "validator")]));
     assert_eq!(
@@ -756,7 +756,7 @@ fn bug_with_a_severity_gives_no_validator_job() {
         "[[gap]]\nkind = \"bug\"\ntitle = \"save loses items\"\nseverity = \"high\"\n",
     );
     stamp_units(repo.path(), &["api", "store"]);
-    let (code, v) = run(repo.path(), &["next"]);
+    let (code, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(code, 0, "{v}");
 }
 
@@ -769,7 +769,7 @@ fn added_simplified_comment_appears_in_debt_added() {
         "_items = []",
         "_items = []\n# simplified: no locking",
     );
-    let (_, v) = run(repo.path(), &["next"]);
+    let (_, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(v["jobs"][0]["role"], "maintainer");
     let debt = &v["jobs"][0]["debt_added"];
     assert_eq!(debt.as_array().unwrap().len(), 1, "{debt}");
@@ -781,14 +781,17 @@ fn added_simplified_comment_appears_in_debt_added() {
 #[test]
 fn task_flag_overrides_the_task() {
     let repo = fixture("single");
-    let (_, v) = run(repo.path(), &["next", "--task", "add a count endpoint"]);
+    let (_, v) = run(
+        repo.path(),
+        &["next", "--roles", "--task", "add a count endpoint"],
+    );
     assert_eq!(v["jobs"][0]["task"], "add a count endpoint");
 }
 
 #[test]
 fn pr_flag_is_not_implemented() {
     let repo = fixture("single");
-    let (code, v) = run(repo.path(), &["next", "--pr", "1"]);
+    let (code, v) = run(repo.path(), &["next", "--roles", "--pr", "1"]);
     assert_eq!(code, 2);
     assert_eq!(v["error"]["code"], "not_implemented");
 }
@@ -801,7 +804,7 @@ fn pruned_stamped_tree_falls_back_to_all_owned_files() {
     set_tree_line(repo.path(), "store", |_| {
         format!("tree = \"{}\"", "ab".repeat(20))
     });
-    let (_, v) = run(repo.path(), &["next"]);
+    let (_, v) = run(repo.path(), &["next", "--roles"]);
     assert_eq!(
         jobs(&v),
         pairs(&[
@@ -839,7 +842,7 @@ fn workspace_unit_names_carry_the_repo_prefix() {
         "[[unit]]\nname = \"core\"\npaths = [\"src/**\"]\n",
     )
     .unwrap();
-    let (code, v) = run(tmp.path(), &["next"]);
+    let (code, v) = run(tmp.path(), &["next", "--roles"]);
     assert_eq!(code, 1);
     assert_eq!(jobs(&v), pairs(&[("api-server/core", "maintainer")]));
     assert_eq!(strings(&v["jobs"][0]["changed"]), ["src/main.py"]);
@@ -868,7 +871,7 @@ fn workspace_architect_job_names_the_repo() {
     }
     fs::write(backend.join("src/main.py"), "changed\n").unwrap();
     fs::write(backend.join("docs/x.md"), "changed\n").unwrap();
-    let (_, v) = run(tmp.path(), &["next"]);
+    let (_, v) = run(tmp.path(), &["next", "--roles"]);
     let job = &v["jobs"][0];
     assert_eq!(job["role"], "architect", "{v}");
     assert_eq!(

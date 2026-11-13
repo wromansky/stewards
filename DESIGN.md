@@ -65,8 +65,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Overhead:** each agent gets the exact context its job needs, no more,
   no less, and a change costs one review job, not one per unit and role.
   Eval runs and telemetry measure the overhead; nothing promises a saving.
-- **License:** MIT, no attribution section. Clean room: no text from the
-  adelphi-adlc-plugin repo.
+- **License:** MIT, no attribution section. Clean room: no text from any
+  earlier private project.
 
 ### Team
 
@@ -1720,7 +1720,7 @@ it; the lost-update check and the write are not one atomic step; briefs for
 jobs no longer due stay on disk until overwritten.
 
 **How we work.**
-- Clean room: no text from the adelphi-adlc-plugin repo, ever.
+- Clean room: no text from any earlier private project, ever.
 - Never work on `main` for code; branch, PR, squash merge. Docs-only edits
   to `DESIGN.md` may go to `main` directly when the user says so.
 - The user runs `git push` and `gh pr merge` themselves (Claude's pushes
@@ -1860,27 +1860,15 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   workspace, jailed under `<install>/agents/<alias>/workspace/` unless
   `workspace.path` points at the repo. Reads `AGENTS.md` only from the agent
   workspace. No per-role file; `zeroclaw agents export` bundles config.
-- Borg (adelphidata/borg, Rust; source read 2026-10-21): a personal-assistant
-  daemon (`borgd`, gRPC over `~/.borg/borgd.sock`) with a `borg` CLI/TUI,
-  channels, scheduler, memory, WASM plugins, an MCP client, and a coding
-  side (worktrees, `apply_patch`, goals). Headless: `borg ask "<msg>" --json`,
-  `borg send`, `borg acp`. Reads `AGENTS.md` then `CLAUDE.md` per directory
-  from the session workspace up to the git root (`crates/cortex/src/project_doc.rs:17`),
-  one file per dir, 32 KiB total budget with truncation; injected as
-  `<project_instructions trust="stored">`. No user-level `AGENTS.md`; persona
-  `~/.borg/IDENTITY.md`. Subagents: `spawn_agent{message, context, role,
-  role_kind, toolsets, model, thinking, fork_context (default false = fresh),
-  blocking, timeout_secs, tasks[]}`; built-in roles `researcher`, `coder`
-  (`run_shell`, `apply_patch`, `read_memory`), `writer`; custom roles via the
-  `manage_roles` tool, stored in sqlite `agent_roles`, no file format; depth
-  1, 5 children per agent, 3 concurrent. Skills: `SKILL.md` from
-  `~/.borg/skills/`, `<workspace>/.borg/skills/`, `<workspace>/.agents/skills/`,
-  bodies injected by relevance under 4000 tokens. Hooks: `~/.borg/hooks.json`,
-  Claude Code-compatible schema with `SessionStart`. Shell: `run_shell` in
-  the session workspace, hardcoded deny list, no prompts, OS sandbox only
-  for ACP sessions. `borg ask` has no cwd flag: workspace is the daemon cwd
-  unless `-w <worktree>` or `borg acp`. Settings are DB-only (`borg settings`).
-  Does not read `.claude/agents/`.
+- Borg (checked 2026-10-21): a daemon with a `borg` CLI. Headless:
+  `borg ask "<msg>" --json`, `borg acp`. Reads `AGENTS.md` then `CLAUDE.md`
+  per directory from the session workspace up to the git root, 32 KiB total
+  with truncation. Subagents through `spawn_agent` (fresh context by
+  default, built-in role `coder` has shell and patch tools), depth 1, 3
+  concurrent; custom roles live in its database, with no file format. Shell
+  runs in the session workspace behind a fixed deny list. `borg ask` has no
+  cwd flag: the workspace is the daemon's cwd unless `-w <worktree>` or
+  `borg acp`. Does not read `.claude/agents/`.
 - Third-party subagent plugins (searched 2026-10-21, bar: ≥200 stars and
   maintained): none for Hermes or ZeroClaw. Hermes candidates are role prose
   or profiles, not runtime agents (`rlaope/oh-my-hermes` 3.5k stars,

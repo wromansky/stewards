@@ -11,6 +11,9 @@ use crate::output::CliError;
 /// `[models.<harness>]` tables: role name to model alias.
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
+    /// The harness `review` and `--run` launch when none is given or detected.
+    #[serde(default)]
+    pub harness: Option<String>,
     #[serde(default)]
     models: BTreeMap<String, BTreeMap<String, String>>,
 }

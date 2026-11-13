@@ -59,7 +59,12 @@ pub struct ArmStats {
     pub runs: usize,
     pub not_ok: usize,
     pub main_tokens: Option<f64>,
+    /// `None` when any run's total is unknown (a launched session with no usage recorded).
     pub total_tokens: Option<f64>,
+    /// Sessions stewards launched (`review`, `--run`), from the run directory's telemetry.
+    pub launched_tokens: Option<f64>,
+    /// The review jobs' share of `launched_tokens`.
+    pub review_tokens: Option<f64>,
     /// Main session only.
     pub files_opened: Option<f64>,
     /// The whole session tree.
@@ -77,7 +82,9 @@ pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats {
         runs: runs.len(),
         not_ok: runs.iter().filter(|r| r.status != Status::Ok).count(),
         main_tokens: median_of(runs, |r| Some(r.main_tokens.sum() as f64)),
-        total_tokens: median_of(runs, |r| Some(r.total_tokens.sum() as f64)),
+        total_tokens: median_of(runs, |r| r.known_total().map(|t| t.sum() as f64)),
+        launched_tokens: median_of(runs, |r| r.launched_tokens.map(|t| t.sum() as f64)),
+        review_tokens: median_of(runs, |r| r.review_tokens.map(|t| t.sum() as f64)),
         files_opened: median_of(runs, |r| Some(r.files_opened.len() as f64)),
         files_opened_tree: median_of(runs, |r| Some(r.files_opened_tree.len() as f64)),
         peak_main_context: median_of(runs, |r| Some(r.peak_main_context as f64)),
@@ -128,9 +135,9 @@ fn runs_of(records: &[RunRecord], task: u32, arm: Arm, role: RunRole) -> Vec<&Ru
         .collect()
 }
 
-/// What one `full` run of an edit task misses of the gate: the runner saw a change, `next` ran,
-/// the review brief was dispatched, a child ran the reviewer `submit`, and the runner's own
-/// `next` is clean after the session. Empty when it passes.
+/// What one `full` run of an edit task misses of the gate: the runner saw a change, a
+/// `stewards review` ran, and the runner's own `next` is clean after the session. Empty when it
+/// passes.
 pub fn gate_misses(r: &RunRecord) -> Vec<&'static str> {
     let step = |s: &str| {
         r.result
@@ -141,16 +148,8 @@ pub fn gate_misses(r: &RunRecord) -> Vec<&'static str> {
     if !r.changed {
         out.push("changed nothing");
     }
-    match (step("next"), step("review_dispatched")) {
-        (false, false) => {
-            out.extend(["`stewards next` never ran", "the review was not dispatched"])
-        }
-        (false, true) => out.push("`stewards next` never ran"),
-        (true, false) => out.push("`next` ran but the review was not dispatched"),
-        (true, true) => {}
-    }
-    if !step("reviewer_submit") {
-        out.push("no child ran `stewards submit --role reviewer`");
+    if !step("review") {
+        out.push("`stewards review` never ran");
     }
     if !step("check_green") {
         out.push("the runner's `stewards next --no-brief` did not exit 0");
@@ -408,9 +407,9 @@ pub fn summarize(
         .collect();
     let adoption_in_bare_tasks = adoption
         .as_ref()
-        .and_then(|a| a.result.as_ref())
+        .and_then(|a| a.result.as_ref()?.known_total())
         .zip(median(&bare_totals).filter(|m| *m > 0.0))
-        .map(|(a, m)| a.total_tokens.sum() as f64 / m);
+        .map(|(a, m)| a.sum() as f64 / m);
     Summary {
         results: plan.results.clone(),
         suite: plan.suite.name.clone(),
@@ -548,7 +547,7 @@ pub fn render(s: &Summary) -> String {
             a.label,
             a.status.as_str(),
             num(r.map(|x| x.main_tokens.sum() as f64)),
-            num(r.map(|x| x.total_tokens.sum() as f64)),
+            num(r.and_then(|x| x.known_total()).map(|t| t.sum() as f64)),
             usd(r.and_then(|x| x.cost_usd))
         ));
     }
@@ -605,22 +604,24 @@ pub fn render(s: &Summary) -> String {
     out.push(s.ritual_note.to_string());
     out.push(String::new());
     out.push(
-        "| task | arm | runs | not ok | main | total | peak main | files main | files tree | cost | subagents |"
+        "| task | arm | runs | not ok | main | total | launched | review | peak main | files main | files tree | cost | subagents |"
             .into(),
     );
-    out.push("|---|---|---|---|---|---|---|---|---|---|---|".into());
+    out.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|".into());
     let count = |x: Option<f64>| x.map_or("null".into(), |x| format!("{x}"));
     for g in &s.grades {
         for a in &g.arms {
             let subagents: Vec<String> = a.subagent_sessions.iter().map(usize::to_string).collect();
             out.push(format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                 g.task,
                 a.arm.as_str(),
                 a.runs,
                 a.not_ok,
                 num(a.main_tokens),
                 num(a.total_tokens),
+                num(a.launched_tokens),
+                num(a.review_tokens),
                 num(a.peak_main_context),
                 count(a.files_opened),
                 count(a.files_opened_tree),
@@ -670,7 +671,7 @@ pub fn render(s: &Summary) -> String {
             .iter()
             .map(|u| {
                 format!(
-                    "round {} {} {} ({} findings, bugs: {}, tests {})",
+                    "round {} {} {} ({} findings, bugs: {}, check {})",
                     u.round,
                     u.unit,
                     u.verdict,
@@ -680,7 +681,11 @@ pub fn render(s: &Summary) -> String {
                     } else {
                         u.bugs.join(", ")
                     },
-                    if u.tests_ran { "ran" } else { "not seen" }
+                    match u.check_reported {
+                        Some(true) => "reported passing",
+                        Some(false) => "reported failing",
+                        None => "not reported",
+                    }
                 )
             })
             .collect();
@@ -688,7 +693,7 @@ pub fn render(s: &Summary) -> String {
             "- {}: {}",
             r.label,
             if units.is_empty() {
-                "no reviewer submit".to_string()
+                "no review job launched".to_string()
             } else {
                 units.join("; ")
             }

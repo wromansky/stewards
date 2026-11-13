@@ -440,7 +440,7 @@ fn changes_on_one_unit_stamps_the_other_and_writes_its_fix_task() {
     assert_eq!(
         v["findings"],
         json!([{"unit": "api", "file": "src/api/items.py", "line": 8,
-                "cut": "the status change to 400"}])
+                "cut": "the status change to 400", "replace_with": "keep 422"}])
     );
     assert_ne!(
         card(d, "api").reviewed.unwrap().tree,

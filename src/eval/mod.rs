@@ -13,7 +13,6 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use crate::harness::{self, EnvRule, HARNESSES};
-use crate::model::CommandEntry;
 use crate::output::{CliError, Global, emit, not_implemented};
 
 pub mod grade;
@@ -27,13 +26,13 @@ pub use suite::{Source, Suite, SuiteTask};
 const ADOPTION_OWN: [&str; 4] = [".stewards/", "docs/units/", "AGENTS.md", ".gitignore"];
 
 /// The prompt of the `full` arm's adoption session, run once per eval before any `full` run.
-pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards init --draft` and hand every brief it writes to a subagent that can run shell, then run `stewards next --roles` and dispatch every brief it writes until it lists no jobs.";
+pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards init --draft --run`, then run `stewards review --roles` until it exits 0.";
 
 /// The final stop reasons of a response that did not end normally.
 pub const FAILED_STOPS: [&str; 3] = ["error", "aborted", "length"];
 
 /// What the summary says about the ritual gate and the transcript-derived steps.
-pub const RITUAL_NOTE: &str = "The gate, on each full run of an edit task (read-only tasks are n/a): the runner saw a change (`changed`: outside .stewards/ and docs/units/, against the run's starting commit, untracked files included), `next` ran somewhere in the session tree, a subagent was handed .stewards/briefs/review.md (`review_dispatched`), a child ran `stewards submit --role reviewer` (`reviewer_submit`), and the runner's own `stewards next --no-brief` exits 0 afterwards (`check_green`). `status` and `route` are recorded, not gated. Steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, and backticks are misread or missed.";
+pub const RITUAL_NOTE: &str = "The gate, on each full run of an edit task (read-only tasks are n/a): the runner saw a change (`changed`: outside .stewards/ and docs/units/, against the run's starting commit, untracked files included), a `stewards review` command ran in the session tree (`review`), and the runner's own `stewards next --no-brief` exits 0 afterwards (`check_green`). `status`, `route`, and `next` are recorded, not gated. Sessions stewards launched (`review`, `--run`) are outside the transcript: their tokens come from the run directory's telemetry (`launched_tokens`, the review jobs' share `review_tokens`), and a launched job with no usage recorded makes the run's total unknown. Steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, and backticks are misread or missed.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -116,15 +115,8 @@ impl Tokens {
     }
 }
 
-/// The recorded ritual steps, in order; all but `status` and `route` are gated (see `RITUAL_NOTE`).
-pub const RITUAL_STEPS: [&str; 6] = [
-    "status",
-    "route",
-    "next",
-    "review_dispatched",
-    "reviewer_submit",
-    "check_green",
-];
+/// The recorded ritual steps, in order; `review` and `check_green` are gated (see `RITUAL_NOTE`).
+pub const RITUAL_STEPS: [&str; 5] = ["status", "route", "next", "review", "check_green"];
 
 /// Each of `RITUAL_STEPS` and whether the run showed it.
 pub type RitualSteps = BTreeMap<&'static str, bool>;
@@ -134,8 +126,16 @@ pub type RitualSteps = BTreeMap<&'static str, bool>;
 pub struct Run {
     /// The parent session only.
     pub main_tokens: Tokens,
-    /// The parent plus every child session.
+    /// The parent plus every child session, plus `launched_tokens` (set by the runner).
     pub total_tokens: Tokens,
+    /// Sessions stewards launched during the run (`review`, `--run`), from the run directory's
+    /// telemetry; set by the runner.
+    pub launched_jobs: usize,
+    /// Their summed usage; `None` when any of them recorded none, which makes `total_tokens`
+    /// unknown.
+    pub launched_tokens: Option<Tokens>,
+    /// The share of `launched_tokens` from review jobs (`stewards review` without `--roles`).
+    pub review_tokens: Option<Tokens>,
     /// Cache refreshes over the tree, which do not enter model context: not in the token sums
     /// above; their cost is in `cost_usd`.
     pub cache_warming: Tokens,
@@ -164,10 +164,8 @@ pub struct Run {
     /// Sessions of the tree (`main`, or the child file relative to the tree) with no thinking
     /// level recorded anywhere (flagged, not failed).
     pub sessions_without_thinking: Vec<String>,
-    /// Child sessions in the tree.
+    /// Child sessions in the tree, plus `launched_jobs` (set by the runner).
     pub subagent_sessions: usize,
-    /// Each successful `stewards submit --role reviewer` a child ran, in order.
-    pub reviews: Vec<ReviewSubmit>,
     /// Shell commands anywhere in the tree that read git history (see `reads_git_history`).
     pub git_history_commands: Vec<String>,
     /// The stop reason of the main session's last response.
@@ -179,92 +177,26 @@ pub struct Run {
     pub truncated_lines: usize,
 }
 
-/// One reviewer `submit` from its output: each unit with its verdict and findings.
-#[derive(Debug, Clone, Serialize)]
-pub struct ReviewSubmit {
-    pub units: Vec<ReviewedUnit>,
-    /// The shell commands of the child that ran it.
-    pub commands: Vec<String>,
+impl Run {
+    /// `total_tokens`, unless a launched session's usage is unknown.
+    pub fn known_total(&self) -> Option<Tokens> {
+        (self.launched_jobs == 0 || self.launched_tokens.is_some()).then_some(self.total_tokens)
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ReviewedUnit {
-    pub unit: String,
-    /// `approve` or `changes`.
-    pub verdict: String,
-    pub findings: usize,
-}
-
-/// The units of a reviewer `submit`'s JSON output: `summary` is `reviewer: <unit> <verdict>
-/// (<parts>), ...` and each of `findings` names its unit. `None` for any other output (an error,
-/// another role).
-/// simplified: `--human` output is not read; upgrade if reviewers start passing it.
-pub fn reviewed_units(output: &str) -> Option<Vec<ReviewedUnit>> {
-    let v: serde_json::Value = serde_json::Deserializer::from_str(&output[output.find('{')?..])
-        .into_iter()
-        .next()?
-        .ok()?;
-    let summary = v["summary"].as_str()?.strip_prefix("reviewer: ")?;
-    let findings = v["findings"].as_array().map_or(&[][..], Vec::as_slice);
-    Some(
-        summary
-            .split("), ")
-            .filter_map(|part| {
-                let mut words = part.split_whitespace();
-                let (unit, verdict) = (words.next()?, words.next()?);
-                Some(ReviewedUnit {
-                    unit: unit.to_string(),
-                    verdict: verdict.to_string(),
-                    findings: findings.iter().filter(|f| f["unit"] == unit).count(),
-                })
-            })
-            .collect(),
-    )
-}
-
-/// One thing a session did, in harness-neutral form, for `ritual_steps`.
-pub enum Action {
-    Shell {
-        command: String,
-        /// Run by a child session, not the main one.
-        child: bool,
-    },
-    /// A subagent launch; `text` is its arguments.
-    Dispatch { text: String },
-}
-
-/// Whether a `stewards` command (see `stewards_commands`) is `submit --role reviewer`.
-pub fn is_reviewer_submit(cmd: &[&str]) -> bool {
-    cmd.first() == Some(&"submit")
-        && (cmd.contains(&"--role=reviewer") || cmd.windows(2).any(|w| w == ["--role", "reviewer"]))
-}
-
-/// The transcript-derived ritual steps: `status`, `route`, `next` are shell commands, in any
-/// session, whose argv starts with `stewards <cmd>`; `review_dispatched` is a subagent launched
-/// with `.stewards/briefs/review.md` in its arguments; `reviewer_submit` is
-/// `is_reviewer_submit` in a child. `check_green` is left `false` for the runner.
-pub fn ritual_steps(actions: &[Action]) -> RitualSteps {
+/// The transcript-derived ritual steps from the session tree's shell commands: `status`,
+/// `route`, `next`, and `review` are commands whose argv starts with `stewards <cmd>`.
+/// `check_green` is left `false` for the runner.
+pub fn ritual_steps(commands: &[&str]) -> RitualSteps {
     let mut steps: RitualSteps = RITUAL_STEPS.iter().map(|&s| (s, false)).collect();
-    let review_brief = crate::brief::rel_path(None, crate::model::Role::Reviewer, None);
-    for a in actions {
-        match a {
-            Action::Shell { command, child } => {
-                for cmd in stewards_commands(command) {
-                    if let Some(step) = ["status", "route", "next"]
-                        .into_iter()
-                        .find(|s| *s == cmd[0])
-                    {
-                        steps.insert(step, true);
-                    }
-                    if *child && is_reviewer_submit(&cmd) {
-                        steps.insert("reviewer_submit", true);
-                    }
-                }
+    for command in commands {
+        for cmd in stewards_commands(command) {
+            if let Some(step) = ["status", "route", "next", "review"]
+                .into_iter()
+                .find(|s| *s == cmd[0])
+            {
+                steps.insert(step, true);
             }
-            Action::Dispatch { text } if text.contains(&review_brief) => {
-                steps.insert("review_dispatched", true);
-            }
-            _ => {}
         }
     }
     steps
@@ -662,26 +594,26 @@ pub struct RunRecord {
     /// Whether the run's directory differs from its starting commit after the session, outside
     /// `.stewards/` and `docs/units/` (see `changed_paths`): the gate's first fact.
     pub changed: bool,
-    /// `full` arms: each unit of each reviewer `submit`, in order (report-only).
+    /// `full` arms: each unit of each launched review job, in order (report-only).
     pub reviews: Vec<UnitReview>,
     pub result: Option<Run>,
     /// Why `result` is missing when the transcript could not be parsed.
     pub error: Option<String>,
 }
 
-/// One unit of one reviewer `submit` in a `full` run.
+/// One unit of one launched review job (a job whose result had units) in a `full` run.
 #[derive(Debug, Clone, Serialize)]
 pub struct UnitReview {
-    /// 1-based reviewer `submit` of the run.
+    /// 1-based review job of the run.
     pub round: usize,
     pub unit: String,
     pub verdict: String,
     pub findings: usize,
     /// Bug gaps on the unit's card after the run that were not there before it.
     pub bugs: Vec<String>,
-    /// Whether the submitting child ran the unit's test command (its test card's, else one of
-    /// the repo's `commands.test`), as a substring of one of its shell commands.
-    pub tests_ran: bool,
+    /// The pass value of the check the reviewer's answer reported for the unit; `None` when it
+    /// reported none. What the answer says, not a run the eval saw.
+    pub check_reported: Option<bool>,
 }
 
 /// One eval invocation.
@@ -770,6 +702,7 @@ impl Runner<'_> {
         }
         let start = git(&s.dir, &["rev-parse", "HEAD"])?;
         let gaps_before = s.arm.is_full().then(|| card_gaps(&s.dir));
+        let launched_before = launch_records(&s.dir).len();
         let session = self.driver.start(
             &s.dir,
             &s.prompt,
@@ -808,12 +741,17 @@ impl Runner<'_> {
         let mut status = session.status;
         let mut failure = None;
         let mut reviews = vec![];
+        let launched: Vec<serde_json::Value> = launch_records(&s.dir)
+            .into_iter()
+            .skip(launched_before)
+            .collect();
+        if let Some(before) = &gaps_before {
+            reviews = review_outcomes(&s.dir, before, &launched);
+        }
         if let Some(r) = &mut result {
             r.files_opened = existing_files(&s.dir, &r.files_opened);
             r.files_opened_tree = existing_files(&s.dir, &r.files_opened_tree);
-            if let Some(before) = &gaps_before {
-                reviews = review_outcomes(&s.dir, before, &r.reviews);
-            }
+            add_launched(r, &launched);
             if let Some(c) = &next_check {
                 r.ritual_steps.insert("check_green", c.exit_code == Some(0));
             }
@@ -1302,49 +1240,88 @@ fn card_gaps(dir: &Path) -> Vec<String> {
     adopted_knowledge(dir).map(|(g, _)| g).unwrap_or_default()
 }
 
-/// Each unit of each reviewer `submit` of a `full` run, with the bug gaps its card gained since
-/// `gaps_before` and whether the submitting child ran its test command, from the cards in `dir`.
+/// The launch records (`telemetry::LAUNCH_EVENT`) of the telemetry in `dir`, in file order.
+pub fn launch_records(dir: &Path) -> Vec<serde_json::Value> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir.join(".stewards/telemetry"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension() == Some(OsStr::new("jsonl")))
+        .collect();
+    files.sort();
+    files
+        .iter()
+        .flat_map(|f| {
+            let text = std::fs::read_to_string(f).unwrap_or_default();
+            text.lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .filter(|v| v["event"] == crate::telemetry::LAUNCH_EVENT)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Adds the sessions stewards `launched` during the run to `r`: their count to
+/// `subagent_sessions`, their usage to `launched_tokens` (`None` when any recorded none),
+/// `review_tokens` (those `stewards review` launched), and `total_tokens`.
+pub fn add_launched(r: &mut Run, launched: &[serde_json::Value]) {
+    let (mut all, mut review) = (Some(Tokens::default()), Some(Tokens::default()));
+    for l in launched {
+        let n = |k: &str| l["usage"][k].as_u64();
+        let usage = (|| {
+            Some(Tokens {
+                input: n("input")?,
+                output: n("output")?,
+                cache_read: n("cache_read")?,
+                cache_write: n("cache_write")?,
+            })
+        })();
+        let add = |sum: &mut Option<Tokens>| match (sum.as_mut(), usage) {
+            (Some(s), Some(u)) => s.add(u),
+            _ => *sum = None,
+        };
+        add(&mut all);
+        if l["command"] == "review" {
+            add(&mut review);
+        }
+    }
+    r.launched_jobs = launched.len();
+    r.subagent_sessions += launched.len();
+    r.launched_tokens = all;
+    r.review_tokens = review;
+    if let Some(t) = all {
+        r.total_tokens.add(t);
+    }
+}
+
+/// Each unit of each launched review job of a `full` run (a record with `reviewed` units), with
+/// the bug gaps its card gained since `gaps_before`, from the cards in `dir`.
 fn review_outcomes(
     dir: &Path,
     gaps_before: &[String],
-    reviews: &[ReviewSubmit],
+    launched: &[serde_json::Value],
 ) -> Vec<UnitReview> {
-    let loaded = crate::model::load_repo(dir).ok();
     let gaps_after = card_gaps(dir);
+    let reviews = launched
+        .iter()
+        .filter_map(|l| l["reviewed"].as_array().filter(|u| !u.is_empty()));
     let mut out = vec![];
-    for (n, review) in reviews.iter().enumerate() {
-        for u in &review.units {
-            let tests: Vec<&str> = loaded.as_ref().map_or(vec![], |l| {
-                match l.tests.get(&u.unit).and_then(|t| t.test_command.as_deref()) {
-                    Some(c) => vec![c],
-                    None => l
-                        .repo
-                        .commands
-                        .test
-                        .iter()
-                        .map(|c| match c {
-                            CommandEntry::Plain(cmd) | CommandEntry::Timed { cmd, .. } => {
-                                cmd.as_str()
-                            }
-                        })
-                        .collect(),
-                }
-            });
-            let prefix = format!("{}: bug: ", u.unit);
+    for (n, units) in reviews.enumerate() {
+        for u in units {
+            let unit = u["unit"].as_str().unwrap_or_default();
+            let prefix = format!("{unit}: bug: ");
             out.push(UnitReview {
                 round: n + 1,
-                unit: u.unit.clone(),
-                verdict: u.verdict.clone(),
-                findings: u.findings,
+                unit: unit.to_string(),
+                verdict: u["verdict"].as_str().unwrap_or_default().to_string(),
+                findings: u["findings"].as_u64().unwrap_or(0) as usize,
                 bugs: gaps_after
                     .iter()
                     .filter(|g| !gaps_before.contains(g))
                     .filter_map(|g| g.strip_prefix(&prefix).map(String::from))
                     .collect(),
-                tests_ran: review
-                    .commands
-                    .iter()
-                    .any(|c| tests.iter().any(|t| c.contains(t))),
+                check_reported: u["check_reported"].as_bool(),
             });
         }
     }
@@ -1430,7 +1407,7 @@ fn commit_adopted(dir: &Path) -> Result<()> {
 }
 
 /// The developer line of the AGENTS.md block, and its `--no-developers` replacement.
-const DEVELOPER_LINE: &str = "- Changing: make the edit yourself. When a maintainer split a plan into tasks, run `stewards brief <unit> --role developer` and dispatch every brief it writes.";
+const DEVELOPER_LINE: &str = "- Changing: make the edit yourself. When a maintainer split a plan into tasks, `stewards brief <unit> --role developer --run` carries them out.";
 const NO_DEVELOPER_LINE: &str = "- Changing: make the edit yourself.";
 
 /// The AGENTS.md text with the developer role switched off; an error when the block's developer

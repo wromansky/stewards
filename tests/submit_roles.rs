@@ -972,6 +972,7 @@ fn documenter_writes_only_its_units_page_and_the_index() {
             " D .stewards/briefs/api-documenter.answer.json",
             " D .stewards/briefs/api-documenter.md",
             " M .stewards/units/api.toml",
+            "?? .stewards/briefs/api-documenter.result.json",
             "?? docs/units/README.md",
             "?? docs/units/api.md",
         ],

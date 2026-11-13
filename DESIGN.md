@@ -9,7 +9,7 @@ Five, all primary, in the author's words:
 
 1. Same behavior across harnesses.
 2. Reviewed changes and a repository memory at a small, measured overhead:
-   one review subagent per change, not a token saving.
+   one review session per change, not a token saving.
 3. Maximum code cleanliness.
 4. Documentation generated from code.
 5. Knowledge persists across sessions.
@@ -21,7 +21,8 @@ than `bare` on every task; see "What the thin eval showed" in the Handoff.
 Audience for year one: the author, across their own repos.
 
 Feel: a team that already knows the repo. The agent makes the change and
-hands its review to one subagent that already knows the area.
+runs one command; the tool starts the review in a separate session that
+already knows the area. The agent never launches a subagent for stewards.
 
 What persists: structure (areas, owners, anchors), contracts (interfaces and
 expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
@@ -32,12 +33,16 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 
 - **Harness contract.** stewards depends on three things a harness must
   provide: it reads the repo's `AGENTS.md`; its agent can run shell in the
-  repo cwd; it can start a fresh-context child that can also run shell.
-  Three more are used when present: a file format for a reusable role (then
-  `render` writes one), a per-call or per-file model pin (then roles run on
-  the right tier), parallel children (then `next`'s jobs overlap). Any
-  harness meeting the required three is supported; the per-harness facts
-  (paths, spawn tool, env detection, last-verified date) live in one
+  repo cwd; a fresh-context session that can also run shell can be started
+  on a brief. The tool starts that session itself, headless, from the
+  harness's launch line in the `harness.rs` table (Facts): `stewards review`
+  and every `--run`, the same way on every harness. The same briefs can be
+  written without running them and handed over by hand (`next`, `brief`
+  without `--run`), the manual path. Two more are used when present: a file format for a reusable role
+  (then `render` writes one, for the manual path) and a per-call or
+  per-file model pin (then roles run on the right tier). Any harness
+  meeting the required three is supported; the per-harness facts (paths,
+  launch line, spawn tool, env detection, last-verified date) live in one
   `harness.rs` table and in Facts, never in the rules. The harnesses used
   to validate the contract are listed in Facts.
 - **Stack:** a Rust CLI that agents call through their shell tool. No MCP
@@ -48,7 +53,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   rendered from BAML at development time and checked in, so no ordinary
   command loads BAML's native library.
 - **LLM modes:** the harness's own agents think by default: the tool writes
-  a brief, the agent answers, the tool validates. `--direct` (or
+  a brief, starts the harness's own headless session on it, the session
+  answers, the tool validates. `--direct` (or
   `STEWARDS_DIRECT=1`) makes the tool call the model through BAML with a key
   from the usual env vars, for CI and batch. It is the only mode that needs
   BAML's native library. A missing model entry, key, or library is an
@@ -56,7 +62,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   unless `STEWARDS_BAML_DOWNLOAD` is set. The tool never names a model
   itself.
 - **Delivery:** the repo's `AGENTS.md` block is the one truth: the ritual,
-  the roles, the editing rules, how to delegate. Every harness reads it with
+  the roles, the editing rules. It never asks the agent to launch a
+  subagent. Every harness reads it with
   no install. User-level hooks and instructions are optional accelerators.
   A harness that reads instructions from its own workspace rather than the
   repo gets the same block there. `init` places the block at the top of
@@ -86,19 +93,21 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   and decisions, proposes unit boundaries).
 - **Two flows:** the per-change flow is the reviewer: plain `next` folds
   every stamped unit due for a maintainer, tester, or documenter job into
-  one reviewer job. The per-role flow is for adoption (`init --draft`, then
-  `next --roles` until it lists no jobs), for `next --roles` on request or
-  before a release, and for plans (maintainer explain, developer tasks,
-  architect). A unit's first review is always its maintainer's. A unit
+  one reviewer job, and `review` runs it. The per-role flow is for adoption
+  (`init --draft --run`, then `review --roles` until it exits 0), for
+  `review --roles` on request or before a release, and for plans
+  (maintainer explain, developer tasks, architect, each `brief ... --run`). A unit's first review is always its maintainer's. A unit
   stamped through either flow is fresh for both.
 - **Team member, physically:** the same in every harness: a fresh-context
-  child that reads a brief by path and runs shell. Where the harness has a
-  file format for a reusable role, `render` writes one file per role from
-  one source (a **rendered** harness) and the delegation message carries
-  only the brief path. Where it has none (a **briefed** harness), the brief
-  also carries the role text and the harness's own spawn tool is told to
-  read the brief path. The split is about file formats, not subagent
-  capability: most briefed harnesses have full subagents.
+  session that reads a brief by path and runs shell. The tool starts it as
+  the harness's own headless session (its launch line, Facts) with one
+  fixed prompt, `Read <absolute brief path> and follow it.`, so the agent
+  making the change neither launches it nor words the handoff. On the
+  manual path, where the harness has a file format for a reusable role,
+  `render` writes one file per role from one source (a **rendered**
+  harness) and the handoff carries only the brief path; where it has none
+  (a **briefed** harness), the brief also carries the role text and the
+  harness's own spawn tool is told to read the brief path.
 - **Render target:** the harness's user-level agent dir with model pins
   from `~/.stewards/config.toml`; `--repo-level` writes the repo-level dir
   with no `model` field, for teams. A harness with no verified user-level
@@ -109,15 +118,22 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Context:** pack by default, pull allowed. The tool computes the minimum
   pack for unit + role + task; the brief states a budget; the subagent may
   pull more by anchor and must report what it added in `pulled_anchors`.
-- **Job loop:** `next` writes briefs to `.stewards/briefs/` and prints their
-  paths; the main agent hands a path to a subagent that can run shell; the
-  subagent writes its answer as JSON to the path the brief names and runs
-  `stewards submit <unit> --role <r> --file <f>`, fixing and retrying up to
-  three times on a validation error; the main agent receives only what
-  submit prints: a one-line summary, plus the answer's `explanation` (capped
-  at 2,000 characters) for explain and plan jobs, and each finding's file,
-  line, and `cut` for a reviewer's `changes`. Every LLM step uses this
-  loop, including `init --draft`.
+- **Job loop:** `review` (the jobs `next` lists) and every `--run` (the
+  briefs that command wrote) write briefs to `.stewards/briefs/` and run
+  them one after another, each in a launched session; the session writes
+  its answer as JSON to the path the brief names and runs `stewards submit
+  <unit> --role <r> --file <f>`, fixing and retrying up to three times on a
+  validation error. The outcome is read from the repository, never from
+  what the session said: the job is done when its brief was retired by an
+  accepted `submit`, which also writes what it printed to
+  `.stewards/briefs/<job>.result.json`; the launching command reads that
+  file, prints it with the job, and removes it. The agent receives only
+  that: a one-line summary, plus the answer's `explanation` (capped at
+  2,000 characters) for explain and plan jobs, and a review's verdict per
+  unit and each finding's file, line, `cut`, and `replace_with`. Every LLM
+  step uses this loop, including `init --draft --run`. Without `--run`, and
+  with `next`, the briefs are only written: the manual path, where the
+  agent hands each to a subagent with the same fixed sentence.
 - **Developers:** a maintainer has one developer by default and several
   when it splits its plan. Each task in the plan names its **lane**: the
   files it may write. `submit` accepts the plan only when every lane is
@@ -126,9 +142,9 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   maintainer splits only work whose pieces build and check independently;
   anything else is one task. Reporting is by artifact, because most
   harnesses cap subagent depth at one: the maintainer's tasks become the
-  developers' briefs, their combined diff is reviewed once (by the
-  per-change reviewer, or with `--roles` the maintainer), and the main
-  agent only dispatches. A developer is a fresh child
+  developers' briefs, `brief <unit> --role developer --run` runs them one
+  after another, and their combined diff is reviewed once (by the
+  per-change reviewer, or with `--roles` the maintainer). A developer is a fresh child
   per task, not a standing process; what makes it the unit's own is its
   pack. A change with no maintainer plan the main agent makes itself; the
   review is the same.
@@ -138,8 +154,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   `out of lane` in the summary. It is a report, not a rejection: the write
   has happened, and the maintainer's review sees it as untraced.
 - **Fix loop:** a review's findings are the next task. A reviewer's submit
-  prints each finding's file, line, and `cut` text, so the main agent fixes
-  them itself and runs `next` again. An answer file stays
+  prints each finding's file, line, `cut`, and `replace_with`, so the main
+  agent fixes them itself and runs `review` again. An answer file stays
   writable after it is validated, so the tool does not read it again: at
   the maintainer's or reviewer's `submit` it writes the accepted task list to its own
   file, `.stewards/briefs/<unit>-tasks.json` (an explain answer's `tasks`,
@@ -150,7 +166,7 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Tests, two writers in turn:** a developer writes the check for its task
   inside its lane; the tester writes scenario tests for the contract and
   may edit any test under the test roots. They never overlap: developers
-  run in the changing step, the tester in a `next --roles` round after it.
+  run in the changing step, the tester in a `review --roles` round after it.
   The per-change reviewer writes no tests: it runs the unit's test command
   and may upsert scenarios.
 - **Job files:** one open job per (unit, role), or per task for developers,
@@ -184,13 +200,15 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   reviewer answered for all three roles.
 - **Triggers:** before changing, `route` the files; a change the main agent
   cannot plan from the unit pages goes to the owning maintainer to explain
-  and plan, or, for two or more units or no owner, to the architect. To change, `brief <unit> --role developer` writes one
-  brief per task of the maintainer's plan (or the unit's step of an open
-  architect plan) and the main agent dispatches them; a change with no plan
-  the main agent makes itself. Before reporting done, `next` finds the
-  units due and writes one review brief covering every stamped one, plus a
-  maintainer first review for each never-stamped one; `next --roles` writes
-  the per-role jobs instead: maintainer review for every stale unit; tester when a
+  and plan (`brief <unit> --role maintainer --task "..." --run`), or, for
+  two or more units or no owner, to the architect (`brief --role architect
+  --task "..." --run`). To change, `brief <unit> --role developer --run`
+  writes and runs one brief per task of the maintainer's plan (or the
+  unit's step of an open architect plan); a change with no plan the main
+  agent makes itself. Before reporting done, `review` runs what `next`
+  finds: the units due, in one review brief covering every stamped one,
+  plus a maintainer first review for each never-stamped one; `review
+  --roles` runs the per-role jobs `next --roles` writes instead: maintainer review for every stale unit; tester when a
   change since its mark touched an interface's lines or a file under
   `test_roots`; documenter when a change since its mark touched an
   interface's lines (a change only in a private helper an interface calls
@@ -198,8 +216,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   languages the line rule knows, any change to the interface's file
   counts); architect when
   two or more units changed since their stamps and no plan covers them;
-  validator for a bug with no severity. Done means plain `next` lists no
-  jobs.
+  validator for a bug with no severity. Done means `review` exits 0: plain
+  `next` lists no jobs.
   `check` covers review only (stamps, anchors, scenario ids): it is what
   the hook and CI run.
 - **Modes:** `next` writes review briefs; `brief` writes explain briefs,
@@ -220,7 +238,7 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Format:** TOML. Typed tables for anchors, interface, scenarios, gaps;
   multi-line strings for prose. Two files per unit: the card and the test
   card. Interface entries with ids live in the card; scenarios reference them.
-- **Writing knowledge:** every delegated job ends in a typed `submit` the
+- **Writing knowledge:** every launched job ends in a typed `submit` the
   tool validates and writes; `next` puts every stale unit back in front of
   the reviewer (its maintainer with `--roles`). Agents never hand-edit cards.
 - **Staleness:** `[reviewed]` records the stamped snapshot tree, the unit's
@@ -298,8 +316,13 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   remote host picks `gh` or `glab`.
 - **Telemetry:** `.stewards/telemetry/<yyyy-mm>.jsonl`, gitignored, one line
   per submit: unit, role, task, pack bytes and anchor count, pulled anchors,
-  harness, timestamp, and for a reviewer the number of units it covered. Token counts come from eval transcripts, never from
-  what a subagent says about itself.
+  harness, timestamp, and for a reviewer the number of units it covered;
+  and one line per launched job (`event: "launch"`): the command that
+  launched it, role, unit or covered units, status, seconds, the usage the
+  harness reported for the session (when it reported any), and a review's
+  units with verdict, finding count, and the check pass value its answer
+  reported. Token counts come from eval transcripts and the harness's own
+  usage reports, never from what a session says about itself.
 - **Evals:** `stewards eval` drives Claude Code, Codex, and Pi over a
   purpose-built fixture, three arms, graders for all five goals; on demand
   and on release tags. Manual spot checks for the other harnesses.
@@ -333,7 +356,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   boundary or convention exists. Both live in `repo.toml`.
 - **pack**: the exact context the tool computes for a unit, role, and task.
 - **brief**: a file holding role instructions, the pack, memory, the answer
-  schema, and submit instructions; handed to a subagent by path.
+  schema, and submit instructions; read by a launched session, given only
+  its path.
 - **submit**: the command that validates a typed answer and writes it.
 - **snapshot**: a git tree of the working tree as it is now: tracked,
   modified, and untracked-but-not-ignored files.
@@ -456,7 +480,9 @@ repos = ["backend", "frontend"]          # paths relative to this file
 ```
 
 User-level files live in `$STEWARDS_HOME` when it is set, else `~/.stewards`:
-`config.toml` (`[models.<harness>] <role> = "<alias>"`, and `[models.direct]
+`config.toml` (`harness = "<name>"`, the harness `review` and `--run`
+launch when none is given or detected; `[models.<harness>] <role> =
+"<alias>"`, also passed as the launched session's `--model`; and `[models.direct]
 <role> = "<provider>/<model>"` for `--direct`, providers anthropic, openai,
 google-ai), `memory.toml` (`[[entry]] text, languages?,
 roles?`), `~/.stewards/grammars/<lang>/{lib.so|.dylib, tags.scm}`.
@@ -487,17 +513,18 @@ never routed, never reported as unowned, so no unit ever owns them.
 
 | Command | Does |
 |---|---|
-| `guide [--harness h] [--all] [--errors] [--glossary]` | prints the ritual, roles, editing rules, delegation text for the detected harness, error codes, glossary |
-| `init [--draft] [--hooks] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts and writes the AGENTS.md block; `--draft` briefs the naming and card drafting and says to finish with `next --roles`; `--hooks` installs the pre-push hook; `--ci` writes the CI template |
+| `guide [--harness h] [--all] [--errors] [--glossary]` | prints the ritual, roles, editing rules, adoption, what a launched session may do for the detected harness, the manual-path handoff text, error codes, glossary |
+| `init [--draft [--run]] [--hooks] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts and writes the AGENTS.md block; `--draft` briefs the naming and card drafting; with `--run` it runs those briefs and says to finish with `review --roles` until it exits 0, without it says to dispatch them and `next --roles` by hand; `--hooks` installs the pre-push hook; `--ci` writes the CI template |
 | `status [--telemetry]` | units, freshness, coverage, gaps, across the workspace; uninitialized repos |
 | `route <path>...` | owning unit per path, `null` when none; no LLM: an unowned path goes to the architect |
 | `pack [unit] --role <r> [--diff] [--task t]` | the context pack; no unit for the architect or the reviewer (the reviewer's is every due unit's section and the next-round names) |
-| `brief [unit] --role <r> [--task t] [--stdout]` | writes an explain brief (the review brief for the reviewer, a `usage` error when no stamped unit is due), prints its path and size |
+| `brief [unit] --role <r> [--task t] [--stdout \| --run]` | writes an explain brief (the review brief for the reviewer, a `usage` error when no stamped unit is due; one brief per task for the developer), prints its path and size; with `--run` runs each brief written, one after another, and prints how each ended (as `review` does; exit 0 when every job ended in an accepted submit, else 1) |
 | `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update; an approving maintainer review, or a reviewer's approved unit, stamps |
 | `stamp <unit>` | records `[reviewed]` at the current snapshot; the human override |
 | `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check` and plan step checks, writes the review brief (with `--roles`, the per-role briefs), prints the jobs |
 | `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files |
 | `validate [--report <f>] [--export]` | `--report` records a bug on its unit's card, runs the repro through the allowlist, writes the validator brief; `--export` files an issue for every judged bug that has none |
+| `review [--task t] [--roles] [--harness h] [--model id] [--timeout s]` | writes what `next` (`next --roles`) lists, runs each job in the harness's headless session, prints each job's outcome, what `next` lists after, and what to do then; exit 0 only when `next` lists no jobs after the run |
 | `review --pr <n>` | maintainer review briefs on a PR or MR diff; findings posted as review comments |
 | `debt` | `simplified:` comments attached to units |
 | `docs [unit]` | renders `docs/units/<unit>.md` and the index |
@@ -507,7 +534,11 @@ never routed, never reported as unowned, so no unit ever owns them.
 
 Global flags: `--human`, `--repo <name>`, `-C <dir>`, `--direct`. JSON by
 default, markdown with `--human`. Exit 0 ok, 1 work is due (`check`
-failures; for `next`, also any job or failed flow check), 2 errors.
+failures; for `next`, also any job or failed flow check; for `review`, any
+job or `check` failure left after the run; for a `--run`, a job that did
+not end in an accepted submit), 2 errors. `--run`, `review`'s flags
+`--harness`, `--model`, and `--timeout` (default 1800 s per session) are
+shared by `brief --run` and `init --draft --run`.
 
 ## Rules
 
@@ -645,6 +676,76 @@ keeps its maintainer job (a first review). Nothing else: no architect,
 tester, documenter, or validator job. A validator job for a bug the
 reviewer reports is a `--roles` job.
 
+### review and --run
+
+`review` writes what `next` lists (`next --roles` with `--roles`) and runs
+each job, one after another: no queue, no parallelism, no retries.
+`brief ... --run` and `init --draft --run` run the briefs they wrote the
+same way, through the same launcher (`launch.rs`). Per job:
+
+- The harness is `--harness`, else the one detected from env, else
+  `harness` in the user config; none at all is `no_launcher`, whose fix is
+  the manual path, and a name not in the table is `harness_unknown`. Every
+  harness in the table has a launch line, and one code path runs them all
+  from that data alone. The model is `--model`, else
+  the user config's `[models.<harness>] <role>`, else the harness default.
+- A stale `<job>.result.json` and `<job>.log` are removed, then the
+  harness's launch line starts in the repo root (the process cwd) with argv
+  only (no shell): its program, then its argument template with the
+  whole-argument placeholders `{unprompted}`, `{no_instructions}`, and
+  `{model}` replaced by those parts of the line (arguments, or variables
+  set in the session's environment; `{model}` dropped when no model is
+  chosen, its `{id}` the model id), `{dir}` by the repo root, and
+  `{prompt}` by the sentence `Read <absolute brief path> and follow it.`;
+  stdin closed, stdout and stderr into `<job>.log`,
+  in its own process group. Its environment is the caller's minus every
+  harness variable that would tie it to an outer session (each
+  `harness.rs` env prefix, and `STEWARDS_DIRECT`), with the row's
+  `keep_env` names kept (configuration, not a session) and
+  `STEWARDS_CHILD=1` added. A part of the line no source gives is
+  `unknown`; a line with a required part (program, no-prompts,
+  no-instructions, `{prompt}`, and the model when one is chosen) unknown is not
+  started: the job is `failed`, its `tail` names the part, and its `fix` is
+  the manual path, the same for every harness. A harness that does not
+  start (not installed, say) is `failed` with its own error text and the
+  same `fix`. An `UNVERIFIED` line is used like a verified one.
+- It waits up to `--timeout` seconds (default 1800); then the process group
+  is killed and the job is `timed_out`. When the session ends, what it left
+  in its group is killed too.
+- The outcome comes from the repository: the job ended in an accepted
+  submit when its brief is gone and `<job>.result.json` holds what that
+  submit printed. Its status is then `approved` (a review whose every unit
+  was approved), `changes` (a review with a unit not approved), or `done`
+  (any other role); otherwise `timed_out`, `failed` (the harness did not
+  start, or exited non-zero), or `not_submitted` (it exited 0), with the
+  end of its last message, on one line and capped at 300 characters, as
+  `tail`. The result file is removed, the log cut to its last 256 KiB,
+  and one telemetry record appended.
+- The usage is what the harness reported on stdout, read where its row's
+  `usage` says (which JSON lines, the pointer to the counts and their four
+  key names, the text, and whether lines add up or the last is the total);
+  `null` where the row does not know or the harness reported none. That is
+  the only harness-dependent thing in a job's outcome.
+
+`review` prints, per job: role, unit or covered units, brief and log
+paths, status, the result (`summary`, `explanation`, a review's `units[]
+{unit, verdict, stamped, check_reported}` and `findings[] {unit, file,
+line, cut, replace_with}`, each text capped at 300 characters), the tail,
+seconds, and usage; then `remaining`, what `next` lists after the run (a
+unit past the review budget, a unit with findings, a never-reviewed unit),
+and `then`: `done`, `fix the findings and run stewards review again` (a
+job ended in `changes`), or `run stewards review again for the next round`
+(with `--roles` in the command when given). With no job due it launches
+nothing and says so. `task` is `--task`; without it, `next`'s fallback
+(the branch name and last commit subject) prefixed `(none given; used
+...)`, plus a hint to pass `--task`, since the reviewer checks every
+changed line against it. A `--run` prints each job the same way.
+
+**Guard.** Inside a launched session (`STEWARDS_CHILD` set) `review`, every
+`--run`, and `init --draft --run` do nothing, say why, and exit 0, so a
+session that reads the AGENTS.md block anyway cannot start a review of its
+own; `submit`, `pack`, plain `brief`, and `next` work as before.
+
 ### Debt
 
 Scan `git ls-files` (skipping `.stewards/` and files with a NUL in the first
@@ -703,6 +804,22 @@ route; group per unit.
   lint. argv split, no shell, from the repo root, inheriting env, timeout
   from `commands.timeout_seconds`. Nothing from an answer file, card, issue,
   or PR runs otherwise.
+- **Launched sessions.** `review` and every `--run` start the harness's own
+  headless session on a brief (Rules, "review and --run"), the same way on
+  every harness: with permission prompts off and no project instruction
+  files loaded. Such a session runs shell commands and writes files as the
+  user, in the repo's directory, with no prompt: the same reach a role
+  subagent has on the manual path. The flags that do this are data in one
+  place, each harness's launch line in `harness.rs`. The session gets one
+  fixed sentence naming the brief path and nothing else from the caller; it
+  is started with argv only, never through a shell; it carries
+  `STEWARDS_CHILD=1`, so `review` and `--run` inside it do nothing; and its
+  stdout and stderr go to `.stewards/briefs/<job>.log` (gitignored, mode
+  0600, cut to its last 256 KiB through `Repo::write`), never to the
+  terminal. Only `<job>.result.json`, which the tool's own `submit` wrote,
+  is read back, capped at 256 KiB, and only after the brief was retired;
+  the tail of the session's last message is printed flattened to one line
+  and capped at 300 characters. Its outcome never depends on what it said.
 - **Writes.** The tool writes only `.stewards/**`, `docs/units/**`, the
   marked block in `AGENTS.md`, two appended `.gitignore` lines, rendered
   agent dirs, and hooks or CI files when asked by flag. Never source or
@@ -722,7 +839,7 @@ route; group per unit.
   No secrets in any stewards file; tracker auth from CLIs and env.
 - **Harness command gates.** Some harnesses auto-deny child commands they
   classify as dangerous, with no prompt. Every command stewards asks a
-  subagent to run (`stewards submit`, the allowlisted test and lint
+  launched session (or, on the manual path, a subagent) to run (`stewards submit`, the allowlisted test and lint
   commands) must be ordinary argv with no pipes, redirects, or network, so
   it passes such gates. A fixture scenario covers this once a driver for
   such a harness exists.
@@ -734,7 +851,9 @@ route; group per unit.
   fenced blocks for source) and omits the envelope; PR comments post the
   same rendering.
 - Every failure is `{"stewards": {...}, "error": {"code", "message",
-  "fix"}}` on stdout, exit 2. Exit 1 means work is due: `check` failures, or jobs from `next`.
+  "fix"}}` on stdout, exit 2. Exit 1 means work is due: `check` failures,
+  jobs from `next`, jobs or failures left after `review`, or a `--run` job
+  that did not end in an accepted submit.
   `--human` prints `error:` and `fix:` lines.
 - A failed `submit` returns `errors[] {field, problem, example}`; the brief
   says fix and rerun, and after the third failure reply to the caller with
@@ -774,6 +893,7 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `no_tasks` | `brief --role developer` with no usable task list for the unit | brief the maintainer again with the change as `--task` |
 | `harness_missing` | `eval` and the harness binary (`pi`) is not on PATH, or pi-subagents is not installed in the Pi agent directory | install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`) |
 | `eval_setup_incomplete` | `eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted | read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0 |
+| `no_launcher` | `review` or a `--run` with no harness given, detected from the environment, or set as `harness` in the user config | run `stewards next` (or the same command without `--run`) and give each brief it writes to a fresh subagent that can run shell, with exactly: Read <absolute brief path> and follow it. |
 | `not_implemented` | a command or flag not built yet | use a release that has it |
 | `internal` | any other failure | report a bug |
 
@@ -785,18 +905,18 @@ Written by `init`, upserted between the markers.
 <!-- stewards:start -->
 ## Stewards
 
-This repo has a team of agents that already know it. Use them. This section is the project's standing instruction to delegate: dispatching the briefs below to subagents needs no further permission from the user.
+This repo has a team of agents that already know it. Use them.
 
 Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
-- Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`), or the architect for two or more units (`stewards brief --role architect --task "<the change>"`).
-- Changing: make the edit yourself. When a maintainer split a plan into tasks, run `stewards brief <unit> --role developer` and dispatch every brief it writes.
-- Before reporting done: after any edit, however small, run `stewards next`. It lists the review to run: normally one brief for the whole change. Hand each brief's path to a general-purpose subagent that can run shell and write files (not a read-only review agent) and wait for its summary. Fix the findings it returns, then run `stewards next` again; repeat until it lists no jobs. Done means no jobs; a change with jobs still listed is not done.
-- On request or before a release: `stewards next --roles` lists the deeper per-unit jobs (maintainer, tester, documenter, validator, architect).
+- Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: `stewards brief <unit> --role maintainer --task "<the change>" --run` prints the owning maintainer's explanation and plan; for two or more units use `stewards brief --role architect --task "<the change>" --run`.
+- Changing: make the edit yourself. When a maintainer split a plan into tasks, `stewards brief <unit> --role developer --run` carries them out.
+- Before reporting done: when your edits are finished, run `stewards review --task "<what you changed and why>"` as its own step (never alongside an edit). It reviews the whole change in a separate session and prints the findings. Fix them and run it again; repeat until it exits 0. Done means it exits 0; a change it still has findings for is not done.
+- On request or before a release: `stewards review --roles` runs the deeper per-unit jobs.
 
-Roles (the tool packs their context; you only hand over the brief path)
-- reviewer: reviews one change across the units it touched, runs their tests, keeps cards and docs true.
-- maintainer, tester, documenter, validator, architect, developer: the per-unit specialists behind `--roles`, plans and first reviews.
+Each of these runs in a separate session outside your context: you never launch subagents for stewards. Without `--run`, and with `stewards next`, the same briefs are written but not run, for a harness stewards cannot start.
+
+Roles behind the review: reviewer per change; maintainer, tester, documenter, validator, architect, developer for plans, first reviews and `--roles`.
 
 Editing
 - Think first: state assumptions; ask when the request has two readings.
@@ -807,7 +927,7 @@ Editing
 
 Hygiene: branch off `main`; commit only when asked; lint touched files clean, no disables.
 
-`stewards guide` prints the long form, including how to delegate in this harness. No `stewards` on PATH: install with `cargo install stewards` and follow the rules above meanwhile.
+`stewards guide` prints the long form, including the manual path for a harness stewards cannot start. No `stewards` on PATH: install with `cargo install stewards` and follow the rules above meanwhile.
 <!-- stewards:end -->
 ```
 
@@ -987,14 +1107,19 @@ steps[] {unit, change, interfaces[], check}}`. A unit proposal is `{name,
 purpose, paths[]}`. A validation error names the field path, or
 `(document)`, and carries an example value.
 
-`guide` prints the long form: the ritual, the roles, the editing rules, the
-hygiene rules, and the delegation paragraph for the harness detected from
-env; `--harness <name>` forces one, `--all` prints every variant. The
-detection rule and the paragraph text per harness come from the
-`harness.rs` table (the current entries are in Facts); the generic paragraph
-says: start a fresh-context subagent that can run shell, give it the
-absolute brief path and nothing else, wait for its reply: what `submit`
-printed.
+`guide` prints the long form: the ritual (with the paragraph on separate
+sessions), the roles, the editing rules, the hygiene rules, adoption
+(`stewards init`, correct `units.toml`, `stewards init --draft --run`, then
+`stewards review --roles` until it exits 0), one sentence on what a
+session `review` and `--run` start may do, the same for every harness
+(permission prompts off, no project instructions, any shell command and
+file write as the user in the repo's directory), and the manual-path
+paragraph for handing a brief over by hand; `--harness <name>` forces one,
+`--all` prints every manual-path variant. The detection rule, the launch
+line, and the paragraph text per harness come from the `harness.rs` table
+(the current entries are in Facts); the generic paragraph says: start a
+fresh-context subagent that can run shell, give it the absolute brief path
+and nothing else, wait for its reply: what `submit` printed.
 
 ## Docs templates
 
@@ -1082,7 +1207,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   task 5.
 - **Arms, three:** `bare` (no `.stewards/`, no block), `block-only` (block
   present, binary off PATH; ritual and persistence graders `n/a`), `full`.
-- **Runner:** `stewards eval` drives `claude -p --output-format stream-json
+- **Runner:** the eval driver is built for Pi only today; `stewards eval` drives `claude -p --output-format stream-json
   --verbose`, `codex exec --json`, `pi --mode json` (Pi is built; the
   other two are stage 4) behind one `Driver` trait (start a session on a
   prompt in a directory with a model and thinking level and return its
@@ -1090,13 +1215,22 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   to `Run {main_tokens {input, output, cache_read, cache_write},
   total_tokens {same}, cache_warming {same}, peak_main_context,
   tool_calls[], files_opened[], files_opened_tree[], shell_commands[],
-  ritual_steps{status, route, next, review_dispatched, reviewer_submit,
-  check_green}, cost_usd?, duration_s, models[], thinking_levels[],
-  sessions_without_thinking[], subagent_sessions, reviews[],
+  ritual_steps{status, route, next, review, check_green}, cost_usd?,
+  duration_s, models[], thinking_levels[], sessions_without_thinking[],
+  subagent_sessions, launched_jobs, launched_tokens?, review_tokens?,
   git_history_commands[], stop_reason, failed_children[],
   truncated_lines}`.
-  Main tokens = the parent session only; total = parent + all children;
-  the token ratios compare the sum of the four fields. For Pi the fields
+  Main tokens = the parent session only; total = parent + all children +
+  every launched session. The sessions stewards launches (`review`,
+  `--run`) are not children of the transcript, so the runner reads them
+  from the run directory's telemetry: the launch records appended during
+  the session (those past the count read before it) give
+  `launched_jobs`, counted into `subagent_sessions`, and `launched_tokens`,
+  their summed usage, added to the total, with the share launched by
+  `review` reported as `review_tokens`. A launch record with no usage makes
+  `launched_tokens` and the run's total unknown (`null` in the medians)
+  rather than undercounted. The token ratios compare the sum of the four
+  fields. For Pi the fields
   are summed over assistant-message usage plus `compaction` and
   `branch_summary` records (matched by record type), each record counted
   once across the tree by `(id, timestamp)` because a fork starts as a copy
@@ -1117,11 +1251,9 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   regular files in the run's directory after the session: a glob in the
   last path component is expanded against that directory, and
   directories and paths that do not exist are not counted. The ritual
-  steps recorded per run are `status`, `route`, `next` (a shell command,
-  in the main session or any child, whose argv starts with `stewards
-  <cmd>`), `review_dispatched` (a subagent launch whose arguments name
-  `.stewards/briefs/review.md`), `reviewer_submit` (`stewards submit ...
-  --role reviewer` in a child session), and `check_green`, which comes
+  steps recorded per run are `status`, `route`, `next`, `review` (a shell
+  command, in the main session or any child, whose argv starts with
+  `stewards <cmd>`), and `check_green`, which comes
   from the runner: after each `full` (and `full-no-developers`) session it
   runs `stewards next --no-brief` in the run directory and records the
   exit code and job count; green is exit 0. The runner also records
@@ -1132,13 +1264,13 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   the summary lists the known blind spots (`timeout`/`env` prefixes,
   `if`, `bash -c`, backticks). Each run records its count of subagent
   sessions. Each `full` run records its review outcome, report-only, per
-  unit of each successful reviewer `submit` (from the JSON that submit
-  printed in the child's transcript): the round, the verdict, the number
+  unit of each launched review job (a launch record with reviewed units,
+  from the result its `submit` wrote): the round, the verdict, the number
   of findings, the bug gaps the unit's card gained during the run (cards
-  read before and after), and whether the submitting child ran the
-  unit's test command (its test card's `test_command`, else one of the
-  repo's `commands.test`, as a substring of one of the child's shell
-  commands). Any session whose shell commands run `git log`, `show`,
+  read before and after), and `check_reported`, the pass value of the
+  check the reviewer's answer reported for the unit (what the answer
+  says, not a run the eval saw: the launched session's transcript is
+  outside the eval). Any session whose shell commands run `git log`, `show`,
   `checkout`, `reflog`, `stash`, `fsck`, or `cat-file` is flagged, not
   failed, and listed in the summary. A session whose last main response,
   or any child's last response, stopped with `error`, `aborted`, or
@@ -1184,9 +1316,9 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `evals/full-units.toml` (`api`, `client`, `cli`; `init` proposes only the
   `cli` manifest root on the fixture; the root `.gitignore` and `AGENTS.md`
   stay unowned, anything else unowned stops the eval; the summary says so
-  in plain words), then an adoption session on the same model that runs
-  `stewards init --draft` and dispatches until `stewards next --roles`
-  lists no jobs, recorded as a `setup` run. The runner then diffs the adopted state
+  in plain words), then an adoption session on the same model told to run `stewards init
+  --draft --run`, then `stewards review --roles` until it exits 0,
+  recorded as a `setup` run. The runner then diffs the adopted state
   against the `fixture: initial` commit: a changed, deleted, or added file
   outside `.stewards/`, `docs/units/`, `AGENTS.md`, and `.gitignore` stops
   the eval with `eval_setup_incomplete` naming the files, except a newly
@@ -1203,7 +1335,8 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   must be a git repository with an empty `git status --porcelain` and a
   clean `next`, and gets the same diff check. `--no-developers` is `full`
   with the block's "Changing:" line cut to its first sentence, `- Changing:
-  make the edit yourself.`, labelled `full-no-developers`. A task with a `setup` runs in a new
+  make the edit yourself.` (dropping the `brief <unit> --role developer
+  --run` sentence), labelled `full-no-developers`. A task with a `setup` runs in a new
   session in the directory its setup task left: each run of fixture task 6
   first runs task 5 there as a `setup` run. A fixture session has 30
   minutes, then Pi's process group is killed
@@ -1231,20 +1364,21 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `supervisor-channels/`); the eval does not clean it.
 - **Pass criteria:** 3 runs per arm per task. The ritual is the gate, on
   edit tasks only (read-only tasks are `n/a`): a `full` run passes when
-  the runner saw it change the run directory, `next` ran, a subagent was
-  handed `.stewards/briefs/review.md`, a child ran `stewards submit --role
-  reviewer`, and the runner's own `stewards next --no-brief` exits 0 after
-  the session (which proves the review covered the final state: a stamp
-  matches only the snapshot it was made at). `status` and `route` are
-  recorded, not gated. The task passes when every `full` run passes,
-  shown `k/n`, and fails otherwise, each failing run named with what it
-  missed (`next` ran but the review was not dispatched, and so on).
+  the runner saw it change the run directory, a `stewards review` command
+  ran in the session, and the runner's own `stewards next --no-brief`
+  exits 0 after the session (which proves the review covered the final
+  state: a stamp matches only the snapshot it was made at). `status`,
+  `route`, and `next` are recorded, not gated. The task passes when every
+  `full` run passes, shown `k/n`, and fails otherwise, each failing run
+  named with what it missed (`stewards review` never ran, and so on).
   Overhead is reported, not judged: per task the `full`/`bare` ratios of
   the median main tokens, total tokens, cost, and peak main context (and,
   with `files_opened_vs_bare`, of main-session files opened against that
   `bare` task, fixture task 6 against 4), each ratio's median across the
-  tasks that are not incomplete, and each run's count of subagent
-  sessions. Thresholds on overhead will be set by the user after the first
+  tasks that are not incomplete, the medians of `launched_tokens` and
+  `review_tokens`, and each run's count of subagent sessions (launched
+  sessions included). `cost_usd` is the transcript's own figure and does
+  not include launched sessions. Thresholds on overhead will be set by the user after the first
   measurement with the reviewer role. A task with any compared run
   failed, timed out, without a transcript, or not started is
   `incomplete`: its medians are reported but given no verdict, and it
@@ -1304,8 +1438,9 @@ targets.
 Dogfood: stage 1 is verified against a hand-written, uncommitted
 `.stewards/` for this repo; the committed one comes from `init` in stage 2,
 tested against the known answer below. From stage 2 on, every change runs
-stewards' own ritual with briefs dispatched to the harness's subagents (Pi
-with `pi-subagents` on the Linux machine, Claude Code on the macOS one).
+stewards' own ritual; since 2026-11-13 through `stewards review`, which
+launches the harness's own session (Pi on the Linux machine, Claude Code on
+the macOS one).
 stewards itself is the real-repo eval target once the fixture eval passes.
 
 ## Build cycle
@@ -1545,6 +1680,15 @@ pub struct NextReport { jobs, architect, flow_checks, check }
 pub fn next(ws: &Workspace, task: Option<&str>, write_briefs: bool, roles: bool) -> Result<NextReport>
 pub fn review_due(repo: &Repo, task: Option<&str>) -> Result<(String, String, Vec<String>)>  // snapshot, task, units
 
+// launch.rs: the one launcher, behind `review` and every `--run`
+pub const CHILD_ENV: &str = "STEWARDS_CHILD";
+pub fn guard(g: &Global, what: &str) -> Option<ExitCode>           // inside a launched session
+impl Launcher {
+    pub fn new(o: &Options, command: &'static str) -> Result<Launcher>  // the one no_launcher
+    pub fn run_job(&self, repo: &Repo, brief: &Path) -> Result<Outcome> // outcome from the repo
+}
+pub fn run_briefs(g: &Global, l: &Launcher, repo: &Repo, briefs: &[PathBuf]) -> Result<ExitCode>
+
 // debt.rs
 pub fn is_debt_line(line: &str) -> bool
 pub fn scan(repo: &Repo) -> Result<BTreeMap<Option<String>, Vec<DebtItem>>>
@@ -1614,26 +1758,28 @@ Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
 > stewards route api/items.py
 { unit: "api" }
 [Agent] edits api/items.py, api/store.py, api/tests/test_items.py itself  # plannable from the unit page
-> stewards next
-{ jobs: [ { unit: "", role: reviewer, brief_path: ".stewards/briefs/review.md",
-            reasons: ["api: stale", "api: interface changed: api/items.py::list_items"] } ],
-  architect: false, check: { failures: [api stale], warnings: [] } }
-[Agent] read .stewards/briefs/review.md and do what it says
-  └ subagent: reads the hunks, runs `python -m unittest` in api, writes the answer,
+> stewards review --task "add a count endpoint to api"
+  └ launched: claude -p ... -- "Read /work/repo/.stewards/briefs/review.md and follow it."
+    the session reads the hunks, runs `python -m unittest` in api, writes the answer,
     runs `stewards submit --role reviewer --file ...`
-    → "reviewer: api changes (1 finding; card: +interface count-items; 1 scenario upserted; not stamped)"
-      "- api api/store.py:41: cut the hand-rolled loop"
+{ task: "add a count endpoint to api",
+  jobs: [ { role: reviewer, units: ["api"], status: "changes",
+            result: { summary: "reviewer: api changes (1 finding; card: +interface count-items; 1 scenario upserted; not stamped)",
+                      findings: [ { unit: "api", file: "api/store.py", line: 41,
+                                    cut: "the hand-rolled loop", replace_with: "len()" } ] } } ],
+  remaining: { jobs: [ { role: reviewer, reasons: ["api: stale", ...] } ] },
+  then: "fix the findings and run stewards review again" }   exit 1
 [Agent] fixes api/store.py:41 itself
-> stewards next
-{ jobs: [ { unit: "", role: reviewer, reasons: ["api: stale"] } ], ... }
-[Agent] reviewer: "reviewer: api approve (card unchanged; stamped 8b1e044)"   # sets the tester and documenter marks too
-> stewards next
-{ jobs: [], check: { failures: [], warnings: [] } }   exit 0
+> stewards review --task "add a count endpoint to api"
+{ jobs: [ { role: reviewer, status: "approved",
+            result: { summary: "reviewer: api approve (card unchanged; stamped 8b1e044)" } } ],
+  remaining: { jobs: [] }, then: "done" }   exit 0
 ```
 
-The main agent never reads a brief or a card; every brief path is one line;
-it makes the change and the fix itself, and one subagent per round reviews
-every unit the change touched; done is a `next` with no jobs.
+The main agent never reads a brief or a card and never launches a
+subagent; it makes the change and the fix itself and runs one command per
+round; one launched session per round reviews every unit the change
+touched; done is a `review` that exits 0.
 
 ## Handoff (for a new session)
 
@@ -1652,8 +1798,9 @@ to a stage branch. Repo `wromansky/stewards` (public since 2026-11-12),
 auto-delete of merged branches on.
 
 **Next action.** Stage 2b's runner, Pi driver, and thin eval are built and
-ran (below); the per-change ritual is now one review job. A separate task
-changes the eval graders to match. The task list in the build session is
+ran (below); the per-change ritual is now one review job that `stewards
+review` runs itself (2026-11-13, below), and the eval gates on it. Rerun
+the thin eval with it. The task list in the build session is
 the plan; Build cycle says how waves run.
 
 **What the thin eval showed (2026-11-12).** Four passes, one run per arm
@@ -1712,6 +1859,35 @@ ran on this repository.
   test file a finding asks for; the developer's out-of-lane write is
   reported, as designed.
 - About one job in fifty did the work and never ran `submit`.
+
+**What the one-job eval showed, and the launch decision (2026-11-13).**
+One pass each on the fixture (tasks 1, 3, 4, 6) and the `self` suite
+(tasks 1 to 4), one run per arm per task, Pi on
+`anthropic/claude-sonnet-5-5` at medium thinking, with one review job per
+change (results summarised from `evals/results/2026-11-13T04-15-23Z` and
+`2026-11-13T04-22-20Z`):
+
+- The gate passed in 0 of the 4 edit-task `full` runs (fixture 1 and 3,
+  self 1 and 3), and no `full` run of any task ended with a reviewer
+  `submit`.
+- Two runs saw the job and did not dispatch it. One dispatched it with its
+  own handoff sentence ("...return a short summary of findings"), so the
+  reviewer answered in prose and never ran `submit`, and the brief had no
+  description of the request because `next` ran without `--task`. One ran
+  `next` in parallel with its edit. Only fixture task 1's `full` run
+  started a subagent.
+- Overhead medians, `full`/`bare`: fixture main tokens 1.26, total 1.26,
+  cost 1.23, peak main context 1.28; self main 1.43, total 1.43, cost
+  1.20, peak main context 1.17. Fixture task 1's dispatched review took
+  its `full` run to 113,730 total tokens against `bare`'s 24,797 (4.59).
+- Across five passes agents ran every `stewards` command the block names
+  and did not reliably delegate.
+- Decision (the user's): the tool runs the review. One blocking command
+  after an edit (`stewards review --task "..."`), no delegation decision
+  and no handoff wording left to the agent. The same day, extended to
+  every role's brief (`brief ... --run`, `init --draft --run`): the block
+  never asks the agent to launch a subagent. `next` and plain `brief` stay
+  as the manual path for a harness stewards cannot start.
 
 **Deferred, known:** workspace loads every listed repo before applying
 `--repo`, so a broken sibling blocks `--repo good`; the harness table has no
@@ -1802,7 +1978,68 @@ Delegation text per briefed harness, as `guide` prints it:
   because `borg ask` defaults to the daemon's cwd.
 
 The delegation paragraphs for the rendered harnesses are written in
-`src/harness.rs`, which owns them.
+`src/harness.rs`, which owns them. They are the manual path: `review` and
+`--run` use each harness's launch line (below).
+
+Launch lines (`harness.rs`). Every row has the same parts: program, an
+argument template (which says how the prompt is passed), what turns
+permission prompts off, what stops project instruction files loading, the
+model arguments, environment kept, and where usage is reported; a part no source gives is `unknown` (Rules, "review and
+--run"). Each line is marked `verified <date>` when it was run on the
+maintainer's machine, else `UNVERIFIED (<source>)`.
+
+Each line runs with the process cwd set to the repo root; `{dir}` appears
+only where the harness also takes a directory flag. `unknown` parts are
+the ones no primary source gave on 2026-11-13; a row with a required part
+unknown is not started (Rules, "review and --run").
+
+| harness | argv template | prompts off | no instructions | model | usage on stdout | marked |
+|---|---|---|---|---|---|---|
+| Claude Code | `claude -p --output-format stream-json --verbose {unprompted} {no_instructions} {model} -- {prompt}` | `--dangerously-skip-permissions` | `--setting-sources user` | `--model {id}` | last `result` line: `usage` | verified 2026-11-13 (1.0.128) |
+| Cursor | `agent -p --workspace {dir} {unprompted} {no_instructions} {model} {prompt}` | `--force --trust` | unknown | `--model {id}` | unknown | UNVERIFIED (docs 2026-11-13, cursor.com/docs/cli) |
+| Codex CLI | `codex {no_instructions} exec {unprompted} -C {dir} {model} --json {prompt}` | `--dangerously-bypass-approvals-and-sandbox` | `-c project_doc_max_bytes=0` (a config override) | `-m {id}` | each `turn.completed`: `usage`, summed | UNVERIFIED (docs 2026-11-13, github.com/openai/codex) |
+| Copilot CLI | `copilot -C {dir} {unprompted} {no_instructions} {model} -p {prompt}` | `--allow-all --no-ask-user` | `--no-custom-instructions` | `--model={id}` | unknown | UNVERIFIED (docs 2026-11-13, docs.github.com Copilot CLI command reference) |
+| Gemini CLI | `gemini {unprompted} {no_instructions} {model} --output-format stream-json -p {prompt}` | `--approval-mode=yolo` | unknown | `-m {id}` | last `result` line: `stats` | UNVERIFIED (docs 2026-11-13, github.com/google-gemini/gemini-cli) |
+| OpenCode | `opencode run {unprompted} {no_instructions} {model} --format json {prompt}` | `--auto` | env `OPENCODE_DISABLE_PROJECT_CONFIG=1` | `--model {id}` | each `step-finish`: `tokens`, summed | UNVERIFIED (docs 2026-11-13, opencode.ai/docs/cli) |
+| Pi | `pi --mode json --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-mcp --no-approve {unprompted} {no_instructions} {model} -- {prompt}` | not needed (no approval gate) | `--no-context-files` | `--model {id}` | each assistant `message_end`: `message.usage`, summed | verified 2026-11-13 (1.5.2) |
+| Hermes | `hermes chat --oneshot --in {dir} {unprompted} {no_instructions} {model} --format stream-json -q {prompt}` | `--yolo` | `--ignore-rules` | `-m {id}` | last `result` line: `tokens` | UNVERIFIED (docs 2026-11-13, github.com/NousResearch/hermes-agent) |
+| ZeroClaw | `zeroclaw agent {unprompted} {no_instructions} {model} -m {prompt}` | unknown (a risk-profile config key, no flag; `agent` also needs `--agent <alias>`) | unknown (workspace files are always injected) | `--model {id}` | unknown | UNVERIFIED (docs 2026-11-13, github.com/zeroclaw-labs/zeroclaw) |
+| Borg | `borg ask --json {unprompted} {no_instructions} {prompt}` | not needed (no approval prompts) | unknown | unknown (a setting, not a flag) | unknown | UNVERIFIED (CLI docs 2026-11-13) |
+
+Where the docs and the installed binary differ, the line run here wins:
+the newer Claude Code docs name `--bare` and `CLAUDE_CODE_DISABLE_CLAUDE_MDS`,
+which the installed 1.0.128 does not list, and Pi's docs report usage on
+`message_update`, where the installed 1.5.2 was checked on `message_end`.
+OpenCode's v1 docs list `run --dir`, absent from its current source, so the
+line relies on the process cwd.
+
+Checks behind the verified lines (2026-11-13, the Linux machine, stdin
+closed, the harness env stripped):
+
+- Pi 1.5.2 on `anthropic/claude-haiku-5-5`: the first request's tools
+  were `read`, `bash`, `edit`, `write` only, and an instruction planted in
+  an `AGENTS.md` in the cwd was absent from the system prompt; every
+  assistant `message_end` event on stdout carries `usage {input, output,
+  cacheRead, cacheWrite}` and the message content. Pi asks no permission
+  before a tool runs.
+- Claude Code 1.0.128, model pinned to `claude-haiku-5-5` in
+  `~/.claude/settings.json`: an instruction planted in a `CLAUDE.md` in
+  the cwd was not seen with `--setting-sources user` and was seen without
+  it (a control run); Claude Code does not read `AGENTS.md`. The final
+  `result` line carries `usage {input_tokens, output_tokens,
+  cache_read_input_tokens, cache_creation_input_tokens}` and the last text
+  in `result`. `--dangerously-skip-permissions` (`permissionMode:
+  bypassPermissions`) is what lets a headless session run shell and write
+  files without a prompt it cannot answer.
+- End to end, once each, on a throwaway copy of `tests/fixtures/single`
+  with `api` edited: `stewards review --task "..." --harness pi --model
+  anthropic/claude-haiku-5-5` launched one session that read the brief,
+  wrote its answer, and ran `stewards submit --role reviewer`; review
+  printed `changes` with one finding, the reported usage (43,886 tokens of
+  input, cache read, and cache write, plus 3,759 output), and 24 s.
+  `--harness claude-code` did the same in 29 s (`changes`, one finding).
+  Both reviewers reported the test check failing: `pytest` is not
+  installed on that machine.
 
 Command gates: Hermes auto-denies dangerous child commands unless
 `delegation.subagent_auto_approve: true`; Borg has a hardcoded deny list.
@@ -1828,7 +2065,7 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   `description`, `model`, `tools`, `excludeTools`, `inheritProjectContext`,
   `defaultContext` (`fresh`|`fork`), `memory`; clean system prompt by
   default; no ad-hoc launch without a definition.
-- Hermes (Python; source read 2026-10-21, `tools/delegate_tool.py`):
+- Hermes (Python; source read 2026-10-21):
   project context is the first match of `.hermes.md` > `AGENTS.override.md`
   > `AGENTS.md` > `CLAUDE.md`; skills from `~/.hermes/skills/`,
   `.agents/skills/` (after `hermes skills trust`); shell hook
@@ -1845,7 +2082,7 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   10, `max_spawn_depth` 1, `subagent_auto_approve` false (dangerous commands
   auto-denied), `model`, `provider`, `worktree_isolation`, `child_timeout_seconds`.
   No file-defined subagents; does not read `.claude/agents/`.
-- ZeroClaw (Rust; source read 2026-10-21, `crates/zeroclaw-runtime/src/tools/`):
+- ZeroClaw (Rust; source read 2026-10-21):
   `spawn_subagent{prompt}` only; depth cap 1; the child is the same agent
   alias (same identity files, risk profile, workspace), fresh session,
   blocks the parent, returns text. `delegate{action, agent, prompt, context,

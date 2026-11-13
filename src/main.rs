@@ -47,6 +47,11 @@ enum Command {
     Init {
         #[arg(long)]
         draft: bool,
+        /// Run the briefs --draft writes, each in the harness's own headless session
+        #[arg(long, requires = "draft")]
+        run: bool,
+        #[command(flatten)]
+        launch: LaunchArgs,
         #[arg(long)]
         hooks: bool,
         #[arg(long)]
@@ -79,8 +84,13 @@ enum Command {
         role: String,
         #[arg(long)]
         task: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "run")]
         stdout: bool,
+        /// Run the brief(s) written, each in the harness's own headless session
+        #[arg(long)]
+        run: bool,
+        #[command(flatten)]
+        launch: LaunchArgs,
     },
     /// Validate a typed answer and write the update
     Submit {
@@ -115,10 +125,18 @@ enum Command {
         #[arg(long)]
         export: bool,
     },
-    /// Maintainer review briefs on a PR or MR diff
+    /// Run the jobs `next` lists, each in the harness's own headless session
     Review {
+        /// What you changed and why: the reviewer checks every changed line against it
         #[arg(long)]
-        pr: u64,
+        task: Option<String>,
+        /// The per-unit jobs (maintainer, tester, documenter, validator, architect) instead of one review
+        #[arg(long)]
+        roles: bool,
+        #[command(flatten)]
+        launch: LaunchArgs,
+        #[arg(long)]
+        pr: Option<u64>,
     },
     /// `simplified:` comments attached to units
     Debt,
@@ -165,6 +183,29 @@ enum Command {
     },
     /// Shell completions
     Completions { shell: String },
+}
+
+/// How `review` and `--run` launch a session.
+#[derive(clap::Args)]
+struct LaunchArgs {
+    /// The harness to launch (else the detected one, else `harness` in the user config)
+    #[arg(long)]
+    harness: Option<String>,
+    #[arg(long, value_name = "id")]
+    model: Option<String>,
+    /// Wall-clock limit per launched session
+    #[arg(long, value_name = "seconds", default_value_t = launch::DEFAULT_TIMEOUT_S)]
+    timeout: u64,
+}
+
+impl LaunchArgs {
+    fn options(&self) -> launch::Options<'_> {
+        launch::Options {
+            harness: self.harness.as_deref(),
+            model: self.model.as_deref(),
+            timeout_s: self.timeout,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -223,7 +264,13 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
             errors,
             glossary,
         } => guide::run(g, harness.as_deref(), all, errors, glossary),
-        Command::Init { draft, hooks, ci } => init::run(g, draft, hooks, ci),
+        Command::Init {
+            draft,
+            run,
+            launch,
+            hooks,
+            ci,
+        } => init::run(g, draft, run.then(|| launch.options()).as_ref(), hooks, ci),
         Command::Status { telemetry } => status::run(g, telemetry),
         Command::Route { paths } => route::run(g, &paths),
         Command::Pack {
@@ -243,12 +290,15 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
             role,
             task,
             stdout,
+            run,
+            launch,
         } => brief::run(
             g,
             unit.as_deref(),
             role.parse::<Role>()?,
             task.as_deref(),
             stdout,
+            run.then(|| launch.options()).as_ref(),
         ),
         Command::Submit { unit, role, file } => {
             submit::run(g, unit.as_deref(), role.parse::<Role>()?, &file)
@@ -263,7 +313,12 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
         } => next::run(g, task.as_deref(), no_brief, roles, no_run, pr),
         Command::Check => check::run(g),
         Command::Validate { report, export } => validate::run(g, report.as_deref(), export),
-        Command::Review { pr } => review::run(g, pr),
+        Command::Review {
+            task,
+            roles,
+            launch,
+            pr,
+        } => review::run(g, task.as_deref(), roles, &launch.options(), pr),
         Command::Debt => debt::run(g),
         Command::Docs { unit } => docs::run(g, unit.as_deref()),
         Command::Render {

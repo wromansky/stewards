@@ -37,7 +37,6 @@ fn clap_errors_are_usage_errors() {
     for (cmd, arg) in [
         ("route", "<PATHS>"),
         ("stamp", "<UNIT>"),
-        ("review", "--pr"),
         ("render", "--harness"),
         ("completions", "<SHELL>"),
     ] {

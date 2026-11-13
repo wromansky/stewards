@@ -83,7 +83,24 @@ fn guide_has_the_block_sections_as_named_fields() {
             .unwrap()
             .starts_with("Ritual\n- Entering")
     );
-    assert!(v["roles"].as_str().unwrap().starts_with("Roles ("));
+    assert!(
+        v["ritual"]
+            .as_str()
+            .unwrap()
+            .contains("\n\nEach of these runs in a separate session outside your context")
+    );
+    assert!(
+        v["roles"]
+            .as_str()
+            .unwrap()
+            .starts_with("Roles behind the review: ")
+    );
+    assert!(
+        v["adoption"]
+            .as_str()
+            .unwrap()
+            .contains("init --draft --run")
+    );
     assert!(v["editing"].as_str().unwrap().starts_with("Editing\n"));
     assert!(v["hygiene"].as_str().unwrap().starts_with("Hygiene:"));
     assert!(v.get("errors").is_none() && v.get("glossary").is_none());
@@ -300,8 +317,8 @@ fn zeroclaw_and_borg_delegation_name_their_spawn_tool() {
 fn guide_output_names_all_seven_roles() {
     let (v, _) = guide(&[], &[]);
     let roles = v["roles"].as_str().unwrap();
-    assert!(roles.contains("- reviewer:"), "{roles}");
     for role in [
+        "reviewer",
         "maintainer",
         "tester",
         "documenter",
@@ -350,4 +367,15 @@ fn upsert_replacing_a_block_keeps_crlf_and_missing_final_newline_outside_it() {
     assert!(upsert_block(&repo(dir.path())).unwrap());
     let text = std::fs::read_to_string(agents_md(dir.path())).unwrap();
     assert_eq!(text, format!("# Top\r\n{}\r\nend", block()));
+}
+
+#[test]
+fn guide_says_the_same_about_launched_sessions_for_every_harness() {
+    let generic = guide(&[], &[]).0["launch"].clone();
+    let text = generic.as_str().unwrap();
+    assert!(text.contains("permission prompts off"), "{text}");
+    assert!(text.contains("any shell command"), "{text}");
+    for h in ["claude-code", "pi", "codex", "hermes", "borg"] {
+        assert_eq!(guide(&[], &["--harness", h]).0["launch"], generic, "{h}");
+    }
 }

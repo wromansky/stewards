@@ -4,7 +4,8 @@ use std::process::ExitCode;
 use anyhow::Context;
 use serde::Serialize;
 
-use crate::harness::{self, GENERIC_DELEGATION, HARNESSES};
+use crate::harness::{self, GENERIC_DELEGATION, HARNESSES, LAUNCH_NOTE};
+use crate::launch;
 use crate::output::{Global, Human, emit};
 use crate::workspace::Repo;
 
@@ -14,18 +15,18 @@ const END: &str = "<!-- stewards:end -->";
 const BLOCK: &str = r##"<!-- stewards:start -->
 ## Stewards
 
-This repo has a team of agents that already know it. Use them. This section is the project's standing instruction to delegate: dispatching the briefs below to subagents needs no further permission from the user.
+This repo has a team of agents that already know it. Use them.
 
 Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
-- Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: brief the owning maintainer (`stewards brief <unit> --role maintainer --task "<the change>"`), or the architect for two or more units (`stewards brief --role architect --task "<the change>"`).
-- Changing: make the edit yourself. When a maintainer split a plan into tasks, run `stewards brief <unit> --role developer` and dispatch every brief it writes.
-- Before reporting done: after any edit, however small, run `stewards next`. It lists the review to run: normally one brief for the whole change. Hand each brief's path to a general-purpose subagent that can run shell and write files (not a read-only review agent) and wait for its summary. Fix the findings it returns, then run `stewards next` again; repeat until it lists no jobs. Done means no jobs; a change with jobs still listed is not done.
-- On request or before a release: `stewards next --roles` lists the deeper per-unit jobs (maintainer, tester, documenter, validator, architect).
+- Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: `stewards brief <unit> --role maintainer --task "<the change>" --run` prints the owning maintainer's explanation and plan; for two or more units use `stewards brief --role architect --task "<the change>" --run`.
+- Changing: make the edit yourself. When a maintainer split a plan into tasks, `stewards brief <unit> --role developer --run` carries them out.
+- Before reporting done: when your edits are finished, run `stewards review --task "<what you changed and why>"` as its own step (never alongside an edit). It reviews the whole change in a separate session and prints the findings. Fix them and run it again; repeat until it exits 0. Done means it exits 0; a change it still has findings for is not done.
+- On request or before a release: `stewards review --roles` runs the deeper per-unit jobs.
 
-Roles (the tool packs their context; you only hand over the brief path)
-- reviewer: reviews one change across the units it touched, runs their tests, keeps cards and docs true.
-- maintainer, tester, documenter, validator, architect, developer: the per-unit specialists behind `--roles`, plans and first reviews.
+Each of these runs in a separate session outside your context: you never launch subagents for stewards. Without `--run`, and with `stewards next`, the same briefs are written but not run, for a harness stewards cannot start.
+
+Roles behind the review: reviewer per change; maintainer, tester, documenter, validator, architect, developer for plans, first reviews and `--roles`.
 
 Editing
 - Think first: state assumptions; ask when the request has two readings.
@@ -36,7 +37,7 @@ Editing
 
 Hygiene: branch off `main`; commit only when asked; lint touched files clean, no disables.
 
-`stewards guide` prints the long form, including how to delegate in this harness. No `stewards` on PATH: install with `cargo install stewards` and follow the rules above meanwhile.
+`stewards guide` prints the long form, including the manual path for a harness stewards cannot start. No `stewards` on PATH: install with `cargo install stewards` and follow the rules above meanwhile.
 <!-- stewards:end -->"##;
 
 /// The AGENTS.md block, markers included.
@@ -91,10 +92,14 @@ struct Term {
 struct Guide {
     /// The detected or forced harness; null for the generic paragraph.
     harness: Option<&'static str>,
-    ritual: &'static str,
+    ritual: String,
     roles: &'static str,
     editing: &'static str,
     hygiene: &'static str,
+    adoption: &'static str,
+    /// What a session `review` and `--run` start may do: the same for every harness.
+    launch: &'static str,
+    /// The manual path: handing a brief to a subagent by hand.
     delegation: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     all_delegations: Option<Vec<Delegation>>,
@@ -107,13 +112,15 @@ struct Guide {
 impl Human for Guide {
     fn render(&self) -> String {
         let mut out = format!(
-            "# stewards guide\n\n{}\n\n{}\n\n{}\n\n{}\n\n## Delegation ({})\n\n{}\n",
+            "# stewards guide\n\n{}\n\n{}\n\n{}\n\n{}\n\n## Adoption\n\n{}\n\n## Launched sessions ({h})\n\n{}\n\n## By hand ({h})\n\n{}\n",
             self.ritual,
             self.roles,
             self.editing,
             self.hygiene,
-            self.harness.unwrap_or("generic"),
-            self.delegation
+            self.adoption,
+            self.launch,
+            self.delegation,
+            h = self.harness.unwrap_or("generic"),
         );
         for d in self.all_delegations.iter().flatten() {
             out += &format!("\n### {}\n\n{}\n", d.harness, d.text);
@@ -145,14 +152,17 @@ pub fn run(
         Some(name) => Some(harness::by_name(name)?),
         None => harness::detect(),
     };
-    // Paragraphs of the block: marker + title, intro, ritual, roles, editing, hygiene, footer.
+    // Paragraphs of the block: marker + title, intro, ritual, sessions, roles, editing, hygiene,
+    // footer.
     let parts: Vec<&str> = BLOCK.split("\n\n").collect();
     let guide = Guide {
         harness: chosen.map(|h| h.name),
-        ritual: parts[2],
-        roles: parts[3],
-        editing: parts[4],
-        hygiene: parts[5],
+        ritual: format!("{}\n\n{}", parts[2], parts[3]),
+        roles: parts[4],
+        editing: parts[5],
+        hygiene: parts[6],
+        adoption: ADOPTION,
+        launch: LAUNCH_NOTE,
         delegation: chosen.map_or(GENERIC_DELEGATION, |h| h.delegation),
         all_delegations: all.then(|| {
             HARNESSES
@@ -170,11 +180,14 @@ pub fn run(
     Ok(ExitCode::SUCCESS)
 }
 
+/// How a repository adopts stewards.
+const ADOPTION: &str = "Run `stewards init` and correct `.stewards/units.toml`, then `stewards init --draft --run` (it names the units and drafts each card), then `stewards review --roles` until it exits 0.";
+
 const fn e(code: &'static str, when: &'static str, fix: &'static str) -> ErrorRow {
     ErrorRow { code, when, fix }
 }
 
-static ERRORS: [ErrorRow; 31] = [
+static ERRORS: [ErrorRow; 32] = [
     e(
         "not_a_git_repo",
         "no `.git` above cwd",
@@ -319,6 +332,11 @@ static ERRORS: [ErrorRow; 31] = [
         "eval_setup_incomplete",
         "`eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted",
         "read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0",
+    ),
+    e(
+        "no_launcher",
+        "`review` or a `--run` with no harness given, detected from the environment, or set as `harness` in the user config",
+        launch::MANUAL_PATH,
     ),
     e(
         "not_implemented",

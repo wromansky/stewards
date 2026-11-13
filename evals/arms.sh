@@ -32,8 +32,9 @@ rm -f "$dest/api/items.json"
 
 cd "$dest"
 git init -q -b main
+# commit subjects and author name nothing: Claude Code shows a session the last five subjects
 git add -A
-git -c user.name=fixture -c user.email=fixture@example.invalid commit -qm "fixture: initial"
+git -c user.name=dev -c user.email=dev@example.invalid commit -qm "initial"
 
 block() {
   cat <<'EOF'
@@ -71,7 +72,7 @@ case "$arm" in
   block-only)
     block > AGENTS.md
     git add AGENTS.md
-    git -c user.name=fixture -c user.email=fixture@example.invalid commit -qm "add AGENTS.md block"
+    git -c user.name=dev -c user.email=dev@example.invalid commit -qm "update"
     ;;
   full)
     if ! command -v stewards >/dev/null 2>&1; then

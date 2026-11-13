@@ -1025,6 +1025,7 @@ dependencies = [
  "baml-sys",
  "clap",
  "globset",
+ "libc",
  "serde",
  "serde_json",
  "serde_path_to_error",

@@ -84,7 +84,7 @@ fn guide_has_the_block_sections_as_named_fields() {
         v["handoff"]
             .as_str()
             .unwrap()
-            .starts_with("A handoff is always one sentence, `Read <path> and follow it.`")
+            .starts_with("A handoff is always one sentence, ``Read `<path>` and follow it.``")
     );
     assert!(v["roles"].as_str().unwrap().starts_with("Roles ("));
     let adoption = v["adoption"].as_str().unwrap();
@@ -113,7 +113,7 @@ fn a_harness_not_in_the_table_gets_the_generic_guidance() {
     assert_eq!(v["delegation"], generic["delegation"]);
     let text = v["delegation"].as_str().unwrap();
     assert!(
-        text.contains("`Read <absolute brief path> and follow it.`"),
+        text.contains("``Read `<absolute brief path>` and follow it.``"),
         "{text}"
     );
 }
@@ -265,32 +265,27 @@ fn block_equals_the_block_in_the_design_record() {
     assert_eq!(&design[start..end], block());
 }
 
+/// No harness gets other guidance than one stewards does not know: the generic paragraph, plus
+/// at most one sentence naming its subagent tool.
 #[test]
-fn briefed_delegation_text_matches_facts_word_for_word() {
+fn every_harness_gets_the_generic_delegation_plus_at_most_its_tool_name() {
+    let (generic, _) = guide(&[], &[]);
+    let generic = generic["delegation"].as_str().unwrap();
     let (v, _) = guide(&[], &["--all"]);
-    let text = |name: &str| {
-        v["all_delegations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|d| d["harness"] == name)
-            .unwrap()["text"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    };
-    assert_eq!(
-        text("hermes"),
-        r#"`delegate_task(tasks=[{goal: "Read <absolute brief path> and follow it", context: "<repo path>"}])`; children run in the background by default, wait for the completion message; `role` is ignored by the source."#
-    );
-    assert_eq!(
-        text("zeroclaw"),
-        r#"`spawn_subagent{prompt: "Read <absolute brief path> and follow it"}` (same agent, fresh session, blocks; the risk profile must not exclude it), or `delegate{agent, prompt, context}` to a same-profile agent in bounded mode."#
-    );
-    assert_eq!(
-        text("borg"),
-        r#"`spawn_agent(role="coder", blocking=true, message="Read <absolute brief path> and follow it", context="<task>")`, or a fresh `borg ask` session per brief; run inside the repo workspace (`-w` or `borg acp`), because `borg ask` defaults to the daemon's cwd."#
-    );
+    for d in v["all_delegations"].as_array().unwrap() {
+        let (name, text) = (d["harness"].as_str().unwrap(), d["text"].as_str().unwrap());
+        let hint = text
+            .strip_prefix(generic)
+            .unwrap_or_else(|| panic!("{text}"));
+        let tool = hint
+            .strip_prefix(&format!(" In {name} that is the `"))
+            .and_then(|t| t.strip_suffix("` tool."));
+        assert!(
+            hint.is_empty() || tool.is_some_and(|t| !t.contains(' ')),
+            "{name}: {hint}"
+        );
+        assert!(!text.contains("render"), "{name}: {text}");
+    }
 }
 
 #[test]

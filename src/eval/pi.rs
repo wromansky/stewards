@@ -332,6 +332,7 @@ fn actions(records: &[&Value], child: bool) -> Vec<Action> {
         .filter_map(|b| match b["name"].as_str() {
             Some("subagent") => Some(Action::Dispatch {
                 texts: strings(&b["arguments"]),
+                tasks: tasks(&b["arguments"]),
             }),
             Some("bash") => Some(Action::Shell {
                 command: b["arguments"]["command"]
@@ -343,6 +344,22 @@ fn actions(records: &[&Value], child: bool) -> Vec<Action> {
             _ => None,
         })
         .collect()
+}
+
+/// Every string under a `task` key in `v`, at any depth: what each child of a pi-subagents
+/// `subagent` call (single, `tasks`, or `chain`) is given as its task.
+fn tasks(v: &Value) -> Vec<String> {
+    match v {
+        Value::Array(a) => a.iter().flat_map(tasks).collect(),
+        Value::Object(o) => o
+            .iter()
+            .flat_map(|(k, v)| match (k.as_str(), v) {
+                ("task", Value::String(s)) => vec![s.clone()],
+                _ => tasks(v),
+            })
+            .collect(),
+        _ => vec![],
+    }
 }
 
 /// Every string value in `v`, at any depth.

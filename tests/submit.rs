@@ -263,6 +263,29 @@ fn explain_prints_the_explanation_truncated_and_does_not_stamp() {
 }
 
 #[test]
+fn human_submit_output_shows_each_findings_replacement() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    fs::write(dir.path().join(ANSWER), review("changes").to_string()).unwrap();
+    let args = [
+        "submit",
+        "api",
+        "--role",
+        "maintainer",
+        "--file",
+        ANSWER,
+        "--human",
+    ];
+    let out = run_in(dir.path(), home.path(), &args);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.lines()
+            .any(|l| l == "- api src/api/items.py:4: cut x; replace with y"),
+        "{text}"
+    );
+}
+
+#[test]
 fn patch_adding_an_interface_keeps_the_rest_of_the_card() {
     let (dir, home) = setup();
     assert_eq!(run(dir.path(), home.path(), &["stamp", "api"]).0, 0);

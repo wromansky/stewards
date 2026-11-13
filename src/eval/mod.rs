@@ -33,7 +33,7 @@ pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards
 pub const FAILED_STOPS: [&str; 3] = ["error", "aborted", "length"];
 
 /// What the summary says about the ritual gate and the transcript-derived steps.
-pub const RITUAL_NOTE: &str = "The gate, on each full run of an edit task (read-only tasks are n/a): the runner saw a change (`changed`: outside .stewards/ and docs/units/, against the run's starting commit, untracked files included), a `stewards review` command ran somewhere in the session tree (`review`), a subagent was started whose task contains the handoff sentence for a brief under .stewards/briefs/ (`handoff`), and the runner's own `stewards next --no-brief` exits 0 afterwards (`check_green`). `status`, `route`, `next`, whether every subagent task holding a handoff was exactly that sentence (`handoff_exact`), and whether a child ran `stewards submit --role reviewer` (`reviewer_submit`) are recorded, not gated. Steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, and backticks are misread or missed.";
+pub const RITUAL_NOTE: &str = "The gate, on each full run of an edit task (read-only tasks are n/a): the runner saw a change (`changed`: outside .stewards/ and docs/units/, against the run's starting commit, untracked files included), a `stewards review` command ran somewhere in the session tree (`review`), a subagent was started whose task contains the handoff sentence for a brief under .stewards/briefs/ (`handoff`), and the runner's own `stewards next --no-brief` exits 0 afterwards (`check_green`). `status`, `route`, `next`, whether every subagent launch holding a handoff gave each child exactly that sentence as its task (`handoff_exact`), and whether a child ran `stewards submit --role reviewer` (`reviewer_submit`) are recorded, not gated. Steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, and backticks are misread or missed.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -232,23 +232,30 @@ pub enum Action {
         /// Run by a child session, not the main one.
         child: bool,
     },
-    /// A subagent launch; `texts` are the string values of its arguments.
-    Dispatch { texts: Vec<String> },
+    /// A subagent launch; `texts` are the string values of its arguments, `tasks` those each
+    /// child is given as its task.
+    Dispatch {
+        texts: Vec<String>,
+        tasks: Vec<String>,
+    },
 }
 
 /// Whether `text` is exactly a handoff (`brief::handoff`) of a brief under `.stewards/briefs/`.
 pub fn is_handoff(text: &str) -> bool {
-    text.strip_prefix("Read ")
-        .and_then(|r| r.strip_suffix(" and follow it."))
+    text.strip_prefix("Read `")
+        .and_then(|r| r.strip_suffix("` and follow it."))
         .is_some_and(|p| {
-            p.starts_with('/') && p.contains("/.stewards/briefs/") && p.ends_with(".md")
+            p.starts_with('/')
+                && !p.contains('`')
+                && p.contains("/.stewards/briefs/")
+                && p.ends_with(".md")
         })
 }
 
 /// Whether `text` holds a handoff anywhere in it.
 pub fn holds_handoff(text: &str) -> bool {
-    const END: &str = " and follow it.";
-    text.match_indices("Read ").any(|(i, _)| {
+    const END: &str = "` and follow it.";
+    text.match_indices("Read `").any(|(i, _)| {
         text[i..]
             .find(END)
             .is_some_and(|j| is_handoff(&text[i..i + j + END.len()]))
@@ -263,9 +270,9 @@ pub fn is_reviewer_submit(cmd: &[&str]) -> bool {
 
 /// The transcript-derived ritual steps: `status`, `route`, `next`, `review` are shell commands,
 /// in any session, whose argv starts with `stewards <cmd>`; `handoff` is a subagent launched with
-/// a handoff in one of its argument strings, and `handoff_exact` that every such string is
-/// exactly one; `reviewer_submit` is `is_reviewer_submit` in a child. `check_green` is left
-/// `false` for the runner.
+/// a handoff in one of its argument strings, and `handoff_exact` that every such launch gives
+/// each child exactly a handoff as its task; `reviewer_submit` is `is_reviewer_submit` in a
+/// child. `check_green` is left `false` for the runner.
 pub fn ritual_steps(actions: &[Action]) -> RitualSteps {
     let mut steps: RitualSteps = RITUAL_STEPS.iter().map(|&s| (s, false)).collect();
     let mut exact = true;
@@ -284,10 +291,10 @@ pub fn ritual_steps(actions: &[Action]) -> RitualSteps {
                     }
                 }
             }
-            Action::Dispatch { texts } => {
-                for t in texts.iter().filter(|t| holds_handoff(t)) {
+            Action::Dispatch { texts, tasks } => {
+                if texts.iter().any(|t| holds_handoff(t)) {
                     steps.insert("handoff", true);
-                    exact &= is_handoff(t);
+                    exact &= !tasks.is_empty() && tasks.iter().all(|t| is_handoff(t));
                 }
             }
         }

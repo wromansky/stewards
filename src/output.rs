@@ -28,8 +28,9 @@ struct Envelope<'a, T> {
 
 /// Prints `v` as enveloped JSON, or its markdown rendering with --human. Never panics on a
 /// failed write: a closed pipe (`stewards check | head`) is dropped quietly so the command
-/// still exits with its own code; any other write error is reported on stderr.
-pub fn emit<T: Serialize + Human>(v: &T, human: bool) {
+/// still exits with its own code; any other write error is reported on stderr. Returns whether
+/// the whole output was written.
+pub fn emit<T: Serialize + Human>(v: &T, human: bool) -> bool {
     let text = if human {
         v.render()
     } else {
@@ -43,11 +44,13 @@ pub fn emit<T: Serialize + Human>(v: &T, human: bool) {
         serde_json::to_string(&envelope).expect("payload serializes")
     };
     let mut out = std::io::stdout().lock();
-    if let Err(e) = writeln!(out, "{text}").and_then(|()| out.flush())
+    let written = writeln!(out, "{text}").and_then(|()| out.flush());
+    if let Err(e) = &written
         && e.kind() != std::io::ErrorKind::BrokenPipe
     {
         let _ = writeln!(std::io::stderr(), "stewards: writing output: {e}");
     }
+    written.is_ok()
 }
 
 #[derive(Debug, Clone, Serialize)]

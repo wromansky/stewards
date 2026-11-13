@@ -29,7 +29,7 @@ pub struct Job {
     pub brief_path: Option<PathBuf>,
     /// What to give the subagent for `brief_path`: `brief::handoff`.
     pub handoff: Option<String>,
-    /// With `Briefs::KeepWaiting`: the brief was already on disk for this snapshot and was left
+    /// With `Briefs::KeepWaiting`: the brief on disk was already exactly the one due and was left
     /// as it is, since its subagent has not submitted (it may still be writing the answer).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub waiting: bool,
@@ -59,8 +59,8 @@ pub enum Briefs {
     /// Only list the jobs.
     None,
     Write,
-    /// `review`: as `Write`, but a brief already on disk for the job's snapshot and mode is left
-    /// as it is and its job marked `waiting`.
+    /// `review`: as `Write`, but a brief already on disk with exactly the text due is left as it
+    /// is and its job marked `waiting`.
     KeepWaiting,
 }
 
@@ -122,29 +122,37 @@ pub fn next(ws: &Workspace, task: Option<&str>, briefs: Briefs, roles: bool) -> 
 }
 
 fn write_role_brief(repo: &Repo, unit: Option<&str>, briefs: Briefs, job: &mut Job) -> Result<()> {
-    place_brief(repo, unit, briefs, job, |job| {
-        let (path, _) = brief::write(repo, unit, job.role, Mode::Review, &job.task, &job.snapshot)?;
-        Ok(path)
-    })
+    if briefs == Briefs::None {
+        return Ok(());
+    }
+    let text = brief::build(repo, unit, job.role, Mode::Review, &job.task, &job.snapshot)?;
+    place_brief(repo, unit, briefs, job, &text)
 }
 
-/// Fills `job`'s brief path and handoff as `briefs` says, `write` writing the brief.
+/// Fills `job`'s brief path and handoff as `briefs` says, writing the brief `text`. With
+/// `KeepWaiting`, a brief on disk whose bytes are exactly `text` (same task, units, snapshot, and
+/// body) is left as it is and the job marked waiting; anything else there is rewritten.
 fn place_brief(
     repo: &Repo,
     unit: Option<&str>,
     briefs: Briefs,
     job: &mut Job,
-    write: impl FnOnce(&Job) -> Result<PathBuf>,
+    text: &str,
 ) -> Result<()> {
     if briefs == Briefs::None {
         return Ok(());
     }
-    let path = repo.root.join(brief::rel_path(unit, job.role, None));
+    let rel = brief::rel_path(unit, job.role, None);
     job.waiting = briefs == Briefs::KeepWaiting
-        && brief::read_header(&path)
-            .is_ok_and(|h| h.snapshot == job.snapshot && h.mode == Mode::Review);
-    let path = if job.waiting { path } else { write(job)? };
-    job.handoff = Some(brief::handoff(&path));
+        && repo
+            .read(&rel, text.len() as u64)
+            .is_ok_and(|on_disk| on_disk == text.as_bytes());
+    let path = if job.waiting {
+        repo.root.join(rel)
+    } else {
+        brief::write_text(repo, unit, job.role, text)?
+    };
+    job.handoff = Some(brief::handoff(&path)?);
     job.brief_path = Some(path);
     Ok(())
 }
@@ -255,9 +263,7 @@ fn reviewer_job(
         },
         debt_added: covered.iter().flat_map(|d| d.debt_added.clone()).collect(),
     };
-    place_brief(repo, None, briefs, &mut job, |_| {
-        brief::write_text(repo, None, Role::Reviewer, &text)
-    })?;
+    place_brief(repo, None, briefs, &mut job, &text)?;
     Ok(job)
 }
 

@@ -712,7 +712,7 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         for j in &mut jobs {
             let unit = unit_of(j);
             let (path, _) = brief::write(repo, unit, j.role, Mode::Review, &j.task, &j.snapshot)?;
-            j.handoff = Some(brief::handoff(&path));
+            j.handoff = Some(brief::handoff(&path)?);
             j.brief_path = Some(path);
         }
     }

@@ -107,6 +107,17 @@ impl ShownFinding {
         .capped()
     }
 
+    /// Whether submit's own checks on a finding accept it: its file a plain path its unit owns,
+    /// each text under its cap with no hidden, control, or data-marker character.
+    pub(crate) fn passes_submit_checks(&self, root: &Path, router: &Router) -> bool {
+        let mut p = vec![];
+        check_text(&mut p, "file", &self.file, LINE_CAP, true);
+        check_owned(&mut p, "file", &self.file, root, &self.unit, router);
+        check_text(&mut p, "cut", &self.cut, PROSE_CAP, false);
+        check_text(&mut p, "replace_with", &self.replace_with, PROSE_CAP, false);
+        p.is_empty()
+    }
+
     /// Each text on one line and cut to what submit prints.
     pub(crate) fn capped(self) -> ShownFinding {
         let shown = |s: &str| one_line(s).chars().take(CUT_SHOWN).collect();
@@ -160,8 +171,8 @@ impl Human for Submitted {
         out.extend(self.unit_proposals.iter().map(proposal_line));
         out.extend(self.findings.iter().map(|f| {
             one_line(&format!(
-                "- {} {}:{}: cut {}",
-                f.unit, f.file, f.line, f.cut
+                "- {} {}:{}: cut {}; replace with {}",
+                f.unit, f.file, f.line, f.cut, f.replace_with
             ))
         }));
         out.extend(self.warning.as_ref().map(|w| format!("warning: {w}")));

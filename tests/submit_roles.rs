@@ -586,6 +586,35 @@ fn no_role_changes_fingerprint_or_tree() {
     }
 }
 
+/// Each role's accepted submit writes exactly what it printed beside its brief, for `review`.
+#[test]
+fn each_roles_accepted_submit_writes_what_it_printed_to_its_result_file() {
+    let dir = fixture("single");
+    let d = dir.path();
+    append(&d.join(CARD), BUG);
+    stamp_units(d, &["api"]);
+    let proposals = json!([{"name": "auth", "purpose": "login", "paths": ["src/auth/**"]}]);
+    let answers = [
+        (
+            "tester",
+            tester(json!([]), json!([bug("b", "pytest tests/api", "e")])),
+        ),
+        ("documenter", documenter("Serves items.")),
+        ("validator", validator(true)),
+        (
+            "architect",
+            architect(json!([]), json!([]), proposals, Value::Null),
+        ),
+    ];
+    for (role, answer) in answers {
+        let mut printed = submit_ok(d, role, &answer);
+        printed.as_object_mut().unwrap().remove("stewards");
+        let result = d.join(format!(".stewards/briefs/{}.result.json", stem(role)));
+        let written: Value = serde_json::from_slice(&fs::read(result).unwrap()).unwrap();
+        assert_eq!(written, printed, "{role}");
+    }
+}
+
 /// An allowed prefix followed by shell syntax: a separator, `&&`, a pipe, backticks, `$(...)`,
 /// a redirect, and a newline.
 const SHELL_COMMANDS: [&str; 7] = [

@@ -237,13 +237,15 @@ fn child_shell(command: &str) -> Action {
     }
 }
 
-fn dispatch(texts: &[&str]) -> Action {
+/// A pi-subagents launch whose child gets `task`, beside the agent name.
+fn dispatch(task: &str) -> Action {
     Action::Dispatch {
-        texts: texts.iter().map(|t| t.to_string()).collect(),
+        texts: vec!["worker".into(), task.into()],
+        tasks: vec![task.into()],
     }
 }
 
-const HANDOFF: &str = "Read /r r/.stewards/briefs/api-maintainer.md and follow it.";
+const HANDOFF: &str = "Read `/r r/.stewards/briefs/api-maintainer.md` and follow it.";
 
 #[test]
 fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
@@ -253,16 +255,18 @@ fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
         (&["next"], vec![child_shell("stewards next")]),
         (&["review"], vec![shell("stewards review --task 'x'")]),
         // any brief's handoff, its path with a space, passed as the whole task
-        (
-            &["handoff", "handoff_exact"],
-            vec![dispatch(&["worker", HANDOFF])],
-        ),
-        // the handoff inside the agent's own wording: handed off, not exactly
+        (&["handoff", "handoff_exact"], vec![dispatch(HANDOFF)]),
+        // the handoff inside the agent's own wording, or given beside another task: handed off,
+        // not exactly
         (
             &["handoff"],
             vec![
-                dispatch(&[HANDOFF]),
-                dispatch(&[&format!("{HANDOFF} Return a short summary of findings.")]),
+                dispatch(HANDOFF),
+                dispatch(&format!("{HANDOFF} Return a short summary of findings.")),
+                Action::Dispatch {
+                    texts: vec![HANDOFF.into(), "review it".into()],
+                    tasks: vec!["review it".into()],
+                },
             ],
         ),
         (
@@ -278,12 +282,13 @@ fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
             assert_eq!(found[other], names.contains(&other), "{names:?}: {other}");
         }
     }
-    // a brief path without the sentence, a relative path, another role's submit, or the reviewer
-    // submit in the main session: none
+    // a brief path without the sentence, a relative path, a path outside the code span, another
+    // role's submit, or the reviewer submit in the main session: none
     let none = [
-        dispatch(&["Read /r/.stewards/briefs/review.md"]),
-        dispatch(&["Read .stewards/briefs/review.md and follow it."]),
-        dispatch(&["Read /r/notes.md and follow it."]),
+        dispatch("Read `/r/.stewards/briefs/review.md`"),
+        dispatch("Read `.stewards/briefs/review.md` and follow it."),
+        dispatch("Read `/r/notes.md` and follow it."),
+        dispatch("Read /r/.stewards/briefs/review.md and follow it."),
         child_shell("stewards submit api --role tester --file a.json"),
         shell("stewards submit --role=reviewer --file a.json"),
     ];
@@ -297,11 +302,60 @@ fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
 fn the_handoff_brief_prints_is_one_the_eval_reads_as_exact() {
     let h = stewards::brief::handoff(std::path::Path::new(
         "/w/my repo/.stewards/briefs/review.md",
-    ));
+    ))
+    .unwrap();
     assert!(stewards::eval::is_handoff(&h), "{h}");
     assert!(stewards::eval::holds_handoff(&format!(
         "please: {h} thanks"
     )));
+}
+
+/// The recorded sample `name` with each `(from, to)` replaced: the real pi-subagents argument
+/// shapes (one `subagent` call with `agent`, `task`, `model`, and `options`; a `parallel`
+/// workflow with `args.tasks[]`) with other task strings.
+fn with_tasks(name: &str, replace: &[(&str, &str)]) -> Run {
+    let tmp = TempDir::new().unwrap();
+    copy_dir(&sample(name), tmp.path());
+    let parent = main_file(tmp.path());
+    let mut text = std::fs::read_to_string(&parent).unwrap();
+    for (from, to) in replace {
+        assert!(text.contains(from), "{name}: {from}");
+        text = text.replace(from, to);
+    }
+    std::fs::write(&parent, text).unwrap();
+    parse(&parent, 0.0, false).unwrap()
+}
+
+#[test]
+fn handoff_exact_reads_the_task_of_a_real_pi_subagent_call() {
+    let single = r#""task":"Reply with the word ok and nothing else.""#;
+    let h = r#""task":"Read `/work/0/repo/.stewards/briefs/architect.md` and follow it.""#;
+    // every child of the parallel call: its brief path inside the handoff
+    let (start, end) = (
+        r#""task":"Execute the stewards brief at "#,
+        r#". You have shell access. Follow the brief, then reply with a short summary of what you did and any files written.""#,
+    );
+    let exact = [
+        with_tasks("subagent", &[(single, h)]),
+        with_tasks(
+            "ritual",
+            &[(start, r#""task":"Read `"#), (end, r#"` and follow it.""#)],
+        ),
+    ];
+    for run in exact {
+        assert!(run.ritual_steps["handoff"] && run.ritual_steps["handoff_exact"]);
+    }
+    let added = r#"` and follow it. Then summarize.""#;
+    let not_exact = [
+        with_tasks(
+            "subagent",
+            &[(single, &h.replace("` and follow it.\"", added))],
+        ),
+        with_tasks("ritual", &[(start, r#""task":"Read `"#), (end, added)]),
+    ];
+    for run in not_exact {
+        assert!(run.ritual_steps["handoff"] && !run.ritual_steps["handoff_exact"]);
+    }
 }
 
 #[test]

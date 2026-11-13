@@ -27,15 +27,25 @@ pub struct Harness {
     pub repo_dir: Option<&'static str>,
     /// Role-file extension; `None` for briefed harnesses.
     pub file_format: Option<&'static str>,
-    pub spawn_tool: &'static str,
+    /// The name of the tool its agent starts a subagent with, when it is one; `delegation` names
+    /// it as a hint.
+    pub subagent_tool: Option<&'static str>,
     pub model_pin: bool,
     pub env: EnvRule,
-    pub delegation: &'static str,
     pub verified: &'static str,
 }
 
-/// Used when no harness is detected or the one named is not in the table.
-pub const GENERIC_DELEGATION: &str = "Start a fresh-context, general-purpose subagent that can run shell and write files, give it the handoff stewards printed (`Read <absolute brief path> and follow it.`) unchanged as its whole task, and wait for its reply: what `submit` printed.";
+/// How to delegate a brief, the same in every harness, known or not.
+pub const GENERIC_DELEGATION: &str = "Start a fresh-context, general-purpose subagent that can run shell and write files, give it the handoff stewards printed (``Read `<absolute brief path>` and follow it.``) unchanged as its whole task, and wait for its reply: what `submit` printed.";
+
+/// The delegation text for `harness`: `GENERIC_DELEGATION`, plus for a harness in the table only
+/// the name of its subagent tool, so no harness gets other guidance than one it does not know.
+pub fn delegation(harness: Option<&Harness>) -> String {
+    match harness.and_then(|h| Some((h.name, h.subagent_tool?))) {
+        Some((name, tool)) => format!("{GENERIC_DELEGATION} In {name} that is the `{tool}` tool."),
+        None => GENERIC_DELEGATION.to_string(),
+    }
+}
 
 const VERIFIED: &str = "2026-10-21";
 
@@ -46,10 +56,9 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: Some("~/.claude/agents"),
         repo_dir: Some(".claude/agents"),
         file_format: Some("md"),
-        spawn_tool: "Agent tool",
+        subagent_tool: Some("Agent"),
         model_pin: true,
         env: EnvRule::Prefix("CLAUDE_CODE"),
-        delegation: "Run `stewards render --harness claude-code` once (add `--repo-level` for a team). Then start the role's agent with the Agent tool, give it the handoff unchanged as its whole task, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -58,10 +67,9 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: None,
         repo_dir: Some(".cursor/agents"),
         file_format: Some("md"),
-        spawn_tool: "Task tool",
+        subagent_tool: Some("Task"),
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "Run `stewards render --harness cursor --repo-level` once. Then start the role's agent with the Task tool, give it the handoff unchanged as its whole task, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -70,10 +78,9 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: Some("~/.codex/agents"),
         repo_dir: Some(".codex/agents"),
         file_format: Some("toml"),
-        spawn_tool: "spawn tool",
+        subagent_tool: None,
         model_pin: true,
         env: EnvRule::Prefix("CODEX_"),
-        delegation: "Run `stewards render --harness codex` once (add `--repo-level` for a team). Then start the role's agent with the spawn tool, give it the handoff unchanged as its whole task, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -82,10 +89,9 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: None,
         repo_dir: Some(".github/agents"),
         file_format: Some("agent.md"),
-        spawn_tool: "runSubagent",
+        subagent_tool: Some("runSubagent"),
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "Run `stewards render --harness copilot --repo-level` once. Then start the role's agent with `runSubagent`, give it the handoff unchanged as its whole task, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -94,10 +100,9 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: Some("~/.gemini/agents"),
         repo_dir: Some(".gemini/agents"),
         file_format: Some("md"),
-        spawn_tool: "@name",
+        subagent_tool: None,
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "Run `stewards render --harness gemini` once (add `--repo-level` for a team). Then call the role's agent with `@name`, give it the handoff unchanged as its whole task, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -106,10 +111,9 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: Some("~/.config/opencode/agents"),
         repo_dir: Some(".opencode/agents"),
         file_format: Some("md"),
-        spawn_tool: "Task tool",
+        subagent_tool: Some("Task"),
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "Run `stewards render --harness opencode` once (add `--repo-level` for a team). Then start the role's agent with the Task tool, give it the handoff unchanged as its whole task, and wait for its reply: what `submit` printed.",
         verified: VERIFIED,
     },
     Harness {
@@ -118,10 +122,9 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: Some("~/.pi/agent/agents"),
         repo_dir: Some(".pi/agents"),
         file_format: Some("md"),
-        spawn_tool: "subagent tool",
+        subagent_tool: Some("subagent"),
         model_pin: true,
         env: EnvRule::Prefix("PI_"),
-        delegation: "Needs pi-subagents (`pi install npm:pi-subagents`). Start its `worker` agent with the `subagent` tool, give it the handoff unchanged as its whole task, and wait for its reply: what `submit` printed. Do not hand a brief to pi-subagents' bundled `reviewer` agent: it is read-only and cannot write the answer or run `submit`.",
         verified: VERIFIED,
     },
     Harness {
@@ -130,10 +133,9 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: None,
         repo_dir: None,
         file_format: None,
-        spawn_tool: "delegate_task",
+        subagent_tool: Some("delegate_task"),
         model_pin: false,
         env: EnvRule::Prefix("HERMES_"),
-        delegation: "`delegate_task(tasks=[{goal: \"Read <absolute brief path> and follow it\", context: \"<repo path>\"}])`; children run in the background by default, wait for the completion message; `role` is ignored by the source.",
         verified: VERIFIED,
     },
     Harness {
@@ -142,10 +144,9 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: None,
         repo_dir: None,
         file_format: None,
-        spawn_tool: "spawn_subagent, delegate",
+        subagent_tool: Some("spawn_subagent"),
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "`spawn_subagent{prompt: \"Read <absolute brief path> and follow it\"}` (same agent, fresh session, blocks; the risk profile must not exclude it), or `delegate{agent, prompt, context}` to a same-profile agent in bounded mode.",
         verified: VERIFIED,
     },
     Harness {
@@ -154,10 +155,9 @@ pub static HARNESSES: [Harness; 10] = [
         user_dir: None,
         repo_dir: None,
         file_format: None,
-        spawn_tool: "spawn_agent",
+        subagent_tool: Some("spawn_agent"),
         model_pin: true,
         env: EnvRule::Unverified,
-        delegation: "`spawn_agent(role=\"coder\", blocking=true, message=\"Read <absolute brief path> and follow it\", context=\"<task>\")`, or a fresh `borg ask` session per brief; run inside the repo workspace (`-w` or `borg acp`), because `borg ask` defaults to the daemon's cwd.",
         verified: VERIFIED,
     },
 ];

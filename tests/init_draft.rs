@@ -198,7 +198,7 @@ fn draft_on_a_fresh_repo_writes_step_1_and_the_architect_and_first_review_briefs
     for j in v["jobs"].as_array().unwrap() {
         let path = j["brief_path"].as_str().unwrap();
         assert!(Path::new(path).is_file(), "{j}");
-        assert_eq!(j["handoff"], format!("Read {path} and follow it."));
+        assert_eq!(j["handoff"], format!("Read `{path}` and follow it."));
     }
 }
 
@@ -210,7 +210,7 @@ fn every_command_that_writes_a_brief_hands_it_off_with_the_same_sentence() {
         .unwrap()
         .join(".stewards/briefs/a-maintainer.md");
     // the path byte for byte, its space unquoted
-    let want = format!("Read {} and follow it.", brief.display());
+    let want = format!("Read `{}` and follow it.", brief.display());
     assert!(want.contains("/my proj/.stewards/briefs/"), "{want}");
     let of = |v: &Value| {
         v["jobs"]

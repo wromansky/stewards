@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use anyhow::Context;
 use serde::Serialize;
 
-use crate::harness::{self, GENERIC_DELEGATION, HARNESSES};
+use crate::harness::{self, HARNESSES};
 use crate::output::{Global, Human, emit};
 use crate::workspace::Repo;
 
@@ -20,10 +20,10 @@ Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
 - Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: `stewards brief <unit> --role maintainer --task "<the change>"` (two or more units: `stewards brief --role architect --task "<the change>"`), then start a subagent with the handoff it prints.
 - Changing: make the edit yourself. When a maintainer split a plan into tasks, `stewards brief <unit> --role developer` prints one handoff per task.
-- Before reporting done: when your edits are finished, run `stewards review --task "<what you changed and why>"` as its own step (never alongside an edit). It prints a handoff: start one subagent whose whole task is exactly that sentence, wait for it, then run `stewards review` again to read the findings. Fix them and repeat until it exits 0. Done means it exits 0.
+- Before reporting done: when your edits are finished, run `stewards review --task "<what you changed and why>"` as its own step (never alongside an edit). It prints one handoff per review to run: start one subagent per handoff, giving it exactly that sentence as its whole task; when they have finished, run `stewards review` again to read the findings. Fix them and repeat until it exits 0. Done means it exits 0.
 - On request or before a release: `stewards review --roles` does the same with the deeper per-unit jobs.
 
-A handoff is always one sentence, `Read <path> and follow it.`: pass it unchanged to a general-purpose subagent that can run shell and write files. Every role works this way.
+A handoff is always one sentence, ``Read `<path>` and follow it.``: pass it unchanged to a general-purpose subagent that can run shell and write files. Every role works this way.
 
 Editing
 - Think first: state assumptions; ask when the request has two readings.
@@ -69,7 +69,7 @@ pub fn upsert_block(repo: &Repo) -> anyhow::Result<bool> {
 #[derive(Serialize)]
 struct Delegation {
     harness: &'static str,
-    text: &'static str,
+    text: String,
 }
 
 #[derive(Serialize)]
@@ -96,7 +96,7 @@ struct Guide {
     editing: &'static str,
     hygiene: &'static str,
     adoption: &'static str,
-    delegation: &'static str,
+    delegation: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     all_delegations: Option<Vec<Delegation>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -159,13 +159,13 @@ pub fn run(
         editing: parts[4],
         hygiene: parts[5],
         adoption: ADOPTION,
-        delegation: chosen.map_or(GENERIC_DELEGATION, |h| h.delegation),
+        delegation: harness::delegation(chosen),
         all_delegations: all.then(|| {
             HARNESSES
                 .iter()
                 .map(|h| Delegation {
                     harness: h.name,
-                    text: h.delegation,
+                    text: harness::delegation(Some(h)),
                 })
                 .collect()
         }),

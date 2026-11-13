@@ -9,7 +9,6 @@ pub mod git;
 pub mod guide;
 pub mod harness;
 pub mod init;
-pub mod launch;
 pub mod llm;
 pub mod model;
 pub mod next;

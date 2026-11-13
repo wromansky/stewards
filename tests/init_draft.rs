@@ -14,8 +14,13 @@ const UNITS: &str = ".stewards/units.toml";
 /// A repo `proj` with `src/a` and `src/b`, three files each, changed apart so step 1 proposes
 /// two units, `a` and `b`; file `f<i>.py` defines `thing<i>`.
 fn repo() -> (TempDir, PathBuf) {
+    repo_at("proj")
+}
+
+/// `repo` at `<temp>/<name>`.
+fn repo_at(name: &str) -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("proj");
+    let dir = tmp.path().join(name);
     fs::create_dir(&dir).unwrap();
     git(&dir, &["init", "-q"]);
     git(&dir, &["config", "user.name", "stewards-test"]);
@@ -175,7 +180,11 @@ fn draft_on_a_fresh_repo_writes_step_1_and_the_architect_and_first_review_briefs
         v["then"]
             .as_str()
             .unwrap()
-            .contains("`stewards next --roles`"),
+            .starts_with("start one subagent per job's handoff")
+            && v["then"]
+                .as_str()
+                .unwrap()
+                .ends_with("run `stewards review --roles` until it exits 0"),
         "{v}"
     );
     assert_eq!(
@@ -187,11 +196,41 @@ fn draft_on_a_fresh_repo_writes_step_1_and_the_architect_and_first_review_briefs
         ["a-maintainer.md", "architect.md", "b-maintainer.md"]
     );
     for j in v["jobs"].as_array().unwrap() {
-        assert!(
-            Path::new(j["brief_path"].as_str().unwrap()).is_file(),
-            "{j}"
-        );
+        let path = j["brief_path"].as_str().unwrap();
+        assert!(Path::new(path).is_file(), "{j}");
+        assert_eq!(j["handoff"], format!("Read {path} and follow it."));
     }
+}
+
+#[test]
+fn every_command_that_writes_a_brief_hands_it_off_with_the_same_sentence() {
+    let (_tmp, dir) = repo_at("my proj");
+    let brief = dir
+        .canonicalize()
+        .unwrap()
+        .join(".stewards/briefs/a-maintainer.md");
+    // the path byte for byte, its space unquoted
+    let want = format!("Read {} and follow it.", brief.display());
+    assert!(want.contains("/my proj/.stewards/briefs/"), "{want}");
+    let of = |v: &Value| {
+        v["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["unit"] == "a")
+            .unwrap_or_else(|| panic!("{v}"))["handoff"]
+            .clone()
+    };
+    let (code, v) = run(&dir, &["init", "--draft"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(of(&v), want);
+    let (_, v) = run(&dir, &["next", "--roles"]);
+    assert_eq!(of(&v), want);
+    let (_, v) = run(&dir, &["review", "--roles"]);
+    assert_eq!(of(&v["next"]), want);
+    let (code, v) = run(&dir, &["brief", "a", "--role", "maintainer"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["handoff"], want);
 }
 
 /// The text between the first brief's DATA markers.

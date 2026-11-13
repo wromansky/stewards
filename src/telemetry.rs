@@ -1,15 +1,13 @@
-// `.stewards/telemetry/<yyyy-mm>.jsonl`: one line per submit and one per launched job, sizes and
-// counts only.
+// `.stewards/telemetry/<yyyy-mm>.jsonl`: one line per submit, sizes and counts only.
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::check::one_line;
-use crate::eval::Tokens;
 use crate::llm::Mode;
 use crate::workspace::{Repo, safe_path};
 
@@ -33,53 +31,8 @@ pub struct Record {
     pub timestamp: String,
 }
 
-/// The `event` of a `LaunchRecord`; submit records have none.
-pub const LAUNCH_EVENT: &str = "launch";
-
-/// One unit of a launched job's answer, from what its `submit` printed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReviewedUnit {
-    pub unit: String,
-    /// `approve` or `changes`.
-    pub verdict: String,
-    pub findings: usize,
-    /// The pass value of the `check` the answer reported for the unit; `None` when it reported
-    /// none. What the answer says, not a run the tool saw.
-    pub check_reported: Option<bool>,
-}
-
-/// One job `review` or a `--run` launched.
-#[derive(Debug, Serialize)]
-pub struct LaunchRecord {
-    /// Always `LAUNCH_EVENT`.
-    pub event: &'static str,
-    /// The command that launched it: `review`, `review --roles`, `brief --run`, or
-    /// `init --draft --run`.
-    pub command: &'static str,
-    pub role: &'static str,
-    pub unit: Option<String>,
-    /// The units a reviewer job covered.
-    pub units: Vec<String>,
-    pub status: &'static str,
-    pub seconds: f64,
-    /// What the harness reported for the session; `None` when it reported nothing.
-    pub usage: Option<Tokens>,
-    /// A review job's units, with their verdicts.
-    pub reviewed: Vec<ReviewedUnit>,
-    pub harness: &'static str,
-    pub timestamp: String,
-}
-
 pub fn append(repo: &Repo, record: &Record) -> Result<()> {
-    append_line(repo, &record.timestamp, record)
-}
-
-pub fn append_launch(repo: &Repo, record: &LaunchRecord) -> Result<()> {
-    append_line(repo, &record.timestamp, record)
-}
-
-fn append_line(repo: &Repo, timestamp: &str, record: &impl Serialize) -> Result<()> {
-    let rel = format!(".stewards/telemetry/{}.jsonl", &timestamp[..7]);
+    let rel = format!(".stewards/telemetry/{}.jsonl", &record.timestamp[..7]);
     repo.append(
         &rel,
         format!("{}\n", serde_json::to_string(record)?).as_bytes(),
@@ -131,7 +84,7 @@ pub fn summary(root: &Path) -> Value {
             .lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         {
-            let Some(role) = v["role"].as_str().filter(|_| v["event"] != LAUNCH_EVENT) else {
+            let Some(role) = v["role"].as_str() else {
                 continue;
             };
             let (count, bytes) = roles.entry(role.to_string()).or_default();

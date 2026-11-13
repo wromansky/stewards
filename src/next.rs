@@ -27,6 +27,12 @@ pub struct Job {
     pub reasons: Vec<String>,
     pub changed: Vec<String>,
     pub brief_path: Option<PathBuf>,
+    /// What to give the subagent for `brief_path`: `brief::handoff`.
+    pub handoff: Option<String>,
+    /// With `Briefs::KeepWaiting`: the brief was already on disk for this snapshot and was left
+    /// as it is, since its subagent has not submitted (it may still be writing the answer).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub waiting: bool,
     pub command: String,
     pub debt_added: Vec<DebtItem>,
 }
@@ -47,6 +53,17 @@ pub struct NextReport {
     pub check: CheckReport,
 }
 
+/// What `next` does with the brief of each job it lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Briefs {
+    /// Only list the jobs.
+    None,
+    Write,
+    /// `review`: as `Write`, but a brief already on disk for the job's snapshot and mode is left
+    /// as it is and its job marked `waiting`.
+    KeepWaiting,
+}
+
 /// A per-role job with its repo and its plain unit name (`None` for the architect).
 struct RoleJob<'a> {
     repo: &'a Repo,
@@ -56,14 +73,9 @@ struct RoleJob<'a> {
 
 /// The jobs due. With `roles`, one job per unit and role as `next --roles` lists them; without,
 /// each repo's stamped units those jobs name are folded into one reviewer job, and only a
-/// never-stamped unit keeps its own (maintainer) job. With `write_briefs`, writes each job's brief
-/// and fills its `brief_path`.
-pub fn next(
-    ws: &Workspace,
-    task: Option<&str>,
-    write_briefs: bool,
-    roles: bool,
-) -> Result<NextReport> {
+/// never-stamped unit keeps its own (maintainer) job. Unless `briefs` is `None`, writes each job's
+/// brief and fills its `brief_path` and `handoff`.
+pub fn next(ws: &Workspace, task: Option<&str>, briefs: Briefs, roles: bool) -> Result<NextReport> {
     let (role_jobs, snapshots) = role_jobs(ws, task)?;
     let mut jobs = vec![];
     if roles {
@@ -73,9 +85,7 @@ pub fn next(
             mut job,
         } in role_jobs
         {
-            if write_briefs {
-                write_role_brief(repo, unit.as_deref(), &mut job)?;
-            }
+            write_role_brief(repo, unit.as_deref(), briefs, &mut job)?;
             jobs.push(job);
         }
     } else {
@@ -91,14 +101,12 @@ pub fn next(
             };
             if !due.is_empty() {
                 let (task, snapshot) = (&first.job.task, &first.job.snapshot);
-                jobs.push(reviewer_job(ws, repo, &due, task, snapshot, write_briefs)?);
+                jobs.push(reviewer_job(ws, repo, &due, task, snapshot, briefs)?);
             }
             for j in of_repo {
                 if j.job.role == Role::Maintainer && j.job.reasons == [NEVER_REVIEWED] {
                     let mut job = j.job.clone();
-                    if write_briefs {
-                        write_role_brief(repo, j.unit.as_deref(), &mut job)?;
-                    }
+                    write_role_brief(repo, j.unit.as_deref(), briefs, &mut job)?;
                     first_reviews.push(job);
                 }
             }
@@ -113,8 +121,30 @@ pub fn next(
     })
 }
 
-fn write_role_brief(repo: &Repo, unit: Option<&str>, job: &mut Job) -> Result<()> {
-    let (path, _) = brief::write(repo, unit, job.role, Mode::Review, &job.task, &job.snapshot)?;
+fn write_role_brief(repo: &Repo, unit: Option<&str>, briefs: Briefs, job: &mut Job) -> Result<()> {
+    place_brief(repo, unit, briefs, job, |job| {
+        let (path, _) = brief::write(repo, unit, job.role, Mode::Review, &job.task, &job.snapshot)?;
+        Ok(path)
+    })
+}
+
+/// Fills `job`'s brief path and handoff as `briefs` says, `write` writing the brief.
+fn place_brief(
+    repo: &Repo,
+    unit: Option<&str>,
+    briefs: Briefs,
+    job: &mut Job,
+    write: impl FnOnce(&Job) -> Result<PathBuf>,
+) -> Result<()> {
+    if briefs == Briefs::None {
+        return Ok(());
+    }
+    let path = repo.root.join(brief::rel_path(unit, job.role, None));
+    job.waiting = briefs == Briefs::KeepWaiting
+        && brief::read_header(&path)
+            .is_ok_and(|h| h.snapshot == job.snapshot && h.mode == Mode::Review);
+    let path = if job.waiting { path } else { write(job)? };
+    job.handoff = Some(brief::handoff(&path));
     job.brief_path = Some(path);
     Ok(())
 }
@@ -182,18 +212,13 @@ fn reviewer_job(
     due: &[Due],
     task: &str,
     snapshot: &str,
-    write_brief: bool,
+    briefs: Briefs,
 ) -> Result<Job> {
     let units: Vec<DueUnit> = due
         .iter()
         .map(|d| (d.unit.clone(), d.reasons.clone()))
         .collect();
     let (text, pack) = brief::build_review(repo, &units, task, snapshot)?;
-    let brief_path = if write_brief {
-        Some(brief::write_text(repo, None, Role::Reviewer, &text)?)
-    } else {
-        None
-    };
     let covered = &due[..pack.units.len()];
     let mut reasons: Vec<String> = covered
         .iter()
@@ -213,21 +238,27 @@ fn reviewer_job(
             later.join(", ")
         ));
     }
-    Ok(Job {
+    let mut job = Job {
         unit: String::new(),
         role: Role::Reviewer,
         task: task.to_string(),
         snapshot: snapshot.to_string(),
         reasons,
         changed: covered.iter().flat_map(|d| d.changed.clone()).collect(),
-        brief_path,
+        brief_path: None,
+        handoff: None,
+        waiting: false,
         command: if ws.is_workspace {
             format!("stewards --repo {} brief --role reviewer", repo.name)
         } else {
             "stewards brief --role reviewer".into()
         },
         debt_added: covered.iter().flat_map(|d| d.debt_added.clone()).collect(),
-    })
+    };
+    place_brief(repo, None, briefs, &mut job, |_| {
+        brief::write_text(repo, None, Role::Reviewer, &text)
+    })?;
+    Ok(job)
 }
 
 /// The snapshot, task, and the stamped units of `repo` due for review (units.toml order) with
@@ -300,6 +331,8 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
                 reasons,
                 changed,
                 brief_path: None,
+                handoff: None,
+                waiting: false,
                 command: if ws.is_workspace {
                     format!(
                         "stewards --repo {} brief {} --role {}",
@@ -420,6 +453,8 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
             )],
             changed: moved.iter().flat_map(|(.., c)| c.clone()).collect(),
             brief_path: None,
+            handoff: None,
+            waiting: false,
             command: if ws.is_workspace {
                 format!("stewards --repo {repo_name} brief --role architect")
             } else {
@@ -534,6 +569,10 @@ impl Human for NextReport {
             let who = format!("{} {}", j.unit, j.role.as_str());
             let reasons = one_line(&j.reasons.join("; "));
             out.push(format!("- `{}`: {reasons}", who.trim()));
+            if let Some(h) = &j.handoff {
+                let waiting = if j.waiting { " (waiting)" } else { "" };
+                out.push(format!("  handoff{waiting}: {}", one_line(h)));
+            }
             out.extend(j.debt_added.iter().map(|d| {
                 let path = one_line(&d.path);
                 format!("  - debt added {path}:{}: {}", d.line, one_line(&d.text))
@@ -557,7 +596,12 @@ pub fn run(
         return not_implemented("next --pr");
     }
     let (_, ws) = here(g)?;
-    let report = next(&ws, task, !no_brief, roles)?;
+    let briefs = if no_brief {
+        Briefs::None
+    } else {
+        Briefs::Write
+    };
+    let report = next(&ws, task, briefs, roles)?;
     emit(&report, g.human);
     Ok(
         if report.jobs.is_empty() && report.check.failures.is_empty() {

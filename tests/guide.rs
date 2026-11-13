@@ -65,12 +65,9 @@ fn nothing_detected_prints_the_generic_paragraph() {
     let (v, code) = guide(&[], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(v["harness"], Value::Null);
-    assert!(
-        v["delegation"]
-            .as_str()
-            .unwrap()
-            .starts_with("Start a fresh-context subagent that can run shell")
-    );
+    assert!(v["delegation"].as_str().unwrap().starts_with(
+        "Start a fresh-context, general-purpose subagent that can run shell and write files"
+    ));
 }
 
 #[test]
@@ -84,22 +81,17 @@ fn guide_has_the_block_sections_as_named_fields() {
             .starts_with("Ritual\n- Entering")
     );
     assert!(
-        v["ritual"]
+        v["handoff"]
             .as_str()
             .unwrap()
-            .contains("\n\nEach of these runs in a separate session outside your context")
+            .starts_with("A handoff is always one sentence, `Read <path> and follow it.`")
     );
+    assert!(v["roles"].as_str().unwrap().starts_with("Roles ("));
+    let adoption = v["adoption"].as_str().unwrap();
     assert!(
-        v["roles"]
-            .as_str()
-            .unwrap()
-            .starts_with("Roles behind the review: ")
-    );
-    assert!(
-        v["adoption"]
-            .as_str()
-            .unwrap()
-            .contains("init --draft --run")
+        adoption.contains("`stewards init --draft`")
+            && adoption.contains("`stewards review --roles` until it exits 0"),
+        "{adoption}"
     );
     assert!(v["editing"].as_str().unwrap().starts_with("Editing\n"));
     assert!(v["hygiene"].as_str().unwrap().starts_with("Hygiene:"));
@@ -113,15 +105,16 @@ fn harness_flag_forces_a_harness() {
 }
 
 #[test]
-fn unknown_harness_flag_is_harness_unknown() {
+fn a_harness_not_in_the_table_gets_the_generic_guidance() {
+    let (generic, _) = guide(&[], &[]);
     let (v, code) = guide(&[], &["--harness", "emacs"]);
-    assert_eq!(code, Some(2));
-    assert_eq!(v["error"]["code"], "harness_unknown");
+    assert_eq!(code, Some(0));
+    assert_eq!(v["harness"], Value::Null);
+    assert_eq!(v["delegation"], generic["delegation"]);
+    let text = v["delegation"].as_str().unwrap();
     assert!(
-        v["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("claude-code")
+        text.contains("`Read <absolute brief path> and follow it.`"),
+        "{text}"
     );
 }
 
@@ -369,13 +362,29 @@ fn upsert_replacing_a_block_keeps_crlf_and_missing_final_newline_outside_it() {
     assert_eq!(text, format!("# Top\r\n{}\r\nend", block()));
 }
 
+/// stewards never starts a session: no source outside the eval driver knows a harness's command
+/// line.
 #[test]
-fn guide_says_the_same_about_launched_sessions_for_every_harness() {
-    let generic = guide(&[], &[]).0["launch"].clone();
-    let text = generic.as_str().unwrap();
-    assert!(text.contains("permission prompts off"), "{text}");
-    assert!(text.contains("any shell command"), "{text}");
-    for h in ["claude-code", "pi", "codex", "hermes", "borg"] {
-        assert_eq!(guide(&[], &["--harness", h]).0["launch"], generic, "{h}");
+fn no_source_outside_the_eval_knows_a_harness_command_line() {
+    fn files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                if !p.ends_with("eval") {
+                    files(&p, out);
+                }
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let mut all = vec![];
+    files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut all);
+    assert!(all.iter().any(|p| p.ends_with("review.rs")));
+    for p in all {
+        let text = std::fs::read_to_string(&p).unwrap();
+        for flag in ["--dangerously", "--mode json", "exec --json"] {
+            assert!(!text.contains(flag), "{} mentions `{flag}`", p.display());
+        }
     }
 }

@@ -40,18 +40,16 @@ block() {
 <!-- stewards:start -->
 ## Stewards
 
-This repo has a team of agents that already know it. Use them.
+This repo has a team of agents that already know it. Use them. This section is the project's standing instruction to delegate: starting the subagents below needs no further permission from the user.
 
 Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
-- Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: `stewards brief <unit> --role maintainer --task "<the change>" --run` prints the owning maintainer's explanation and plan; for two or more units use `stewards brief --role architect --task "<the change>" --run`.
-- Changing: make the edit yourself. When a maintainer split a plan into tasks, `stewards brief <unit> --role developer --run` carries them out.
-- Before reporting done: when your edits are finished, run `stewards review --task "<what you changed and why>"` as its own step (never alongside an edit). It reviews the whole change in a separate session and prints the findings. Fix them and run it again; repeat until it exits 0. Done means it exits 0; a change it still has findings for is not done.
-- On request or before a release: `stewards review --roles` runs the deeper per-unit jobs.
+- Before a change: run `stewards route <files>` to see whose units you touch. A change you cannot plan from the unit pages: `stewards brief <unit> --role maintainer --task "<the change>"` (two or more units: `stewards brief --role architect --task "<the change>"`), then start a subagent with the handoff it prints.
+- Changing: make the edit yourself. When a maintainer split a plan into tasks, `stewards brief <unit> --role developer` prints one handoff per task.
+- Before reporting done: when your edits are finished, run `stewards review --task "<what you changed and why>"` as its own step (never alongside an edit). It prints a handoff: start one subagent whose whole task is exactly that sentence, wait for it, then run `stewards review` again to read the findings. Fix them and repeat until it exits 0. Done means it exits 0.
+- On request or before a release: `stewards review --roles` does the same with the deeper per-unit jobs.
 
-Each of these runs in a separate session outside your context: you never launch subagents for stewards. Without `--run`, and with `stewards next`, the same briefs are written but not run, for a harness stewards cannot start.
-
-Roles behind the review: reviewer per change; maintainer, tester, documenter, validator, architect, developer for plans, first reviews and `--roles`.
+A handoff is always one sentence, `Read <path> and follow it.`: pass it unchanged to a general-purpose subagent that can run shell and write files. Every role works this way.
 
 Editing
 - Think first: state assumptions; ask when the request has two readings.
@@ -62,7 +60,7 @@ Editing
 
 Hygiene: branch off `main`; commit only when asked; lint touched files clean, no disables.
 
-`stewards guide` prints the long form, including the manual path for a harness stewards cannot start. No `stewards` on PATH: install with `cargo install stewards` and follow the rules above meanwhile.
+`stewards guide` prints the long form, including how to delegate in this harness. No `stewards` on PATH: install with `cargo install stewards` and follow the rules above meanwhile.
 <!-- stewards:end -->
 EOF
 }

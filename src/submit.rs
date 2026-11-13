@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::anchors::{Resolution, resolve};
 use crate::brief::{self, Header};
@@ -86,36 +86,49 @@ pub struct Submitted {
 
 /// A review's finding as submit prints it: where, what to cut, and the smaller replacement, each
 /// text capped.
-#[derive(Serialize)]
-struct ShownFinding {
-    unit: String,
-    file: String,
-    line: i64,
-    cut: String,
-    replace_with: String,
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ShownFinding {
+    pub(crate) unit: String,
+    pub(crate) file: String,
+    pub(crate) line: i64,
+    pub(crate) cut: String,
+    pub(crate) replace_with: String,
 }
 
 impl ShownFinding {
     fn new(unit: &str, f: &types::Finding) -> ShownFinding {
-        let shown = |s: &str| one_line(s).chars().take(CUT_SHOWN).collect();
         ShownFinding {
             unit: unit.to_string(),
             file: f.file.clone(),
             line: f.line,
-            cut: shown(&f.cut),
-            replace_with: shown(&f.replace_with),
+            cut: f.cut.clone(),
+            replace_with: f.replace_with.clone(),
+        }
+        .capped()
+    }
+
+    /// Each text on one line and cut to what submit prints.
+    pub(crate) fn capped(self) -> ShownFinding {
+        let shown = |s: &str| one_line(s).chars().take(CUT_SHOWN).collect();
+        ShownFinding {
+            unit: shown(&self.unit),
+            file: shown(&self.file),
+            cut: shown(&self.cut),
+            replace_with: shown(&self.replace_with),
+            ..self
         }
     }
 }
 
 /// One unit's verdict in a review's output.
-#[derive(Serialize)]
-struct UnitVerdict {
-    unit: String,
-    verdict: &'static str,
-    stamped: bool,
+#[derive(Serialize, Deserialize)]
+pub(crate) struct UnitVerdict {
+    pub(crate) unit: String,
+    /// `approve` or `changes`.
+    pub(crate) verdict: String,
+    pub(crate) stamped: bool,
     /// The pass value of the `check` the answer reported; `None` with no check.
-    check_reported: Option<bool>,
+    pub(crate) check_reported: Option<bool>,
 }
 
 /// What a developer submit computed from git, beside the summary.
@@ -280,7 +293,7 @@ pub(crate) fn submit_file(
     if let Err(e) = telemetry::append(repo, &record) {
         out.warning = Some(format!("telemetry not written: {e:#}"));
     }
-    // what it prints, for `review` and `--run`, which read the outcome from the repository
+    // what it prints, for `review` to report
     let result = serde_json::to_string(&out)?;
     if let Err(e) = repo.write(&brief::result_rel(&brief_rel), result.as_bytes()) {
         let note = format!("result file not written: {e:#}");
@@ -485,7 +498,7 @@ fn maintainer(
     if let Answer::MaintainerReview(a) = &answer {
         out.units.push(UnitVerdict {
             unit: unit.to_string(),
-            verdict: if approve { "approve" } else { "changes" },
+            verdict: if approve { "approve" } else { "changes" }.into(),
             stamped: approve,
             check_reported: None,
         });
@@ -1331,7 +1344,7 @@ pub fn reviewer(
         };
         verdicts.push(UnitVerdict {
             unit: unit.to_string(),
-            verdict,
+            verdict: verdict.into(),
             stamped: u.verdict == Verdict::Approve,
             check_reported: u.check.as_ref().map(|c| c.pass),
         });

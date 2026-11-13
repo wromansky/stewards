@@ -1215,3 +1215,26 @@ fn write_and_retire_writes_files_unchanged_since_they_were_recorded() {
     assert_eq!(fs::read(repo.root.join(CARD)).unwrap(), b"new");
     assert!(!repo.root.join(BRIEF).exists());
 }
+
+/// Every role's accepted submit goes through `submit_file`, which writes exactly what it printed
+/// beside the brief for `stewards review` to collect; a rejected one writes none.
+#[test]
+fn an_accepted_submit_writes_what_it_printed_to_the_result_file() {
+    let result = |d: &Path| d.join(".stewards/briefs/api-maintainer.result.json");
+    for (job, answer) in [
+        (review_job as fn(&Path, &Path), review("changes")),
+        (explain_job, explain("it routes")),
+    ] {
+        let (dir, home) = setup();
+        let d = dir.path();
+        job(d, home.path());
+        let (exit, _) = submit_text(d, home.path(), "{");
+        assert_eq!(exit, 2);
+        assert!(!result(d).exists());
+        let (code, mut printed) = submit(d, home.path(), &answer);
+        assert_eq!(code, 0, "{printed}");
+        printed.as_object_mut().unwrap().remove("stewards");
+        let written: Value = serde_json::from_slice(&fs::read(result(d)).unwrap()).unwrap();
+        assert_eq!(written, printed);
+    }
+}

@@ -146,7 +146,8 @@ fn two_tasks_with_disjoint_lanes_give_two_briefs_with_their_task_and_lane() {
         let path = root.join(format!(".stewards/briefs/api-developer-{n}.md"));
         assert_eq!(
             v["jobs"][n - 1],
-            json!({"task": n, "title": title, "brief_path": path})
+            json!({"task": n, "title": title, "brief_path": path,
+                   "handoff": format!("Read {} and follow it.", path.display())})
         );
         let h = read_header(&path).unwrap();
         assert_eq!((h.n, h.lane), (Some(n), Some(vec![lane.to_string()])));

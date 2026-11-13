@@ -10,8 +10,9 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::{
-    Driver, FAILED_STOPS, Run, Session, Status, Tokens, fresh_session_env, reads_git_history,
-    ritual_steps, shell_reads,
+    Action, Driver, FAILED_STOPS, ReviewSubmit, Run, Session, Status, Tokens, fresh_session_env,
+    is_reviewer_submit, reads_git_history, reviewed_units, ritual_steps, shell_reads,
+    stewards_commands,
 };
 use crate::output::CliError;
 
@@ -209,10 +210,9 @@ impl Driver for Pi {
 
 /// Kills the session's whole process group, then the child itself; the runner then kills what
 /// left the group (Pi starts shell commands and background subagents in their own groups).
-pub(crate) fn kill(child: &mut Child) {
+fn kill(child: &mut Child) {
     let _ = Command::new("kill")
         .args(["-KILL", &format!("-{}", child.id())])
-        .stderr(Stdio::null())
         .status();
     let _ = child.kill();
     let _ = child.wait();
@@ -325,6 +325,73 @@ fn bash_commands<'a>(records: &[&'a Value]) -> impl Iterator<Item = (&'a Value, 
         .map(|b| (b, b["arguments"]["command"].as_str().unwrap_or_default()))
 }
 
+/// The ritual actions of one session (a child's when `child`): shell commands and subagent
+/// launches.
+fn actions(records: &[&Value], child: bool) -> Vec<Action> {
+    tool_calls(records)
+        .filter_map(|b| match b["name"].as_str() {
+            Some("subagent") => Some(Action::Dispatch {
+                texts: strings(&b["arguments"]),
+            }),
+            Some("bash") => Some(Action::Shell {
+                command: b["arguments"]["command"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                child,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every string value in `v`, at any depth.
+fn strings(v: &Value) -> Vec<String> {
+    match v {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(a) => a.iter().flat_map(strings).collect(),
+        Value::Object(o) => o.values().flat_map(strings).collect(),
+        _ => vec![],
+    }
+}
+
+/// Each reviewer `submit` in one session whose output `reviewed_units` reads, with the
+/// timestamp of its result.
+fn review_submits(records: &[&Value]) -> Vec<(String, ReviewSubmit)> {
+    let commands: Vec<String> = bash_commands(records).map(|(_, c)| c.to_string()).collect();
+    let mut out = vec![];
+    for (call, command) in bash_commands(records) {
+        if !stewards_commands(command)
+            .iter()
+            .any(|c| is_reviewer_submit(c))
+        {
+            continue;
+        }
+        let Some(result) = records.iter().find(|r| {
+            r["message"]["role"] == "toolResult" && r["message"]["toolCallId"] == call["id"]
+        }) else {
+            continue;
+        };
+        let text: String = result["message"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        if let Some(units) = reviewed_units(&text) {
+            let at = result["timestamp"].as_str().unwrap_or_default().to_string();
+            out.push((
+                at,
+                ReviewSubmit {
+                    units,
+                    commands: commands.clone(),
+                },
+            ));
+        }
+    }
+    out
+}
+
 /// The distinct repo-relative paths one session opened, in order: each `read` tool path and each
 /// path `shell_reads` finds in a `bash` command.
 fn files_opened(records: &[&Value]) -> Vec<String> {
@@ -375,7 +442,9 @@ fn last_stop(records: &[&Value]) -> Option<String> {
 /// own `cwd`. Models come from `model_change` records and assistant messages over the tree,
 /// thinking levels from `thinking_level_change` records and each assistant message's
 /// `thinkingLevel` over the tree; a session with neither is listed in
-/// `sessions_without_thinking`. The ritual steps come from every session's shell commands.
+/// `sessions_without_thinking`. `reviews` are the child sessions' reviewer `submit` outputs (a
+/// main session's own is not a review),
+/// ordered by their results' timestamps.
 pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run> {
     let dir = transcript.parent().unwrap_or(Path::new("."));
     let tops = top_level(dir)?;
@@ -451,10 +520,14 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
     let mut models = BTreeSet::new();
     let mut thinking_levels = BTreeSet::new();
     let mut sessions_without_thinking = vec![];
+    let mut reviews = vec![];
     let mut git_history_commands = vec![];
     let mut failed_children = vec![];
     for (i, (name, recs)) in sessions.enumerate() {
-        all.extend(bash_commands(recs).map(|(_, c)| c));
+        all.extend(actions(recs, i > 0));
+        if i > 0 {
+            reviews.extend(review_submits(recs));
+        }
         git_history_commands.extend(
             bash_commands(recs)
                 .map(|(_, c)| c)
@@ -523,9 +596,10 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         thinking_levels: thinking_levels.into_iter().collect(),
         sessions_without_thinking,
         subagent_sessions: children.len(),
-        launched_jobs: 0,
-        launched_tokens: None,
-        review_tokens: None,
+        reviews: {
+            reviews.sort_by(|a, b| a.0.cmp(&b.0));
+            reviews.into_iter().map(|(_, r)| r).collect()
+        },
         git_history_commands,
         stop_reason: last_stop(&main),
         failed_children,

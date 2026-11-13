@@ -7,7 +7,6 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::check::one_line;
-use crate::launch::{self, Launcher, Outcome};
 use crate::llm::types::UnitProposal;
 use crate::llm::{self, Mode};
 use crate::model::{self, Role, SCHEMA, UnitDef};
@@ -408,29 +407,10 @@ fn append_gitignore(repo: &Repo) -> Result<bool> {
     Ok(true)
 }
 
-pub fn run(
-    g: &Global,
-    draft: bool,
-    run: Option<&launch::Options>,
-    hooks: bool,
-    ci: bool,
-) -> Result<ExitCode> {
+pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
     for (set, flag) in [(hooks, "--hooks"), (ci, "--ci")] {
         if set {
             return not_implemented(&format!("init {flag}"));
-        }
-    }
-    if run.is_some() {
-        if let Some(code) = launch::guard(g, "init --draft --run") {
-            return Ok(code);
-        }
-        if g.direct {
-            return Err(CliError::new(
-                "usage",
-                "init --draft --run launches sessions and --direct calls the model itself; pick one",
-                "run `stewards init --help`",
-            )
-            .into());
         }
     }
     let (cwd, ws) = workspace::here(g)?;
@@ -446,10 +426,7 @@ pub fn run(
         emit(&step1.expect("plain init ran step 1"), g.human);
         return Ok(ExitCode::SUCCESS);
     }
-    let launcher = run
-        .map(|o| Launcher::new(o, "init --draft --run"))
-        .transpose()?;
-    draft_jobs(g, ws.is_workspace, repo, step1, launcher.as_ref())
+    draft_jobs(g, ws.is_workspace, repo, step1)
 }
 
 /// The last path segment of a remote URL without a trailing `.git`: `widgets` for
@@ -596,10 +573,9 @@ fn propose(repo: &Repo) -> Result<Init> {
 }
 
 /// How adoption finishes: the per-role flow, so each unit's first docs come from its documenter.
-/// By hand: the briefs are dispatched, then `next --roles`'s.
-const THEN: &str = "after these jobs, run `stewards next --roles` and dispatch every brief it writes until it lists no jobs";
-/// With `--run`, which ran these jobs.
-const THEN_RUN: &str = "run `stewards review --roles` until it exits 0";
+const THEN: &str = "start one subagent per job's handoff, giving it exactly that sentence as its whole task; when they have finished, run `stewards review --roles` until it exits 0";
+/// With `--direct`, which submitted these jobs.
+const THEN_DIRECT: &str = "run `stewards review --roles` until it exits 0";
 
 #[derive(Serialize)]
 struct Draft {
@@ -610,9 +586,6 @@ struct Draft {
     /// What each job's submit printed, with `--direct`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     submitted: Vec<Submitted>,
-    /// How each job ended, with `--run`.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    launched: Vec<Outcome>,
 }
 
 impl Human for Draft {
@@ -622,12 +595,13 @@ impl Human for Draft {
         for j in &self.jobs {
             let who = format!("{} {}", j.unit, j.role.as_str());
             out.push(format!("- `{}`: {}", who.trim(), j.reasons.join("; ")));
+            out.extend(
+                j.handoff
+                    .as_ref()
+                    .map(|h| format!("  handoff: {}", one_line(h))),
+            );
         }
         out.extend(self.submitted.iter().map(Submitted::render));
-        if !self.launched.is_empty() {
-            out.push("\n## Launched\n".into());
-            out.extend(self.launched.iter().map(Outcome::render));
-        }
         out.push(format!("\nThen: {}.", self.then));
         out.join("\n")
     }
@@ -669,13 +643,7 @@ fn failure_text(submitted: &[(&str, &[UnitProposal])], total: usize) -> String {
 
 /// `init --draft`: the architect's naming job and a first review for every never-stamped unit,
 /// briefed for agents, or run through `llm::direct` and submitted with `--direct`.
-fn draft_jobs(
-    g: &Global,
-    is_workspace: bool,
-    repo: &Repo,
-    init: Option<Init>,
-    launcher: Option<&Launcher>,
-) -> Result<ExitCode> {
+fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -> Result<ExitCode> {
     let loaded = model::load_repo(&repo.root)?;
     let ws = Workspace {
         repos: vec![Repo {
@@ -696,6 +664,8 @@ fn draft_jobs(
         reasons: vec!["init --draft".into()],
         changed: vec![],
         brief_path: None,
+        handoff: None,
+        waiting: false,
         command: if is_workspace {
             format!(
                 "stewards --repo {} brief --role architect --task '{ARCHITECT_TASK}'",
@@ -707,7 +677,7 @@ fn draft_jobs(
         debt_added: vec![],
     }];
     jobs.extend(
-        next::next(&ws, None, false, true)?
+        next::next(&ws, None, next::Briefs::None, true)?
             .jobs
             .into_iter()
             .filter(|j| j.role == Role::Maintainer && j.reasons == ["never reviewed"])
@@ -742,28 +712,20 @@ fn draft_jobs(
         for j in &mut jobs {
             let unit = unit_of(j);
             let (path, _) = brief::write(repo, unit, j.role, Mode::Review, &j.task, &j.snapshot)?;
+            j.handoff = Some(brief::handoff(&path));
             j.brief_path = Some(path);
         }
     }
-    let launched = match launcher {
-        Some(l) => jobs
-            .iter()
-            .map(|j| l.run_job(repo, j.brief_path.as_ref().expect("written above")))
-            .collect::<Result<Vec<_>>>()?,
-        None => vec![],
-    };
-    let code = launch::exit_code(&launched);
     emit(
         &Draft {
             init,
             jobs,
-            then: if launcher.is_some() { THEN_RUN } else { THEN },
+            then: if g.direct { THEN_DIRECT } else { THEN },
             submitted,
-            launched,
         },
         g.human,
     );
-    Ok(code)
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]

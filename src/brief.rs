@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::check::{invisible, one_line};
 use crate::git;
 use crate::guide;
-use crate::launch::{self, Launcher};
 use crate::llm::{self, Mode};
 use crate::model::Role;
 use crate::next;
@@ -82,10 +81,17 @@ pub fn answer_rel(brief_rel: &str) -> String {
 }
 
 /// The file `submit` writes what it printed to, beside the brief `brief_rel`:
-/// `<stem>.result.json`.
+/// `<stem>.result.json`; `review` reads and removes it.
 pub fn result_rel(brief_rel: &str) -> String {
     let stem = brief_rel.strip_suffix(".md").expect("a brief is .md");
     format!("{stem}.result.json")
+}
+
+/// The one sentence a subagent is given for the brief at absolute `path`, the same for every
+/// role and every command that writes a brief. The path is never quoted: `check_root` refused a
+/// repo path with a line break or control character before any brief was written.
+pub fn handoff(path: &Path) -> String {
+    format!("Read {} and follow it.", path.display())
 }
 
 /// Pack and memory text cannot open or close a DATA section or hide text: each invisible
@@ -386,11 +392,27 @@ pub fn write(
 struct Written {
     path: PathBuf,
     bytes: usize,
+    handoff: String,
+}
+
+impl Written {
+    fn new(path: PathBuf, bytes: usize) -> Written {
+        Written {
+            handoff: handoff(&path),
+            path,
+            bytes,
+        }
+    }
 }
 
 impl Human for Written {
     fn render(&self) -> String {
-        format!("Wrote `{}` ({} bytes).", self.path.display(), self.bytes)
+        format!(
+            "Wrote `{}` ({} bytes).\nHandoff: {}",
+            self.path.display(),
+            self.bytes,
+            one_line(&self.handoff)
+        )
     }
 }
 
@@ -415,6 +437,7 @@ struct Job {
     task: usize,
     title: String,
     brief_path: PathBuf,
+    handoff: String,
 }
 
 impl Human for Jobs {
@@ -424,10 +447,11 @@ impl Human for Jobs {
             .iter()
             .map(|j| {
                 format!(
-                    "Wrote `{}` (task {}: {}).",
+                    "Wrote `{}` (task {}: {}).\nHandoff: {}",
                     j.brief_path.display(),
                     j.task,
-                    one_line(&j.title)
+                    one_line(&j.title),
+                    one_line(&j.handoff)
                 )
             })
             .collect();
@@ -444,7 +468,6 @@ fn developer(
     task: &str,
     snapshot: &str,
     stdout: bool,
-    launcher: Option<&Launcher>,
 ) -> Result<ExitCode> {
     check_root(&repo.root)?;
     let Some(unit) = unit else {
@@ -477,18 +500,16 @@ fn developer(
         let rel = rel_path(Some(unit), Role::Developer, Some(i + 1));
         repo.write(&rel, text.as_bytes())?;
         repo.remove(&answer_rel(&rel))?;
+        let brief_path = repo.root.join(rel);
         jobs.push(Job {
             task: i + 1,
             title: t.title.clone(),
-            brief_path: repo.root.join(rel),
+            handoff: handoff(&brief_path),
+            brief_path,
         });
     }
     for rel in developer_files_past(&repo.root, unit, tasks.len())? {
         repo.remove(&rel)?;
-    }
-    if let Some(l) = launcher {
-        let briefs: Vec<PathBuf> = jobs.into_iter().map(|j| j.brief_path).collect();
-        return launch::run_briefs(g, l, repo, &briefs);
     }
     emit(&Jobs { jobs }, g.human);
     Ok(ExitCode::SUCCESS)
@@ -527,19 +548,11 @@ pub fn run(
     role: Role,
     task: Option<&str>,
     stdout: bool,
-    run: Option<&launch::Options>,
 ) -> anyhow::Result<ExitCode> {
-    if run.is_some()
-        && let Some(code) = launch::guard(g, "brief --run")
-    {
-        return Ok(code);
-    }
     let (cwd, ws) = here(g)?;
     let repo = ws.current_repo(&cwd)?;
-    let launcher = run.map(|o| Launcher::new(o, "brief --run")).transpose()?;
-    let launcher = launcher.as_ref();
     if role == Role::Reviewer {
-        return reviewer(g, repo, unit, task, stdout, launcher);
+        return reviewer(g, repo, unit, task, stdout);
     }
     let snapshot = git::snapshot(&repo.root)?;
     let task = match task {
@@ -547,7 +560,7 @@ pub fn run(
         None => git::task_text(&repo.root)?,
     };
     if role == Role::Developer {
-        return developer(g, repo, unit, &task, &snapshot, stdout, launcher);
+        return developer(g, repo, unit, &task, &snapshot, stdout);
     }
     // The maintainer's `brief` is an explain job; every other role has one mode.
     let mode = if role == Role::Maintainer {
@@ -561,21 +574,7 @@ pub fn run(
         return Ok(ExitCode::SUCCESS);
     }
     let (path, bytes) = write(repo, unit, role, mode, &task, &snapshot)?;
-    written(g, launcher, repo, path, bytes)
-}
-
-/// Prints the brief written at `path`, or with `--run` runs it and prints how it ended.
-fn written(
-    g: &Global,
-    launcher: Option<&Launcher>,
-    repo: &Repo,
-    path: PathBuf,
-    bytes: usize,
-) -> Result<ExitCode> {
-    if let Some(l) = launcher {
-        return launch::run_briefs(g, l, repo, &[path]);
-    }
-    emit(&Written { path, bytes }, g.human);
+    emit(&Written::new(path, bytes), g.human);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -586,7 +585,6 @@ fn reviewer(
     unit: Option<&str>,
     task: Option<&str>,
     stdout: bool,
-    launcher: Option<&Launcher>,
 ) -> Result<ExitCode> {
     if let Some(u) = unit {
         bail!(CliError::new(
@@ -610,5 +608,6 @@ fn reviewer(
     }
     let bytes = text.len();
     let path = write_text(repo, None, Role::Reviewer, &text)?;
-    written(g, launcher, repo, path, bytes)
+    emit(&Written::new(path, bytes), g.human);
+    Ok(ExitCode::SUCCESS)
 }

@@ -1145,12 +1145,13 @@ fn a_main_or_child_session_that_stopped_with_an_error_is_a_failed_run() {
 }
 
 /// Copies a recorded sample as each session's transcript, with a fixed status; leaves a detached
-/// process running in the run directory, and writes `adopt_writes` on the adoption prompt and
-/// `task_writes` on any other.
+/// process running in the run directory, and writes `adopt_writes` (then stamps `adopt_stamps`)
+/// on the adoption prompt and `task_writes` on any other.
 struct Replay {
     sample: PathBuf,
     status: Status,
     adopt_writes: Vec<(&'static str, &'static str)>,
+    adopt_stamps: &'static [&'static str],
     task_writes: Vec<(&'static str, &'static str)>,
     context: Option<(&'static str, &'static str)>,
 }
@@ -1161,6 +1162,7 @@ impl Replay {
             sample,
             status,
             adopt_writes: vec![],
+            adopt_stamps: &[],
             task_writes: vec![],
             context: None,
         }
@@ -1206,6 +1208,9 @@ impl Driver for Replay {
             let path = dir.join(path);
             std::fs::create_dir_all(path.parent().unwrap())?;
             std::fs::write(path, text)?;
+        }
+        if prompt == ADOPT_PROMPT {
+            common::stamp_units(dir, self.adopt_stamps);
         }
         std::process::Command::new("sh")
             .args(["-c", "setsid sleep 300 >/dev/null 2>&1 &"])
@@ -1336,7 +1341,10 @@ fn a_timed_out_run_is_recorded_not_dropped_and_its_leftover_process_killed() {
     assert_eq!(runs[0]["task"], 1);
     assert_eq!(runs[0]["role"], "task");
     assert_eq!(runs[0]["thinking"], "medium");
-    assert_eq!(runs[0]["result"]["main_tokens"]["output"], 743);
+    // its counts are partial, so the runner nulls them on every driver
+    assert_eq!(runs[0]["result"]["main_tokens"], serde_json::Value::Null);
+    assert_eq!(runs[0]["result"]["total_tokens"], serde_json::Value::Null);
+    assert!(runs[0]["result"]["cost_usd"].is_number());
     assert_eq!(runs[0]["leftovers"]["killed"], 1);
     assert_eq!(runs[0]["next_check"], serde_json::Value::Null);
     assert_eq!(runs[0]["changed"], false);
@@ -1952,8 +1960,10 @@ fn claude_sample_counts_child_tokens_in_total_and_not_in_main() {
     assert_eq!(run.subagent_sessions, 1);
     assert_eq!(run.model.as_deref(), Some("claude-haiku-5-5"));
     assert_eq!(run.models, ["claude-haiku-5-5"]);
-    // no thinking level exists, and the stream's cost prices this model at another's rates
-    assert!(run.thinking_levels.is_empty() && run.sessions_without_thinking.is_empty());
+    // no thinking block in the parent or the child; the stream's cost prices this model at
+    // another's rates
+    assert_eq!(run.thinking_levels, ["off"]);
+    assert!(run.sessions_without_thinking.is_empty());
     assert_eq!(run.cost_usd, None);
     assert_eq!(run.harness_reported_cost_usd, Some(0.07842855));
     assert_eq!(run.peak_main_context, 20838 + 131 + 2);
@@ -1981,6 +1991,8 @@ fn claude_plain_sample_has_main_equal_to_total() {
     );
     assert_eq!(run.subagent_sessions, 0);
     assert!(run.files_opened.is_empty());
+    // Haiku 5.5 emits an empty thinking block with no budget: that is not thinking
+    assert_eq!(run.thinking_levels, ["off"]);
 }
 
 /// The trimmed real run whose child was started on the harness's retired default model: Claude
@@ -1995,6 +2007,9 @@ fn a_claude_child_that_hit_an_api_error_is_a_failed_child() {
     // the failure's placeholder model is not a model the tree used
     assert_eq!(run.models, ["claude-haiku-5-5"]);
     assert_eq!(run.stop_reason, None);
+    // the child has no real response, so its thinking is unknown
+    assert_eq!(run.thinking_levels, ["off"]);
+    assert_eq!(run.sessions_without_thinking.len(), 1);
 }
 
 /// The records' output counts fall short of the final ones, so a session whose stream ended
@@ -2071,7 +2086,7 @@ fn the_eval_claude_config_dir_holds_only_the_model_and_linked_credentials() {
         assert!(!dir.join(absent).exists(), "{absent}");
     }
     assert!(note.contains("does not read AGENTS.md"), "{note}");
-    assert!(note.contains("Thinking: n/a"), "{note}");
+    assert!(note.contains("Thinking: off"), "{note}");
 }
 
 #[test]
@@ -2098,6 +2113,7 @@ fn claude_driver_passes_the_model_and_config_dir_and_keeps_the_persisted_session
     let env = [
         ("PATH", std::env::var_os("PATH").unwrap()),
         ("CLAUDECODE", "1".into()),
+        ("MAX_THINKING_TOKENS", "1024".into()),
     ];
     let s = claude
         .start(&dir, "hi", Some("m-1"), "medium", &sessions, &env)
@@ -2117,6 +2133,8 @@ fn claude_driver_passes_the_model_and_config_dir_and_keeps_the_persisted_session
     // children on the requested model, not the user's default
     assert!(vars.contains("CLAUDE_CODE_SUBAGENT_MODEL=m-1\n"), "{vars}");
     assert!(!vars.contains("CLAUDECODE="), "{vars}");
+    // no inherited thinking budget
+    assert!(!vars.contains("MAX_THINKING_TOKENS="), "{vars}");
 }
 
 /// A copy of a recorded sample with each `(from, to)` replaced in every file, and its transcript.
@@ -2290,5 +2308,266 @@ fn a_context_file_is_committed_into_every_arm_copy_with_an_agents_md() {
     assert_eq!(
         summary["setup"]["added_paths"],
         serde_json::json!(["AGENTS.md"])
+    );
+}
+
+/// A Claude Code session file of one main session from `records` (each `(cwd, content)` an
+/// assistant record, then each `(tool_use_id, toolUseResult)` a user record), and its path.
+fn claude_session(
+    tmp: &Path,
+    records: &[(&str, serde_json::Value)],
+    results: &[(&str, serde_json::Value)],
+) -> PathBuf {
+    let mut lines: Vec<String> = records
+        .iter()
+        .enumerate()
+        .map(|(n, (cwd, content))| {
+            serde_json::json!({"type": "assistant", "isSidechain": false, "uuid": format!("a{n}"),
+                "cwd": cwd, "message": {"id": format!("m{n}"), "model": "claude-haiku-5-5",
+                "role": "assistant", "content": content}})
+            .to_string()
+        })
+        .collect();
+    lines.extend(results.iter().map(|(id, result)| {
+        serde_json::json!({"type": "user", "isSidechain": false, "uuid": format!("r-{id}"),
+            "cwd": "/r", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": id, "content": "x"}]},
+            "toolUseResult": result})
+        .to_string()
+    }));
+    let path = tmp.join("s.jsonl");
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    path
+}
+
+fn tool_use(id: &str, name: &str, input: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"type": "tool_use", "id": id, "name": name, "input": input})
+}
+
+/// Files opened on Claude Code: `Read`'s file, `Grep`'s path, the files a `Glob` result lists
+/// (none when its result is missing), and shell reads resolved against each record's own `cwd`,
+/// which a `cd` in an earlier `Bash` call moved.
+#[test]
+fn claude_files_opened_count_grep_and_glob_and_follow_each_records_cwd() {
+    let tmp = TempDir::new().unwrap();
+    let t = claude_session(
+        tmp.path(),
+        &[
+            (
+                "/r",
+                serde_json::json!([
+                    tool_use("1", "Read", serde_json::json!({"file_path": "/r/a.py"})),
+                    tool_use(
+                        "2",
+                        "Grep",
+                        serde_json::json!({"pattern": "x", "path": "/r/b.py"})
+                    ),
+                    tool_use("3", "Glob", serde_json::json!({"pattern": "c/*.ts"})),
+                    tool_use("4", "Glob", serde_json::json!({"pattern": "none/*"})),
+                    tool_use("5", "Bash", serde_json::json!({"command": "cd api"})),
+                ]),
+            ),
+            (
+                "/r/api",
+                serde_json::json!([
+                    tool_use(
+                        "6",
+                        "Bash",
+                        serde_json::json!({"command": "cat items.py ../README.md"})
+                    ),
+                    tool_use("7", "Read", serde_json::json!({"file_path": "/r/api/x.py"})),
+                ]),
+            ),
+        ],
+        &[(
+            "3",
+            serde_json::json!({"filenames": ["/r/c/d.ts", "/r/c/e.ts"], "numFiles": 2}),
+        )],
+    );
+    let run = claude_parse(&t, 0.0, false).unwrap();
+    assert_eq!(
+        run.files_opened,
+        [
+            "a.py",
+            "b.py",
+            "c/d.ts",
+            "c/e.ts",
+            "api/items.py",
+            "README.md",
+            "api/x.py"
+        ]
+    );
+    assert_eq!(run.files_opened_tree, run.files_opened);
+}
+
+/// A session with a non-empty thinking block thought; one with an empty block (as Haiku 5.5 emits
+/// without a budget) or none did not.
+#[test]
+fn a_claude_session_with_a_thinking_block_records_thinking_on() {
+    let tmp = TempDir::new().unwrap();
+    let thought = serde_json::json!([{"type": "thinking", "thinking": "hmm", "signature": "s"}]);
+    let t = claude_session(tmp.path(), &[("/r", thought)], &[]);
+    let run = claude_parse(&t, 0.0, false).unwrap();
+    assert_eq!(run.thinking_levels, ["on"]);
+    let empty = serde_json::json!([{"type": "thinking", "thinking": "", "signature": ""}]);
+    let t = claude_session(tmp.path(), &[("/r", empty)], &[]);
+    let run = claude_parse(&t, 0.0, false).unwrap();
+    assert_eq!(run.thinking_levels, ["off"]);
+}
+
+/// Every model of `modelUsage` is in `models`, so a side request on another model is flagged
+/// like any other model mismatch.
+#[test]
+fn every_claude_model_usage_key_is_a_model_of_the_run() {
+    let dir = claude_sample("plain");
+    let side = r#""modelUsage":{"claude-3-5-haiku-20241022":{"inputTokens":7,"outputTokens":0,"cacheReadInputTokens":0,"cacheCreationInputTokens":0},"#;
+    let (_t, t) = replaced(&dir, &main_file(&dir), &[(r#""modelUsage":{"#, side)]);
+    let run = claude_parse(&t, 0.0, false).unwrap();
+    assert_eq!(
+        run.models,
+        ["claude-3-5-haiku-20241022", "claude-haiku-5-5"]
+    );
+    assert_eq!(
+        run.total_tokens.unwrap().input,
+        run.main_tokens.unwrap().input + 7
+    );
+}
+
+/// Claude Code turns thinking on from `think` in a user message, so no task prompt may hold it.
+#[test]
+fn a_task_prompt_containing_think_is_a_usage_error_and_no_suite_task_does() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("01-x.txt"), "Fix it. THINK first.\n").unwrap();
+    let err = task_prompt(tmp.path(), 1).err().unwrap();
+    let err = err.downcast_ref::<CliError>().unwrap();
+    assert_eq!(err.code, "usage");
+    assert!(err.message.contains("01-x.txt"), "{}", err.message);
+    for name in ["fixture", "self"] {
+        let suite = Suite::load(&evals(), name).unwrap();
+        for t in suite.numbers() {
+            task_prompt(&evals().join(&suite.tasks_dir), t).unwrap();
+        }
+    }
+    assert!(!ADOPT_PROMPT.to_lowercase().contains("think"));
+    // the runner reads every planned prompt before any session
+    let run = TempDir::new().unwrap();
+    let mut p = plan(run.path(), 1, None);
+    let tasks = run.path().join("evals");
+    copy_dir(&evals(), &tasks);
+    std::fs::write(
+        tasks.join(&p.suite.tasks_dir).join("01-count-endpoint.txt"),
+        "think\n",
+    )
+    .unwrap();
+    p.evals = tasks;
+    let driver = Replay::new(sample("subagent"), Status::Ok);
+    assert!(execute(&driver, &p).is_err());
+    assert!(!run.path().join("results").exists());
+}
+
+/// Claude Code shows a session its last five commit subjects unasked, so no arm copy's history
+/// names the eval, stewards, the fixture, adoption, or the block.
+#[test]
+fn no_arm_copys_git_log_names_the_eval() {
+    let tmp = TempDir::new().unwrap();
+    let mut driver = Replay::new(sample("subagent"), Status::Ok);
+    driver.context = Some(("CLAUDE.md", "@AGENTS.md\n"));
+    driver.adopt_stamps = &["api", "client", "cli"];
+    let mut p = plan(tmp.path(), 1, None);
+    p.arms = vec![Arm::Bare, Arm::BlockOnly, Arm::FullNoDevelopers];
+    p.keep_work = true;
+    execute(&driver, &p).unwrap();
+    let summary = summary_json(tmp.path());
+    let mut dirs = vec![PathBuf::from(
+        summary["adoption"]["workdir"].as_str().unwrap(),
+    )];
+    let runs = run_files(&tmp.path().join("results"));
+    dirs.extend(
+        runs.iter()
+            .filter(|r| r["role"] == "task")
+            .map(|r| PathBuf::from(r["workdir"].as_str().unwrap())),
+    );
+    assert_eq!(dirs.len(), 4);
+    for dir in dirs {
+        let log = common::git(&dir, &["log", "--all"]).to_lowercase();
+        assert!(log.contains("initial"), "{log}");
+        for word in ["eval", "stewards", "fixture", "adopted", "block"] {
+            assert!(!log.contains(word), "{}: {word} in {log}", dir.display());
+        }
+    }
+}
+
+/// A Claude Code eval reports no cost, so the spend is null, not zero; `--max-cost` with it is
+/// refused before anything runs.
+#[test]
+fn spent_is_null_when_no_run_has_a_cost_and_max_cost_is_refused_for_claude_code() {
+    let tmp = TempDir::new().unwrap();
+    let p = plan(tmp.path(), 1, None);
+    let mut recs = records(1, 801, 1000, all());
+    for r in &mut recs {
+        r.result.as_mut().unwrap().cost_usd = None;
+    }
+    let summary = summarize(&p, &recs, false, &[], SetupNotes::default());
+    assert_eq!(summary.spent_usd, None);
+    assert_eq!(
+        serde_json::to_value(&summary).unwrap()["spent_usd"],
+        serde_json::Value::Null
+    );
+    let md = render(&summary);
+    assert!(md.contains(", spent null\n"), "{md}");
+    let summary = summarize(
+        &p,
+        &records(1, 801, 1000, all()),
+        false,
+        &[],
+        SetupNotes::default(),
+    );
+    assert!(render(&summary).contains(", spent $15.4030\n"));
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let (code, v) = common::run(
+        root,
+        &["eval", "--harness", "claude-code", "--max-cost", "1"],
+    );
+    assert_eq!(
+        (code, v["error"]["code"].as_str()),
+        (2, Some("usage")),
+        "{v}"
+    );
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cost_usd is null"),
+        "{v}"
+    );
+}
+
+/// The summary says, in one sentence, that two harnesses compare only at one thinking setting
+/// whenever this eval's was not off throughout.
+#[test]
+fn the_summary_names_a_thinking_setting_another_harness_cannot_match() {
+    let tmp = TempDir::new().unwrap();
+    let mut p = plan(tmp.path(), 1, None);
+    let mut recs = records(1, 801, 1000, all());
+    for r in &mut recs {
+        r.result.as_mut().unwrap().thinking_levels = vec!["off".into()];
+    }
+    p.thinking = "off".into();
+    let summary = summarize(&p, &recs, false, &[], SetupNotes::default());
+    assert_eq!(summary.thinking_comparison, None);
+    recs[1].result.as_mut().unwrap().thinking_levels = vec!["on".into()];
+    let summary = summarize(&p, &recs, false, &[], SetupNotes::default());
+    let line = summary.thinking_comparison.clone().unwrap();
+    assert!(line.contains("(requested off; recorded off, on)"), "{line}");
+    assert!(render(&summary).contains(&line));
+    p.thinking = "medium".into();
+    let summary = summarize(&p, &recs, false, &[], SetupNotes::default());
+    let line = summary.thinking_comparison.unwrap();
+    assert!(
+        line.ends_with(
+            "so run each driver with thinking off (Pi with `--thinking off`) before comparing them."
+        ),
+        "{line}"
     );
 }

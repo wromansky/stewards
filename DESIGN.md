@@ -1261,10 +1261,15 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   tokens are the stream's final `result` line's `usage` (the parent's
   alone) and total tokens the sum of its `modelUsage` (every request of
   the process, children included): both exact. A session that ended
-  without that line (timed out, killed) has `main_tokens` and
-  `total_tokens` `null`, never the records' short sum, and its task's
-  token medians are `null`; `peak_main_context` still comes from the main
-  records.
+  without that line (killed) has `main_tokens` and `total_tokens` `null`,
+  never the records' short sum; `peak_main_context` still comes from the
+  main records. On either driver a timed-out run's counts are partial, so
+  the runner sets its `main_tokens` and `total_tokens` to `null` (its
+  `cost_usd` stays): its task's token medians are then `null`, and the
+  adoption ratio leaves it out, on Pi and Claude Code alike. Its `models`
+  are the records' models plus every `modelUsage` key, which also names
+  side requests (titles, summaries) made outside the parent and its
+  children, so one on another model is flagged as any model mismatch.
   Claude Code's `total_cost_usd` prices a model id it does not know at
   another model's rates (1.0.128 prices `claude-haiku-5-5` at Sonnet's), so
   its runs record `cost_usd: null` and keep that figure as
@@ -1273,9 +1278,16 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   cost can bound the spend. Its records carry no stop reason: a main
   session failed when the stream's `result` line says `is_error` or its last
   response is an API error (`isApiErrorMessage`), a child when its last
-  response is one. Files opened are its `Read` tool's `file_path` plus the
-  shell reads below. `peak_main_context` is the largest input +
-  cache read + cache write of any one main-session response.
+  response is one. Files opened are its `Read` tool's `file_path`, its
+  `Grep` tool's `path` (a directory is dropped, as below), each file a
+  `Glob` call matched as the persisted result lists them
+  (`toolUseResult.filenames`; a call without that result counts none), and
+  the shell reads below; a relative path is resolved against the `cwd` of
+  the record that made the call, since a `cd` in one `Bash` call carries
+  over to the next, and every path is then taken relative to the main
+  session's starting directory (a `..` steps back up).
+  `peak_main_context` is the largest input + cache read + cache write of
+  any one main-session response.
   `files_opened` (main session) and `files_opened_tree` (every session)
   count distinct paths relative to each session's cwd, from the `read` tool
   plus simply recognised shell reads (`cat`, `head`, `tail`, `less`, `sed
@@ -1329,10 +1341,23 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   and the same parsing; every model used in a session tree is recorded and
   a run where any differs from the requested one (or the main session's) is
   flagged, not failed (the main agent may pass `model` per subagent).
-  Claude Code 1.0.128 has no thinking level (only a token budget from
-  `MAX_THINKING_TOKENS` or words in the prompt), so its runs record
-  `thinking: n/a`, `--thinking` does not apply, and no session is flagged
-  for lacking one; the summary says so. Its children run on the
+  Claude Code 1.0.128 has no thinking level, only a token budget from
+  `MAX_THINKING_TOKENS` (the one variable that sets one; the driver
+  removes it from the session's environment) or from words in a user
+  message (`think` alone gives 4,000 tokens, `think hard` 10,000,
+  `ultrathink` 31,999). So its runs request `thinking: off`, `--thinking`
+  does not apply, and each session's effective setting is recorded from
+  its transcript: `on` when a response holds a non-empty `thinking` or a
+  `redacted_thinking` block, `off` otherwise (Haiku 5.5 emits an empty
+  `thinking` block with no budget), unknown for a session with no response
+  but API failures; an `on` session is flagged as any other level. Because
+  of those words, the runner reads every planned task prompt before any
+  session and stops with a `usage` error naming the file when one contains
+  `think` in any case. `--thinking` stays the user's control for Pi, so a
+  run meant to compare with Claude Code uses `--thinking off` on Pi; the
+  summary says in one sentence, whenever the requested or any recorded
+  level is not `off`, that two harnesses' results compare only at the same
+  setting and to run each driver with thinking off. Its children run on the
   session's model: the driver sets `CLAUDE_CODE_SUBAGENT_MODEL` to
   `--model`, else to the user's own `model` setting (else its
   `general-purpose` children run on the harness's built-in default, a
@@ -1370,7 +1395,12 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `STEWARDS_HOME` (the other arms none, so the environment names no
   stewards), and every other harness env prefix is stripped (the Claude
   Code driver also drops `CLAUDECODE`, which an enclosing Claude Code sets
-  for its shell outside the `CLAUDE_CODE` prefix). Runs are sequential, each in a
+  for its shell outside the `CLAUDE_CODE` prefix, and
+  `MAX_THINKING_TOKENS`). Claude Code shows a session its git status and
+  last five commit subjects unasked, so every arm commit the runner and
+  `evals/arms.sh` make is subject `initial` or `update`, by `dev
+  <dev@example.invalid>`, naming no eval, `stewards`, fixture, adoption,
+  or block. Runs are sequential, each in a
   fresh copy (made by `evals/arms.sh` from the fixture suite's source
   directory) at `<tmp>/w-<random>/<n>/repo`, a
   path naming no arm, `stewards`, or `eval` (the run record keeps the
@@ -1385,7 +1415,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `stewards init --draft`, start one subagent per handoff it prints, then
   run `stewards review --roles` until it exits 0, recorded as a `setup`
   run. The runner then diffs the adopted state
-  against the `fixture: initial` commit: a changed, deleted, or added file
+  against its `initial` commit: a changed, deleted, or added file
   outside `.stewards/`, `docs/units/`, `AGENTS.md`, and `.gitignore` stops
   the eval with `eval_setup_incomplete` naming the files, except a newly
   added file under the test locations `tests` (`api/test_*.py`,
@@ -1408,9 +1438,10 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   minutes, then the harness's process group is killed
   and the session recorded `timed_out`. After every session (normal exit,
   failure, or timeout) the runner kills every process whose
-  `/proc/<pid>/cwd` is under that session's `<n>/` directory (Pi and
-  Claude Code start shell commands and background subagents in their own
-  process groups),
+  `/proc/<pid>/cwd` is under that session's `<n>/` directory (Pi starts
+  shell commands and background subagents in their own process groups,
+  Claude Code its shell commands; its subagents run inside its own
+  process),
   waits up to 10 s until none is left, and records how many it killed; a
   survivor stops the eval after the run is recorded. A failed or timed-out
   session is recorded and counted, never retried or dropped. `--max-cost`
@@ -1423,7 +1454,8 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   transcripts, copied there after the run), `summary.json`, and
   `summary.md`, with each task's verdict and gate count, its overhead
   ratios, their medians across tasks, the review outcomes, the flags, and
-  costs to 4 decimals. Each run's work directory is deleted after the run unless
+  costs to 4 decimals (the spend is `null`, not zero, when no run has a
+  cost). Each run's work directory is deleted after the run unless
   `--keep-work`. pi-subagents also leaves run state outside both, under
   `/tmp/pi-subagents-uid-<uid>/` (`async-subagent-runs/`,
   `async-subagent-launches/`, `async-subagent-results/`,
@@ -2180,7 +2212,11 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   counts but not always its final output count, which only the stream's
   `result` line has. An enclosing session gives its shell `CLAUDECODE=1` and
   `CLAUDE_CODE_ENTRYPOINT` (and `CLAUDE_CONFIG_DIR` when set); this version
-  reads none of them back. Codex `codex exec --json --skip-git-repo-check -C
+  never reads `CLAUDECODE`, keeps an inherited `CLAUDE_CODE_ENTRYPOINT`
+  (a label in its user agent and telemetry only), and honours
+  `CLAUDE_CONFIG_DIR`, which the eval's isolation relies on. Its `Bash`
+  commands run detached, each in its own process group; its subagents run
+  inside its own process. Codex `codex exec --json --skip-git-repo-check -C
   <dir> -s workspace-write -m <model> "<prompt>"` (`turn.completed{usage}`
   summed across turns; rollout under `~/.codex/sessions/`); this machine's
   ChatGPT-account Codex rejects the configured model ids with 400. Pi

@@ -687,7 +687,8 @@ fn records(path: &Path, truncation_ok: bool) -> Result<(Vec<Value>, usize)> {
     Ok((out, 0))
 }
 
-/// A path a session opened, relative to the session's `cwd`; `None` outside it.
+/// A path a session opened, relative to the session's `cwd` (a `..` steps back up); `None` outside
+/// it.
 fn repo_relative(path: &str, cwd: &str) -> Option<String> {
     let p = Path::new(path);
     let rel = if p.is_absolute() {
@@ -700,6 +701,9 @@ fn repo_relative(path: &str, cwd: &str) -> Option<String> {
         match c {
             Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
             Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop()?;
+            }
             _ => return None,
         }
     }
@@ -924,6 +928,10 @@ impl Runner<'_> {
         let mut failure = None;
         let mut reviews = vec![];
         if let Some(r) = &mut result {
+            // a timed-out run's counts are partial on every driver, so no median mixes them in
+            if session.status == Status::TimedOut {
+                (r.main_tokens, r.total_tokens) = (None, None);
+            }
             r.files_opened = existing_files(&s.dir, &r.files_opened);
             r.files_opened_tree = existing_files(&s.dir, &r.files_opened_tree);
             if let Some(before) = &gaps_before {
@@ -1015,9 +1023,17 @@ struct SessionSpec {
 
 /// Runs the plan sequentially: for a `repo` suite the clone and its one build, then the `full`
 /// setup (when a `full` arm is planned), then per task, per run number, each arm in a fresh copy
-/// at `<work>/<n>/repo`; a task with a `setup` task runs after it in the same copy. Writes
-/// `runs/*.json` as each session ends, then `summary.json` and `summary.md`.
+/// at `<work>/<n>/repo`; a task with a `setup` task runs after it in the same copy. Every planned
+/// task prompt is read first (see `task_prompt`). Writes `runs/*.json` as each session ends, then
+/// `summary.json` and `summary.md`.
 pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
+    let tasks_dir = plan.evals.join(&plan.suite.tasks_dir);
+    for &t in &plan.tasks {
+        task_prompt(&tasks_dir, t)?;
+        if let Some(s) = plan.suite.task(t).and_then(|t| t.setup) {
+            task_prompt(&tasks_dir, s)?;
+        }
+    }
     std::fs::create_dir_all(&plan.work)?;
     let path_off = path_without_stewards(&plan.path, &plan.work.join("p"))?;
     let bin = plan.work.join("b");
@@ -1207,7 +1223,9 @@ fn write_summary(plan: &Plan, summary: &Summary) -> Result<()> {
     Ok(())
 }
 
-/// The task file `<dir>/NN-*` verbatim.
+/// The task file `<dir>/NN-*` verbatim; a `usage` error when it contains `think` in any case,
+/// since Claude Code turns thinking on from that word in a user message and the arms of every
+/// harness must run at one thinking setting.
 pub fn task_prompt(dir: &Path, task: u32) -> Result<String> {
     let prefix = format!("{task:02}-");
     let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -1222,7 +1240,16 @@ pub fn task_prompt(dir: &Path, task: u32) -> Result<String> {
     let file = names
         .first()
         .with_context(|| format!("no task {task} in {}", dir.display()))?;
-    std::fs::read_to_string(file).with_context(|| file.display().to_string())
+    let text = std::fs::read_to_string(file).with_context(|| file.display().to_string())?;
+    if text.to_lowercase().contains("think") {
+        return Err(CliError::new(
+            "usage",
+            format!("task prompt {} contains `think`", file.display()),
+            "reword it: Claude Code turns thinking on from that word in a user message, so its runs would not compare with another harness's",
+        )
+        .into());
+    }
+    Ok(text)
 }
 
 /// `out` when its command succeeded, else an error naming `what` with its stderr.
@@ -1323,7 +1350,7 @@ fn check_setup_dir(dir: &Path) -> Result<()> {
     }
 }
 
-/// Checks the index of the adopted fixture against its `fixture: initial` (root) commit: only the
+/// Checks the index of the adopted fixture against its `initial` (root) commit: only the
 /// tool's own files (`ADOPTION_OWN`) may change, and new files may appear under the suite's
 /// `tests` globs; anything else is `eval_setup_incomplete`. Returns the added paths outside
 /// `.stewards/` and `docs/units/`.
@@ -1368,7 +1395,7 @@ fn adoption_changes(dir: &Path, test_globs: &[String]) -> Result<Vec<String>> {
     if !stray.is_empty() {
         return Err(setup_error(
             format!(
-                "adoption changed the fixture's code in {} (against `fixture: initial`): {}",
+                "adoption changed the fixture's code in {} (against its `initial` commit): {}",
                 dir.display(),
                 stray.join(", ")
             ),
@@ -1525,9 +1552,9 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .args([
             "-c",
-            "user.name=fixture",
+            "user.name=dev",
             "-c",
-            "user.email=fixture@example.invalid",
+            "user.email=dev@example.invalid",
         ])
         .args(args)
         .current_dir(dir)
@@ -1539,11 +1566,12 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 
 /// Commits the staged adopted state, after removing every gitignored file (build output, briefs,
 /// telemetry), so each `full` run starts from a clean tree as `bare` does. Stamps survive: they
-/// name the tree, not a commit.
+/// name the tree, not a commit. The subject, like every arm commit's, names nothing a session
+/// should not learn from `git log` (Claude Code shows the last five subjects unasked).
 fn commit_adopted(dir: &Path) -> Result<()> {
     git(dir, &["clean", "-fdXq"])?;
     if !git(dir, &["status", "--porcelain"])?.trim().is_empty() {
-        git(dir, &["commit", "-qm", "stewards: adopted"])?;
+        git(dir, &["commit", "-qm", "update"])?;
     }
     Ok(())
 }
@@ -1597,7 +1625,7 @@ fn copy_adopted(from: &Path, to: &Path, arm: Arm) -> Result<()> {
         let agents = to.join("AGENTS.md");
         let text = std::fs::read_to_string(&agents).context("AGENTS.md")?;
         std::fs::write(&agents, without_developers(&text)?)?;
-        git(to, &["commit", "-qam", "eval: no developers"])?;
+        git(to, &["commit", "-qam", "update"])?;
     }
     Ok(())
 }
@@ -1844,7 +1872,7 @@ pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
     } else {
         let mut claude = claude::ClaudeCode::find(&path, limit)?;
         let note = claude.isolate(&work.join("a"))?;
-        (Box::new(claude), note, "n/a")
+        (Box::new(claude), note, "off")
     };
     let stamp = crate::telemetry::rfc3339(SystemTime::now()).replace(':', "-");
     let plan = Plan {

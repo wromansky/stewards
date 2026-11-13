@@ -93,7 +93,7 @@ pub fn config_dir(user: &Path, dir: &Path) -> Result<(String, Option<String>)> {
     }
     Ok((
         format!(
-            "Claude Code config dir {} (CLAUDE_CONFIG_DIR): {}; children on the session's model (CLAUDE_CODE_SUBAGENT_MODEL); no user CLAUDE.md, agents, commands, hooks, plugins, or MCP servers. Claude Code 1.0.128 does not read AGENTS.md: every arm copy with an AGENTS.md also gets a committed one-line CLAUDE.md, `@AGENTS.md`, which imports it. Thinking: n/a, this version has no thinking level. cost_usd: null, since its total_cost_usd prices model ids it does not know at Sonnet rates (checked on claude-haiku-5-5); that figure is kept as harness_reported_cost_usd.",
+            "Claude Code config dir {} (CLAUDE_CONFIG_DIR): {}; children on the session's model (CLAUDE_CODE_SUBAGENT_MODEL); no user CLAUDE.md, agents, commands, hooks, plugins, or MCP servers. Claude Code 1.0.128 does not read AGENTS.md: every arm copy with an AGENTS.md also gets a committed one-line CLAUDE.md, `@AGENTS.md`, which imports it. Thinking: off, since this version has no thinking level, only a budget from MAX_THINKING_TOKENS (removed from the session's environment) or from words such as `think` in a user message (no task prompt may contain it); each session's effective setting is recorded from its thinking blocks. cost_usd: null, since its total_cost_usd prices model ids it does not know at Sonnet rates (checked on claude-haiku-5-5); that figure is kept as harness_reported_cost_usd.",
             dir.display(),
             held.join("; ")
         ),
@@ -105,7 +105,8 @@ impl Driver for ClaudeCode {
     /// `claude -p --output-format stream-json --verbose --dangerously-skip-permissions [--model m]
     /// -- <prompt>` in `dir`, with `CLAUDE_CONFIG_DIR` set to the eval's config directory and
     /// `CLAUDE_CODE_SUBAGENT_MODEL` to the session's model (else `general-purpose` children run on
-    /// the harness's built-in default). There is no thinking level, so `thinking` is unused. stdout
+    /// the harness's built-in default). There is no thinking level, so `thinking` is unused, and
+    /// `MAX_THINKING_TOKENS`, the one variable that sets a thinking budget, is removed. stdout
     /// (the stream) and stderr go to `stdout.log` and `stderr.log`; the transcript is the session
     /// file Claude Code persisted, copied in as `<session id>.jsonl`.
     fn start(
@@ -137,6 +138,7 @@ impl Driver for ClaudeCode {
         fresh_session_env(&mut cmd, env);
         // what an enclosing Claude Code sets for its shell; the `CLAUDE_CODE` prefix misses it
         cmd.env_remove("CLAUDECODE");
+        cmd.env_remove("MAX_THINKING_TOKENS");
         if let Some(c) = &self.config_dir {
             cmd.env("CLAUDE_CONFIG_DIR", c);
         }
@@ -275,6 +277,17 @@ fn actions(recs: &[&Value], child: bool) -> Vec<Action> {
         .collect()
 }
 
+/// The record holding a tool call's result, and its `tool_result` block.
+fn tool_result<'a>(recs: &[&'a Value], call: &Value) -> Option<(&'a Value, &'a Value)> {
+    recs.iter().find_map(|r| {
+        let block = r["message"]["content"]
+            .as_array()?
+            .iter()
+            .find(|b| b["type"] == "tool_result" && b["tool_use_id"] == call["id"])?;
+        Some((*r, block))
+    })
+}
+
 /// Each reviewer `submit` in one session whose output `reviewed_units` reads, with the
 /// timestamp of its result.
 fn review_submits(recs: &[&Value]) -> Vec<(String, ReviewSubmit)> {
@@ -287,14 +300,7 @@ fn review_submits(recs: &[&Value]) -> Vec<(String, ReviewSubmit)> {
         {
             continue;
         }
-        let result = recs.iter().find_map(|r| {
-            let block = r["message"]["content"]
-                .as_array()?
-                .iter()
-                .find(|b| b["type"] == "tool_result" && b["tool_use_id"] == call["id"])?;
-            Some((r, block))
-        });
-        let Some((r, block)) = result else {
+        let Some((r, block)) = tool_result(recs, call) else {
             continue;
         };
         let text = match &block["content"] {
@@ -320,31 +326,78 @@ fn review_submits(recs: &[&Value]) -> Vec<(String, ReviewSubmit)> {
     out
 }
 
-/// The distinct repo-relative paths one session opened, in order: each `Read` tool `file_path`
-/// and each path `shell_reads` finds in a `Bash` command.
-fn files_opened(recs: &[&Value]) -> Vec<String> {
-    let cwd = recs
-        .iter()
-        .find_map(|r| r["cwd"].as_str())
-        .unwrap_or_default();
+/// The distinct paths one session opened, relative to `root` (the main session's starting
+/// directory), in order: each `Read` tool `file_path`, each `Grep` tool `path` (a directory is
+/// dropped later by `existing_files`), each file a `Glob` call matched as its persisted result
+/// lists them (`toolUseResult.filenames`; a call without that result counts nothing), and each
+/// path `shell_reads` finds in a `Bash` command. A relative path is resolved against the `cwd`
+/// of the record that made the call, since a `cd` in one `Bash` call carries over to the next.
+fn files_opened(recs: &[&Value], root: &str) -> Vec<String> {
     let mut out: Vec<String> = vec![];
-    for b in tool_uses(recs) {
-        let paths = match b["name"].as_str() {
-            Some("Read") => b["input"]["file_path"]
-                .as_str()
-                .map(String::from)
-                .into_iter()
-                .collect(),
-            Some("Bash") => shell_reads(b["input"]["command"].as_str().unwrap_or_default()),
-            _ => vec![],
-        };
-        for p in paths.iter().filter_map(|p| repo_relative(p, cwd)) {
-            if !out.contains(&p) {
-                out.push(p);
+    for r in recs.iter().filter(|r| r["type"] == "assistant") {
+        let cwd = Path::new(r["cwd"].as_str().unwrap_or(root));
+        for b in r["message"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| b["type"] == "tool_use")
+        {
+            let input = &b["input"];
+            let paths: Vec<String> = match b["name"].as_str() {
+                Some("Read") => input["file_path"]
+                    .as_str()
+                    .map(String::from)
+                    .into_iter()
+                    .collect(),
+                Some("Grep") => input["path"]
+                    .as_str()
+                    .map(String::from)
+                    .into_iter()
+                    .collect(),
+                Some("Glob") => tool_result(recs, b)
+                    .map(|(res, _)| &res["toolUseResult"]["filenames"])
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|f| f.as_str().map(String::from))
+                    .collect(),
+                Some("Bash") => shell_reads(input["command"].as_str().unwrap_or_default()),
+                _ => vec![],
+            };
+            for p in paths {
+                let Some(p) = repo_relative(&cwd.join(p).to_string_lossy(), root) else {
+                    continue;
+                };
+                if !out.contains(&p) {
+                    out.push(p);
+                }
             }
         }
     }
     out
+}
+
+/// A session's effective thinking, from its responses' content blocks: `on` when one holds a
+/// non-empty `thinking` or a `redacted_thinking` block, else `off` (Haiku 5.5 emits an empty
+/// `thinking` block with no budget); `None` with no response but API failures (`<synthetic>`).
+fn thinking(recs: &[&Value]) -> Option<&'static str> {
+    let responses: Vec<&Value> = recs
+        .iter()
+        .copied()
+        .filter(|r| r["type"] == "assistant" && r["message"]["model"] != "<synthetic>")
+        .collect();
+    if responses.is_empty() {
+        return None;
+    }
+    let thought = responses
+        .iter()
+        .flat_map(|r| r["message"]["content"].as_array().into_iter().flatten())
+        .any(|b| {
+            b["type"] == "redacted_thinking"
+                || (b["type"] == "thinking"
+                    && b["thinking"].as_str().is_some_and(|t| !t.is_empty()))
+        });
+    Some(if thought { "on" } else { "off" })
 }
 
 /// How a session's last response ended: `error` for an API failure (a record Claude Code marks
@@ -373,9 +426,11 @@ fn stream_result(transcript: &Path) -> Option<Value> {
 /// counts fall short (see `responses`). `peak_main_context` comes from the main records, whose
 /// input and cache counts are final. `cost_usd` is `None`: the stream's `total_cost_usd`
 /// prices an unknown model id at another model's rates, so it is only
-/// `harness_reported_cost_usd`. No thinking level exists, so `thinking_levels` and
-/// `sessions_without_thinking` are empty. The main stop reason is `error` when the stream's
-/// `result` line says `is_error`, else `last_stop`. Children are named by their first record's
+/// `harness_reported_cost_usd`. `models` holds every model of the records and every key of
+/// `modelUsage`, which also names side requests (titles, summaries) outside the parent and its
+/// children. `thinking_levels` are the sessions' effective settings (see `thinking`), and a
+/// session without one is in `sessions_without_thinking`. The main stop reason is `error` when
+/// the stream's `result` line says `is_error`, else `last_stop`. Children are named by their first record's
 /// `uuid`. `reviews` are the children's reviewer `submit` outputs, ordered by their results'
 /// timestamps.
 pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run> {
@@ -414,7 +469,19 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
     let mut reviews = vec![];
     let mut git_history_commands = vec![];
     let mut failed_children = vec![];
+    let mut thinking_levels = BTreeSet::new();
+    let mut sessions_without_thinking = vec![];
+    let root = recs
+        .iter()
+        .find_map(|r| r["cwd"].as_str())
+        .unwrap_or_default();
     for (i, (name, recs)) in sessions.iter().enumerate() {
+        match thinking(recs) {
+            Some(t) => {
+                thinking_levels.insert(t.to_string());
+            }
+            None => sessions_without_thinking.push(name.clone()),
+        }
         for r in responses(recs) {
             if i == 0 {
                 let t = tokens(&r["message"]["usage"], USAGE);
@@ -440,7 +507,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
                 .filter(|c| reads_git_history(c))
                 .map(String::from),
         );
-        for f in files_opened(recs) {
+        for f in files_opened(recs, root) {
             if !tree_files.contains(&f) {
                 tree_files.push(f);
             }
@@ -456,11 +523,8 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
     let main_tokens = result.as_ref().map(|r| tokens(&r["usage"], USAGE));
     let total_tokens = result.as_ref().map(|r| {
         let mut t = Tokens::default();
-        for u in r["modelUsage"]
-            .as_object()
-            .into_iter()
-            .flat_map(|m| m.values())
-        {
+        for (model, u) in r["modelUsage"].as_object().into_iter().flatten() {
+            models.insert(model.clone());
             t.add(tokens(u, MODEL_USAGE));
         }
         t
@@ -474,7 +538,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         tool_calls: tool_uses(main)
             .map(|b| b["name"].as_str().unwrap_or_default().to_string())
             .collect(),
-        files_opened: files_opened(main),
+        files_opened: files_opened(main, root),
         files_opened_tree: tree_files,
         shell_commands: bash_commands(main).map(|(_, c)| c.to_string()).collect(),
         ritual_steps: ritual_steps(&all_actions),
@@ -490,8 +554,8 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
             })
             .map(String::from),
         models: models.into_iter().collect(),
-        thinking_levels: vec![],
-        sessions_without_thinking: vec![],
+        thinking_levels: thinking_levels.into_iter().collect(),
+        sessions_without_thinking,
         subagent_sessions: sessions.len() - 1,
         reviews: reviews.into_iter().map(|(_, r)| r).collect(),
         git_history_commands,

@@ -1,16 +1,16 @@
 unit = "model"
 
 [reviewed]
-commit = "7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51"
-fingerprint = "sha256:d3c9d10ca2206d0cb9485b8c69d240a161017b6d4983d398dfd637ccd947bf0a"
-tree = "b82429e8bfcd73443a38fbfd3d59504efbda97b7"
-tester = "b82429e8bfcd73443a38fbfd3d59504efbda97b7"
-documenter = "b82429e8bfcd73443a38fbfd3d59504efbda97b7"
+commit = "5a377c6c6cafdcb7e4b7f3b77ee21b13a9602770"
+fingerprint = "sha256:daf936e21f9dfcc15e43ac98fd54756fdd6e9028f74a403476515f7d37755218"
+tree = "1d40ba84e190d03c11969b3c86943d183cd2e584"
+tester = "1d40ba84e190d03c11969b3c86943d183cd2e584"
+documenter = "1d40ba84e190d03c11969b3c86943d183cd2e584"
 
 [[interface]]
 id = "load-repo"
 anchor = "src/model.rs::load_repo"
-contract = "Reads .stewards/ under git root into Loaded. Errors: not_a_git_repo, no_stewards_dir, schema_too_new (checked before the full parse), invalid_toml with file:line (also duplicate unit name), unsafe_path for a symlinked file or dir. A missing units.toml, card, or test card is fine."
+contract = "Reads .stewards/ under git root into Loaded. Errors: not_a_git_repo, no_stewards_dir, schema_too_new (before the full parse), invalid_toml with file:line (also duplicate unit name), unsafe_path for a symlinked file or dir or a non-plain instruction_files entry. Missing units.toml or cards are fine."
 
 [[interface]]
 id = "unit-name"
@@ -102,6 +102,11 @@ id = "repo-read"
 anchor = "src/workspace.rs::read"
 contract = "Repo::read(rel, cap) returns the bytes of the regular file rel through safe_path, opened with no link followed and without blocking on a FIFO (unix), its type checked on the open handle; a non-regular file or one over cap bytes is an error."
 
+[[interface]]
+id = "plain-names"
+anchor = "src/workspace.rs::plain_names"
+contract = "Ok when every `/`-separated part of rel is a plain name (no `.`, `..`, empty part, or root), else unsafe_path. The name half of safe_path, also run on each repo.toml instruction_files entry at load."
+
 [[anchor]]
 path = "src/model.rs"
 name = "SCHEMA"
@@ -133,6 +138,10 @@ name = "user_dir"
 [[anchor]]
 path = "src/user.rs"
 name = "read_toml"
+
+[[anchor]]
+path = "src/workspace.rs"
+name = "plain_names"
 
 [[gap]]
 kind = "gap"

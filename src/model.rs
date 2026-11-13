@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::output::CliError;
-use crate::workspace::safe_path;
+use crate::workspace::{plain_names, safe_path};
 
 /// The newest `repo.toml` schema this build reads.
 pub const SCHEMA: u32 = 1;
@@ -20,6 +20,10 @@ pub struct RepoConfig {
     pub test_roots: Vec<String>,
     #[serde(default = "default_docs_path")]
     pub docs_path: String,
+    /// Repo-relative instruction files other than `AGENTS.md` that a harness reads; `check`
+    /// warns when one does not point at `AGENTS.md`.
+    #[serde(default)]
+    pub instruction_files: Vec<String>,
     #[serde(default)]
     pub commands: Commands,
     #[serde(default)]
@@ -384,6 +388,10 @@ pub fn load_repo(root: &Path) -> Result<Loaded> {
         ));
     }
     let repo: RepoConfig = parse_toml(root, repo_toml)?.expect("repo.toml exists");
+    // a listed link is fine to load: `check` reads it through `Repo::read`, which refuses links
+    for file in &repo.instruction_files {
+        plain_names(file)?;
+    }
     // a units dir with no cards to read is still refused when it is a link
     safe_path(root, ".stewards/units", false)?;
     let units = parse_toml::<UnitsFile>(root, ".stewards/units.toml")?

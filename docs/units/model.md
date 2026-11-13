@@ -18,31 +18,33 @@ Start from the anchor for the behavior you want: load_repo or the type definitio
 
 | id | contract | anchor |
 |---|---|---|
-| load-repo | Reads .stewards/ under git root into Loaded. Errors\: not\_a\_git\_repo, no\_stewards\_dir, schema\_too\_new (checked before the full parse), invalid\_toml with file\:line (also duplicate unit name), unsafe\_path for a symlinked file or dir. A missing units.toml, card, or test card is fine. | [src/model.rs\:\:load\_repo](../../src/model.rs#L356) |
-| unit-name | A unit name in units.toml must match \[a-z0-9\]\[a-z0-9\_-\]\*, else deserialization fails. | [src/model.rs\:\:unit\_name](../../src/model.rs#L145) |
-| anchor-parse | Anchor\:\:parse splits \`path\:\:name\` at the first \`\:\:\`; both sides non-empty, else an error. | [src/model.rs\:\:parse](../../src/model.rs#L200) |
-| loaded-unit | Loaded\:\:unit(name) returns the unit or unknown\_unit listing every unit name. | [src/model.rs\:\:unit](../../src/model.rs#L162) |
-| role-from-str | Parses the seven lowercase role names (developer, maintainer, tester, documenter, validator, architect, reviewer); anything else is unknown\_role. | [src/model.rs\:\:from\_str](../../src/model.rs#L300) |
+| load-repo | Reads .stewards/ under git root into Loaded. Errors\: not\_a\_git\_repo, no\_stewards\_dir, schema\_too\_new (before the full parse), invalid\_toml with file\:line (also duplicate unit name), unsafe\_path for a symlinked file or dir or a non-plain instruction\_files entry. Missing units.toml or cards are fine. | [src/model.rs\:\:load\_repo](../../src/model.rs#L360) |
+| unit-name | A unit name in units.toml must match \[a-z0-9\]\[a-z0-9\_-\]\*, else deserialization fails. | [src/model.rs\:\:unit\_name](../../src/model.rs#L149) |
+| anchor-parse | Anchor\:\:parse splits \`path\:\:name\` at the first \`\:\:\`; both sides non-empty, else an error. | [src/model.rs\:\:parse](../../src/model.rs#L204) |
+| loaded-unit | Loaded\:\:unit(name) returns the unit or unknown\_unit listing every unit name. | [src/model.rs\:\:unit](../../src/model.rs#L166) |
+| role-from-str | Parses the seven lowercase role names (developer, maintainer, tester, documenter, validator, architect, reviewer); anything else is unknown\_role. | [src/model.rs\:\:from\_str](../../src/model.rs#L304) |
 | discover | A stewards.toml at or above cwd wins over the nearer .git and lists repos (workspace\_repo\_missing for a non-dir entry); else the enclosing git root, or not\_a\_git\_repo. A repo without .stewards/repo.toml loads as None. \`only\` keeps one repo by name, else unknown\_repo listing names. | [src/workspace.rs\:\:discover](../../src/workspace.rs#L33) |
 | repo-containing | The repo with the deepest root containing canonical \`path\`, so a nested repo owns its files; None when none contains it. | [src/workspace.rs\:\:repo\_containing](../../src/workspace.rs#L139) |
 | current-repo | The repo containing cwd, else the lone repo, else not\_in\_repo. | [src/workspace.rs\:\:current\_repo](../../src/workspace.rs#L152) |
 | loaded-repos | Each repo with its Loaded; uninitialized siblings in an unselected workspace are skipped, otherwise an uninitialized repo is no\_stewards\_dir. | [src/workspace.rs\:\:loaded\_repos](../../src/workspace.rs#L169) |
 | display-name | \`\<repo\>/\<unit\>\` in a workspace, \`\<unit\>\` otherwise. | [src/workspace.rs\:\:display\_name](../../src/workspace.rs#L181) |
-| safe-path | root/rel only when every \`/\`-separated part is a plain name and no existing component below root is a symlink, else unsafe\_path. With create\_dirs, missing parents are made one at a time and checked. The single path check for repo reads and writes. | [src/workspace.rs\:\:safe\_path](../../src/workspace.rs#L206) |
-| repo-write | Replaces rel via a unique temp file renamed over it (a planted link is replaced, never followed), keeping the old file's permissions; the temp file is removed on failure. | [src/workspace.rs\:\:write](../../src/workspace.rs#L258) |
-| repo-append | Appends to the regular file rel, creating it when missing; refuses a non-regular file or a symlinked path. | [src/workspace.rs\:\:append](../../src/workspace.rs#L288) |
+| safe-path | root/rel only when every \`/\`-separated part is a plain name and no existing component below root is a symlink, else unsafe\_path. With create\_dirs, missing parents are made one at a time and checked. The single path check for repo reads and writes. | [src/workspace.rs\:\:safe\_path](../../src/workspace.rs#L222) |
+| repo-write | Replaces rel via a unique temp file renamed over it (a planted link is replaced, never followed), keeping the old file's permissions; the temp file is removed on failure. | [src/workspace.rs\:\:write](../../src/workspace.rs#L263) |
+| repo-append | Appends to the regular file rel, creating it when missing; refuses a non-regular file or a symlinked path. | [src/workspace.rs\:\:append](../../src/workspace.rs#L293) |
 | repo-remove | Removes the regular file rel; missing is Ok; a non-regular file or symlinked path is refused. | [src/workspace.rs\:\:remove](../../src/workspace.rs#L196) |
 | user-config | Reads config.toml from the user dir (\$STEWARDS\_HOME, else \~/.stewards); missing file is an empty Config; Config\:\:model(harness, role) is the pinned alias or None. Never writes. | [src/user.rs\:\:load\_config\_from](../../src/user.rs#L47) |
 | user-memory | Reads memory.toml \[\[entry\]\] items from the user dir; missing file is empty; malformed is invalid\_toml with file\:line. Never writes. | [src/user.rs\:\:load\_memory\_from](../../src/user.rs#L51) |
 | memory-for | Entries whose roles (absent = all) include role and whose languages (absent = all) share one with \`languages\`, in file order, stopping before the first entry that pushes total text bytes past budget\_bytes. | [src/user.rs\:\:memory\_for](../../src/user.rs#L65) |
-| loaded-card | Loaded\:\:card(unit) returns a clone of the unit's card, or an empty card (unit set, reviewed None, no interface, anchors, gaps, or doc) when it has none yet. The one lookup submit and check use instead of their own copies. | [src/model.rs\:\:card](../../src/model.rs#L342) |
-| repo-read | Repo\:\:read(rel, cap) returns the bytes of the regular file rel through safe\_path, opened with no link followed and without blocking on a FIFO (unix), its type checked on the open handle; a non-regular file or one over cap bytes is an error. | [src/workspace.rs\:\:read](../../src/workspace.rs#L307) |
+| loaded-card | Loaded\:\:card(unit) returns a clone of the unit's card, or an empty card (unit set, reviewed None, no interface, anchors, gaps, or doc) when it has none yet. The one lookup submit and check use instead of their own copies. | [src/model.rs\:\:card](../../src/model.rs#L346) |
+| repo-read | Repo\:\:read(rel, cap) returns the bytes of the regular file rel through safe\_path, opened with no link followed and without blocking on a FIFO (unix), its type checked on the open handle; a non-regular file or one over cap bytes is an error. | [src/workspace.rs\:\:read](../../src/workspace.rs#L312) |
+| plain-names | Ok when every \`/\`-separated part of rel is a plain name (no \`.\`, \`..\`, empty part, or root), else unsafe\_path. The name half of safe\_path, also run on each repo.toml instruction\_files entry at load. | [src/workspace.rs\:\:plain\_names](../../src/workspace.rs#L204) |
 
 ## Scenarios
 
 | id | interface | given | expect | level |
 |---|---|---|---|---|
 | loaded-card-empty-when-missing | loaded-unit | a loaded repo where unit api has a card file and unit store has none | Loaded\:\:card("api") returns the stored card; Loaded\:\:card("store") returns an empty card named store (no stamp, interface, anchors, gaps or doc) without adding it to Loaded.cards | integration |
+| load-repo-rejects-non-plain-instruction-file | load-repo | repo.toml lists instruction\_files = \["/etc/passwd"\], \["../x.md"\], \["a/../x.md"\] or \["./x.md"\] | stewards check exits 2 with error code unsafe\_path | integration |
 
 ## Flows
 
@@ -59,4 +61,4 @@ Start from the anchor for the behavior you want: load_repo or the type definitio
 
 ## Last reviewed
 
-7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51
+5a377c6c6cafdcb7e4b7f3b77ee21b13a9602770

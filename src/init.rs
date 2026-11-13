@@ -354,6 +354,7 @@ struct Init {
     units: Vec<Proposed>,
     unowned: Vec<String>,
     wrote: Vec<String>,
+    note: &'static str,
 }
 
 impl Human for Init {
@@ -372,7 +373,8 @@ impl Human for Init {
                 out += &format!("- {p}\n");
             }
         }
-        out.trim_end().to_string()
+        out += &format!("\n{}", self.note);
+        out
     }
 }
 
@@ -569,6 +571,7 @@ fn propose(repo: &Repo) -> Result<Init> {
         units: proposed,
         unowned,
         wrote,
+        note: guide::AGENTS_ONLY,
     })
 }
 

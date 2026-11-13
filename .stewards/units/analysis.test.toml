@@ -47,3 +47,43 @@ given = "a file with the name first inside a longer identifier, then as a whole 
 expect = "resolve returns Found on the whole-word line, not DeadName"
 level = "integration"
 command = "cargo test --test anchors a_whole_word_after_a_partial_one_is_found"
+
+[[scenario]]
+id = "check-instructions-warns-without-agents-md"
+interface = "check-instructions"
+given = 'repo.toml lists instruction_files = ["OTHER.md"] and OTHER.md does not mention AGENTS.md'
+expect = "one instructions_unlinked warning with path OTHER.md; check still exits 1 only for unstamped units"
+level = "integration"
+command = "cargo test --test check a_listed_instruction_file_without_agents_md_warns"
+
+[[scenario]]
+id = "check-instructions-quiet-when-linked"
+interface = "check-instructions"
+given = "listed OTHER.md contains @AGENTS.md"
+expect = "no instructions_unlinked warning"
+level = "integration"
+command = "cargo test --test check a_listed_instruction_file_that_mentions_agents_md_does_not_warn"
+
+[[scenario]]
+id = "check-instructions-missing-warns"
+interface = "check-instructions"
+given = "listed nope/OTHER.md does not exist"
+expect = "one instructions_unlinked warning with path nope/OTHER.md"
+level = "integration"
+command = "cargo test --test check a_missing_listed_instruction_file_warns"
+
+[[scenario]]
+id = "check-instructions-symlink-not-followed"
+interface = "check-instructions"
+given = "listed OTHER.md is a symlink to a file outside the repo that mentions AGENTS.md"
+expect = "the link is not followed: one instructions_unlinked warning with path OTHER.md"
+level = "integration"
+command = "cargo test --test check a_symlinked_listed_instruction_file_is_not_followed"
+
+[[scenario]]
+id = "check-instructions-filter-drops"
+interface = "check-instructions"
+given = "listed OTHER.md does not mention AGENTS.md and check runs with unit filter store"
+expect = "unfiltered check warns instructions_unlinked for OTHER.md; the filtered report has no instructions_unlinked warning"
+level = "integration"
+command = "cargo test --test check a_unit_filter_drops_instructions_unlinked"

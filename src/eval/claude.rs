@@ -550,6 +550,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         thinking_levels: thinking_levels.into_iter().collect(),
         sessions_without_thinking,
         subagent_sessions: sessions.len() - 1,
+        uncounted_sessions: vec![],
         reviews: reviews.into_iter().map(|(_, r)| r).collect(),
         git_history_commands,
         stop_reason,

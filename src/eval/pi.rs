@@ -539,6 +539,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         thinking_levels: thinking_levels.into_iter().collect(),
         sessions_without_thinking,
         subagent_sessions: children.len(),
+        uncounted_sessions: vec![],
         reviews: {
             reviews.sort_by(|a, b| a.0.cmp(&b.0));
             reviews.into_iter().map(|(_, r)| r).collect()

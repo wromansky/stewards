@@ -370,6 +370,9 @@ pub struct Summary {
     pub thinking_mismatches: Vec<String>,
     /// Runs with a session that recorded no thinking level, as `label: sessions`.
     pub thinking_unknown: Vec<String>,
+    /// Runs whose transcript held top-level sessions besides the task's own, left out of every
+    /// count, as `label: sessions` (flagged, not failed).
+    pub uncounted_sessions: Vec<String>,
     /// When the requested or any recorded thinking level is not `off`: that two harnesses'
     /// results compare only at one setting, in one plain sentence.
     pub thinking_comparison: Option<String>,
@@ -460,6 +463,13 @@ pub fn summarize(
             .iter()
             .filter_map(|r| {
                 let s = &r.result.as_ref()?.sessions_without_thinking;
+                (!s.is_empty()).then(|| format!("{}: {}", r.label, s.join(", ")))
+            })
+            .collect(),
+        uncounted_sessions: records
+            .iter()
+            .filter_map(|r| {
+                let s = &r.result.as_ref()?.uncounted_sessions;
                 (!s.is_empty()).then(|| format!("{}: {}", r.label, s.join(", ")))
             })
             .collect(),
@@ -620,6 +630,12 @@ pub fn render(s: &Summary) -> String {
         out.push(format!(
             "no thinking level recorded: {}",
             s.thinking_unknown.join("; ")
+        ));
+    }
+    if !s.uncounted_sessions.is_empty() {
+        out.push(format!(
+            "other top-level sessions, left uncounted: {}",
+            s.uncounted_sessions.join("; ")
         ));
     }
     out.extend(s.thinking_comparison.clone());

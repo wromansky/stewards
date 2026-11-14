@@ -581,6 +581,7 @@ fn run_with(main: u64, total: u64, files: usize, ritual: RitualSteps) -> Run {
         thinking_levels: vec![],
         sessions_without_thinking: vec![],
         subagent_sessions: 1,
+        uncounted_sessions: vec![],
         reviews: vec![],
         git_history_commands: vec![],
         stop_reason: Some("stop".into()),
@@ -2671,6 +2672,57 @@ fn the_summary_names_a_thinking_setting_another_harness_cannot_match() {
     );
 }
 
+/// Recorded transcripts are committed: no fixture holds a provider key, as an `*API_KEY=` with a
+/// value or a token after a common key prefix.
+#[test]
+fn no_fixture_holds_key_material() {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let token = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let mut files = vec![];
+    walk(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures"),
+        &mut files,
+    );
+    assert!(files.len() > 10);
+    for f in files {
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let name = f.display();
+        for (at, _) in text.match_indices("API_KEY=") {
+            let value = text[at + 8..].trim_start_matches(['"', '\'']);
+            assert!(!value.starts_with(token), "{name}: an API_KEY with a value");
+        }
+        for prefix in [
+            "sk-",
+            "Bearer ",
+            "ghp_",
+            "github_pat_",
+            "xoxb-",
+            "AKIA",
+            "AIza",
+        ] {
+            for (at, _) in text.match_indices(prefix) {
+                if text[..at].ends_with(token) {
+                    continue;
+                }
+                let rest = &text[at + prefix.len()..];
+                let len = rest.find(|c: char| !token(c)).unwrap_or(rest.len());
+                assert!(len < 16, "{name}: a key after `{prefix}`");
+            }
+        }
+    }
+}
+
 fn hermes_sample(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/transcripts/hermes")
@@ -2730,6 +2782,48 @@ fn hermes_sample_counts_child_tokens_in_total_and_not_in_main() {
     assert_eq!(run.stop_reason.as_deref(), Some("stop"));
     assert!(run.failed_children.is_empty() && run.reviews.is_empty());
     assert_eq!(run.duration_s, 2.0);
+}
+
+/// The trimmed real run at Hermes's default one-shot cap of 2 children: the parent called
+/// `delegate_task` three times, one task each (adding a `context` it was not asked for), and the
+/// third was refused with Hermes's budget error and started nothing.
+#[test]
+fn hermes_refused_sample_counts_only_the_children_that_ran() {
+    let dir = hermes_sample("refused");
+    let transcript = main_file(&dir);
+    let run = hermes_parse(&transcript, 0.0, false).unwrap();
+    assert_eq!(run.subagent_sessions, 2);
+    assert_eq!(run.tool_calls, ["delegate_task"; 3]);
+    let main = run.main_tokens.unwrap();
+    let stream = &hermes_result("refused")["tokens"];
+    assert_eq!(stream["input"], main.input + main.cache_read);
+    assert_eq!(
+        run.total_tokens.unwrap().sum(),
+        main.sum() + (171 + 1 + 9216) + (7083 + 1 + 2304)
+    );
+    assert_eq!(run.peak_main_context, Some(13613));
+    assert!(run.failed_children.is_empty() && run.uncounted_sessions.is_empty());
+    assert_eq!(run.stop_reason.as_deref(), Some("stop"));
+    let text = std::fs::read_to_string(&transcript).unwrap();
+    assert!(
+        text.contains("Delegation budget for this one-shot run is exhausted (2/2 subagents used")
+    );
+    // the goal is the handoff, but the child was also given the model's context
+    let (_t, t) = replaced(&dir, &transcript, &[("Reply with the word ok.", HANDOFF)]);
+    assert_eq!(
+        hermes_parse(&t, 0.0, false).unwrap().ritual_steps,
+        steps(&["handoff"])
+    );
+    let context = "This is a minimal test task. No tools or investigation needed. Just output the single word: ok";
+    let (_t, t) = replaced(
+        &dir,
+        &transcript,
+        &[("Reply with the word ok.", HANDOFF), (context, "")],
+    );
+    assert_eq!(
+        hermes_parse(&t, 0.0, false).unwrap().ritual_steps,
+        steps(&["handoff", "handoff_exact"])
+    );
 }
 
 /// The trimmed real run that ran `pwd` and wrote `made.txt` (relative) with `write_file`: both
@@ -2794,6 +2888,27 @@ fn hermes_session(
     calls: &[(&str, &str, serde_json::Value)],
     results: &[(&str, serde_json::Value)],
 ) -> PathBuf {
+    hermes_export(tmp, &[hermes_row("s", None, "oneshot", calls, results)])
+}
+
+/// `rows` as an export file, and its path.
+fn hermes_export(tmp: &Path, rows: &[serde_json::Value]) -> PathBuf {
+    let path = tmp.join("transcript.jsonl");
+    let lines: Vec<String> = rows.iter().map(|r| r.to_string() + "\n").collect();
+    std::fs::write(&path, lines.concat()).unwrap();
+    path
+}
+
+/// One exported Hermes row `id` (under `parent`, from `source`) at cwd `/r` with one input token,
+/// whose assistant makes `calls`, then stops, and whose tool messages answer `results` (see
+/// `hermes_session`). Rows without `started_at` keep their order in the file.
+fn hermes_row(
+    id: &str,
+    parent: Option<&str>,
+    source: &str,
+    calls: &[(&str, &str, serde_json::Value)],
+    results: &[(&str, serde_json::Value)],
+) -> serde_json::Value {
     let calls: Vec<serde_json::Value> = calls
         .iter()
         .map(|(id, name, args)| {
@@ -2807,11 +2922,10 @@ fn hermes_session(
         serde_json::json!({"role": "tool", "tool_call_id": id, "content": content.to_string(),
             "timestamp": 2.0})
     }));
-    let session = serde_json::json!({"id": "s", "parent_session_id": null, "cwd": "/r",
-        "model": "m", "billing_provider": "p", "input_tokens": 1, "messages": messages});
-    let path = tmp.join("transcript.jsonl");
-    std::fs::write(&path, format!("{session}\n")).unwrap();
-    path
+    messages.push(serde_json::json!({"role": "assistant", "content": "done",
+        "finish_reason": "stop", "timestamp": 3.0}));
+    serde_json::json!({"id": id, "parent_session_id": parent, "source": source, "cwd": "/r",
+        "model": "m", "billing_provider": "p", "input_tokens": 1, "messages": messages})
 }
 
 /// Files opened on Hermes: `read_file`'s path, a content `search_files`'s path, and shell reads,
@@ -2852,6 +2966,187 @@ fn hermes_files_opened_count_read_and_content_search_and_shell_reads() {
     assert_eq!(run.model.as_deref(), Some("p/m"));
     // a response with no reasoning at all
     assert_eq!(run.thinking_levels, ["off"]);
+
+    // a `terminal` call's `workdir` is where its reads start; `target: find` is a listing too
+    let t = hermes_session(
+        tmp.path(),
+        &[
+            (
+                "1",
+                "terminal",
+                serde_json::json!({"command": "cat x.py ../README.md", "workdir": "api"}),
+            ),
+            (
+                "2",
+                "search_files",
+                serde_json::json!({"pattern": "*.py", "target": "find", "path": "/r/c"}),
+            ),
+        ],
+        &[],
+    );
+    let run = hermes_parse(&t, 0.0, false).unwrap();
+    assert_eq!(run.files_opened, ["api/x.py", "README.md"]);
+}
+
+/// Hermes continues a compressed session in a new row under the old one with the same `source`:
+/// that row is the same session (its tokens, calls, and API calls are main's), and only a
+/// `source: subagent` row is a child. A call the continuation kept from the row before counts once.
+#[test]
+fn a_hermes_compression_continuation_is_the_main_session_and_only_subagent_rows_are_children() {
+    let tmp = TempDir::new().unwrap();
+    let echo = ("1", "terminal", serde_json::json!({"command": "echo a"}));
+    let submit = (
+        "2",
+        "terminal",
+        serde_json::json!({"command": "stewards submit --role reviewer --file a.json"}),
+    );
+    let read = ("3", "read_file", serde_json::json!({"path": "/r/x.py"}));
+    let out = serde_json::json!({"output": "a"});
+    let t = hermes_export(
+        tmp.path(),
+        &[
+            hermes_row(
+                "m",
+                None,
+                "oneshot",
+                std::slice::from_ref(&echo),
+                &[("1", out.clone())],
+            ),
+            hermes_row("m2", Some("m"), "oneshot", &[echo, submit], &[("2", out)]),
+            hermes_row("c", Some("m2"), "subagent", &[read], &[]),
+        ],
+    );
+    std::fs::write(
+        tmp.path().join("agent.log"),
+        "x [m] a: API call #1: in=5 out=1\nx [m2] a: API call #1: in=8 out=1\nx [c] a: API call #1: in=50 out=1\n",
+    )
+    .unwrap();
+    let run = hermes_parse(&t, 0.0, false).unwrap();
+    assert_eq!(run.subagent_sessions, 1);
+    assert_eq!(run.main_tokens.unwrap().input, 2);
+    assert_eq!(run.total_tokens.unwrap().input, 3);
+    assert_eq!(
+        run.shell_commands,
+        ["echo a", "stewards submit --role reviewer --file a.json"]
+    );
+    assert_eq!(run.tool_calls, ["terminal", "terminal"]);
+    // main's own submit is not a reviewer child's
+    assert_eq!(run.ritual_steps, steps(&[]));
+    assert_eq!(run.peak_main_context, Some(8));
+    assert_eq!(run.files_opened_tree, ["x.py"]);
+    assert!(run.files_opened.is_empty() && run.uncounted_sessions.is_empty());
+}
+
+/// The ritual steps of one Hermes `delegate_task` call with `args`, answered by `result` (none:
+/// the session ended inside the call).
+fn hermes_dispatch(args: serde_json::Value, result: Option<serde_json::Value>) -> RitualSteps {
+    let tmp = TempDir::new().unwrap();
+    let results: Vec<(&str, serde_json::Value)> = result.into_iter().map(|r| ("d", r)).collect();
+    let t = hermes_session(tmp.path(), &[("d", "delegate_task", args)], &results);
+    hermes_parse(&t, 0.0, false).unwrap().ritual_steps
+}
+
+/// A child's task on Hermes is the whole text it was given: its goal, plus the context (and
+/// output contract) Hermes adds to its system prompt. `tasks` may be a JSON string; the top-level
+/// `goal` counts only without `tasks`. A launch Hermes refused, whole or per task, started no
+/// child, so it is no subagent launch.
+#[test]
+fn hermes_delegate_task_shapes_and_refusals_map_to_what_the_children_ran() {
+    let ran = serde_json::json!({"results": [{"task_index": 0, "status": "completed"}]});
+    let exact = steps(&["handoff", "handoff_exact"]);
+    let held = steps(&["handoff"]);
+    for (args, result, expected) in [
+        (
+            serde_json::json!({"tasks": serde_json::json!([{"goal": HANDOFF}]).to_string()}),
+            Some(ran.clone()),
+            &exact,
+        ),
+        (
+            serde_json::json!({"tasks": [{"goal": HANDOFF}], "goal": "Also this."}),
+            Some(ran.clone()),
+            &exact,
+        ),
+        (
+            serde_json::json!({"tasks": [], "goal": HANDOFF}),
+            Some(ran.clone()),
+            &exact,
+        ),
+        (
+            serde_json::json!({"tasks": [{"goal": HANDOFF, "context": "Be brief."}]}),
+            Some(ran.clone()),
+            &held,
+        ),
+        (
+            serde_json::json!({"goal": HANDOFF, "output_schema": {"type": "object"}}),
+            Some(ran.clone()),
+            &held,
+        ),
+        // the session ended inside the call: its child was running
+        (serde_json::json!({"goal": HANDOFF}), None, &exact),
+        (
+            serde_json::json!({"goal": HANDOFF}),
+            Some(
+                serde_json::json!({"error": "Delegation budget for this one-shot run is exhausted (2/2 subagents used; delegation.oneshot_max_children)."}),
+            ),
+            &steps(&[]),
+        ),
+        (
+            serde_json::json!({"goal": HANDOFF}),
+            Some(
+                serde_json::json!({"results": [{"task_index": 0, "status": "error",
+                "api_calls": 0, "route": {"refused": true}}]}),
+            ),
+            &steps(&[]),
+        ),
+    ] {
+        assert_eq!(&hermes_dispatch(args.clone(), result), expected, "{args}");
+    }
+}
+
+/// A second top-level session (a `hermes` a session started itself) is no parse failure: the
+/// first-started one is the task's, counted alone, and the other is flagged in the summary.
+#[test]
+fn a_second_hermes_top_level_session_is_left_uncounted_and_flagged() {
+    let tmp = TempDir::new().unwrap();
+    let mut nested = hermes_row("n", None, "oneshot", &[], &[]);
+    nested["started_at"] = 2.0.into();
+    nested["input_tokens"] = 100.into();
+    let mut main = hermes_row("m", None, "oneshot", &[], &[]);
+    main["started_at"] = 1.0.into();
+    let mut child = hermes_row("c", Some("m"), "subagent", &[], &[]);
+    child["started_at"] = 1.5.into();
+    let mut nested_child = hermes_row("nc", Some("n"), "subagent", &[], &[]);
+    nested_child["started_at"] = 2.5.into();
+    let t = hermes_export(tmp.path(), &[nested, main, child, nested_child]);
+    let run = hermes_parse(&t, 0.0, false).unwrap();
+    assert_eq!(run.subagent_sessions, 1);
+    assert_eq!(run.total_tokens.unwrap().input, 2);
+    assert_eq!(run.uncounted_sessions, ["n"]);
+    let summary = summarize(
+        &plan(tmp.path(), 1, None),
+        &[record(1, Arm::Bare, RunRole::Task, 1, run)],
+        false,
+        &[],
+        SetupNotes::default(),
+    );
+    assert_eq!(summary.uncounted_sessions, ["bare-t1-r1: n"]);
+    assert!(render(&summary).contains("other top-level sessions, left uncounted: bare-t1-r1: n"));
+}
+
+/// A Hermes child whose own last response stopped with `length` fails the run, as on the other
+/// drivers, though `delegate_task` reported it completed.
+#[test]
+fn a_hermes_child_stopped_by_length_is_a_failed_child() {
+    let tmp = TempDir::new().unwrap();
+    let mut child = hermes_row("c", Some("m"), "subagent", &[], &[]);
+    let last = child["messages"].as_array().unwrap().len() - 1;
+    child["messages"][last]["finish_reason"] = "length".into();
+    let t = hermes_export(
+        tmp.path(),
+        &[hermes_row("m", None, "oneshot", &[], &[]), child],
+    );
+    let run = hermes_parse(&t, 0.0, false).unwrap();
+    assert_eq!(run.failed_children, ["c stopped with `length`"]);
 }
 
 #[test]
@@ -2877,7 +3172,8 @@ fn every_missing_harness_binary_is_the_same_harness_missing_error() {
 }
 
 /// A fake `hermes`: `sessions list` builds an `installs/`; `chat` records its argv and env,
-/// starts a detached "daemon" named in `$HERMES_HOME/gateway.pid`, logs one API call, and hangs;
+/// starts a detached "daemon" named in `$HERMES_HOME/gateway.pid` (or names `$STALE_PID` there),
+/// prints its `.env`, logs one API call in a rotated log and one in the current, and hangs;
 /// `sessions export` writes one session to its last argument.
 const FAKE_HERMES: &str = r#"#!/bin/sh
 case "$1" in
@@ -2889,10 +3185,12 @@ chat)
   printf '%s\n' "$@" > ../args
   env > ../env
   setsid sleep 300 >/dev/null 2>&1 &
-  echo "{\"pid\": $!}" > "$HERMES_HOME/gateway.pid"
+  echo "{\"pid\": ${STALE_PID:-$!}}" > "$HERMES_HOME/gateway.pid"
   echo $! > ../daemon
+  cat "$HERMES_HOME/.env"
   mkdir -p "$HERMES_HOME/logs"
-  echo 'x [s] a: API call #1: in=7 out=1' > "$HERMES_HOME/logs/agent.log"
+  echo 'x [s] a: API call #1: in=7 out=1' > "$HERMES_HOME/logs/agent.log.1"
+  echo 'x [s] a: API call #2: in=9 out=1' > "$HERMES_HOME/logs/agent.log"
   exec sleep 30 ;;
 esac
 "#;
@@ -2910,18 +3208,24 @@ fn hermes_driver_runs_each_session_in_its_own_home_and_kills_the_daemon() {
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     let user = tmp.path().join("user");
     std::fs::create_dir_all(user.join("memories")).unwrap();
-    std::fs::write(user.join(".env"), "KEY=v\n").unwrap();
+    let key = "sk-test-0123456789abcdef";
+    std::fs::write(
+        user.join(".env"),
+        format!("DEEPSEEK_API_KEY={key}\nexport GH_TOKEN='tok-0123456789'\nREGION=eu-west-123\n"),
+    )
+    .unwrap();
     std::fs::write(user.join("SOUL.md"), "personal").unwrap();
     std::fs::write(user.join("config.yaml"), "model: {}\n").unwrap();
     let a = tmp.path().join("a");
     let (note, installs) = template(&bin, &user, &a).unwrap();
     assert!(note.contains("subagent_auto_approve"), "{note}");
+    assert!(note.contains("oneshot_max_children: 0"), "{note}");
     assert!(note.contains("not the task directory"), "{note}");
     assert_eq!(installs, fingerprint(&a.join("installs")).unwrap());
     assert_eq!(installs.len(), 2);
     assert_eq!(
         std::fs::read_to_string(a.join("config.yaml")).unwrap(),
-        "delegation:\n  subagent_auto_approve: true\n"
+        "delegation:\n  subagent_auto_approve: true\n  oneshot_max_children: 0\n"
     );
     assert_eq!(
         std::fs::read_link(a.join(".env")).unwrap(),
@@ -2957,7 +3261,22 @@ fn hermes_driver_runs_each_session_in_its_own_home_and_kills_the_daemon() {
         .unwrap();
     assert_eq!(s.status, Status::TimedOut);
     assert_eq!(s.transcript, Some(sessions.join("transcript.jsonl")));
-    assert!(sessions.join("agent.log").is_file());
+    // every rotation of the log is kept, and the peak reads them all
+    assert!(sessions.join("agent.log").is_file() && sessions.join("agent.log.1").is_file());
+    let run = hermes
+        .parse(&sessions.join("transcript.jsonl"), 0.0, true)
+        .unwrap();
+    assert_eq!(run.peak_main_context, Some(9));
+    // the key and token the session printed are not kept; other values are
+    let out = std::fs::read_to_string(sessions.join("stdout.log")).unwrap();
+    assert!(
+        !out.contains(key) && !out.contains("tok-0123456789"),
+        "{out}"
+    );
+    assert!(
+        out.contains("DEEPSEEK_API_KEY=[redacted]") && out.contains("REGION=eu-west-123"),
+        "{out}"
+    );
     let args = std::fs::read_to_string(root.join("args")).unwrap();
     let dir_line = format!("--in\n{}\n", dir.display());
     assert!(
@@ -3002,8 +3321,25 @@ fn hermes_driver_runs_each_session_in_its_own_home_and_kills_the_daemon() {
     std::fs::write(a.join("installs/.leases/l"), "").unwrap();
     // a second session in the same directory (a task after its setup task) gets a new home
     std::fs::write(home.join("left.txt"), "").unwrap();
+    // a gateway.pid naming a process of another home (a stale pid, reused) kills nothing
+    let mut other = std::process::Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .unwrap();
+    let mut stale = env.to_vec();
+    stale.push(("STALE_PID", other.id().to_string().into()));
     hermes
-        .start(&dir, "hi", None, "low", &sessions, &env)
+        .start(&dir, "hi", None, "low", &sessions, &stale)
+        .unwrap();
+    assert!(
+        other.try_wait().unwrap().is_none(),
+        "an unrelated process was killed"
+    );
+    other.kill().unwrap();
+    let daemon = std::fs::read_to_string(root.join("daemon")).unwrap();
+    std::process::Command::new("kill")
+        .args(["-KILL", daemon.trim()])
+        .status()
         .unwrap();
     assert!(home.join("config.yaml").is_file() && !home.join("left.txt").exists());
     std::fs::write(a.join("installs/e/g"), "pip").unwrap();
@@ -3017,9 +3353,10 @@ fn hermes_driver_runs_each_session_in_its_own_home_and_kills_the_daemon() {
     );
 }
 
-/// A daemon a session started elsewhere is found by the run directory its environment names.
+/// A daemon a session started elsewhere is found by the `HERMES_HOME` under the run directory its
+/// environment names; a process that merely visited the run directory (`OLDPWD`) is left alone.
 #[test]
-fn kill_leftovers_kills_a_process_whose_environment_names_the_run_directory() {
+fn kill_leftovers_kills_a_process_whose_hermes_home_is_the_run_directory() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path().join("run");
     std::fs::create_dir_all(&root).unwrap();
@@ -3029,10 +3366,22 @@ fn kill_leftovers_kills_a_process_whose_environment_names_the_run_directory() {
         .env("HERMES_HOME", root.join("h"))
         .spawn()
         .unwrap();
+    let mut editor = std::process::Command::new("sleep")
+        .arg("300")
+        .current_dir(tmp.path())
+        .env("OLDPWD", root.join("repo"))
+        .env("PWD", &root)
+        .spawn()
+        .unwrap();
     let left = kill_leftovers(&root).unwrap().unwrap();
     assert_eq!(left.killed, 1);
     assert!(left.survived.is_empty());
     assert!(!daemon.wait().unwrap().success());
+    assert!(
+        editor.try_wait().unwrap().is_none(),
+        "the editor was killed"
+    );
+    editor.kill().unwrap();
 }
 
 /// `--max-cost` needs a cost figure, and Hermes's `--model` names its provider.

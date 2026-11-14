@@ -2,9 +2,11 @@
 # proposes one unit, `cli` (the only manifest root), and leaves `api/` and
 # `client/` unowned. `stewards eval` copies this file over
 # `.stewards/units.toml` after `stewards init` and before the adoption session.
-# Each unit's tests sit inside its directory. The root `.gitignore` and
-# `AGENTS.md` stay unowned (`unowned` in evals/suites/fixture.toml); the test
-# files adoption may add are its `tests`.
+# Each unit's tests sit inside its directory, and each unit's test command is
+# set on its test card from `[source.test_commands]` in
+# evals/suites/fixture.toml. The root `.gitignore` and `AGENTS.md` stay unowned
+# (`unowned` in evals/suites/fixture.toml); the test files adoption may add are
+# its `tests`.
 
 [[unit]]
 name = "api"

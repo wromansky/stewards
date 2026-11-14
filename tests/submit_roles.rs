@@ -38,7 +38,7 @@ fn job(dir: &Path, role: &str) {
 }
 
 fn submit(dir: &Path, role: &str, answer: &Value) -> (i32, Value) {
-    let file = format!(".stewards/briefs/{}.answer.json", stem(role));
+    let file = common::answer(dir, &stem(role));
     fs::write(dir.join(&file), answer.to_string()).unwrap();
     let mut args = vec!["submit"];
     if role != "architect" {
@@ -53,8 +53,10 @@ fn submit_ok(dir: &Path, role: &str, answer: &Value) -> Value {
     job(dir, role);
     let (code, v) = submit(dir, role, answer);
     assert_eq!(code, 0, "{v}");
-    let brief = dir.join(format!(".stewards/briefs/{}.md", stem(role)));
-    assert!(!brief.exists(), "the {role} brief is retired");
+    assert!(
+        common::job_files(dir, &stem(role), ".md").is_empty(),
+        "the {role} brief is retired"
+    );
     v
 }
 
@@ -74,10 +76,7 @@ fn submit_rejected(dir: &Path, role: &str, answer: &Value, code: &str, field: &s
         .collect();
     assert!(fields.contains(&field), "{v}");
     assert_eq!(fs::read(dir.join(file)).unwrap(), before);
-    assert!(
-        dir.join(format!(".stewards/briefs/{}.md", stem(role)))
-            .is_file()
-    );
+    assert!(dir.join(common::brief(dir, &stem(role))).is_file());
 }
 
 fn card(dir: &Path) -> UnitCard {
@@ -293,6 +292,44 @@ fn tester_repro_outside_the_allowlist_is_command_not_allowed() {
     }
     let a = tester(json!([]), json!([bug("b", "pytest tests/x", "e")]));
     submit_ok(d, "tester", &a);
+}
+
+#[test]
+fn a_units_own_test_command_is_allowed_for_its_jobs_and_no_other_units() {
+    let dir = fixture("single");
+    let d = dir.path();
+    // no repo-wide command, as `init` leaves a repo whose root has no toolchain
+    edit(&d.join(REPO_TOML), "test = [\"pytest\"]", "test = []");
+    edit(
+        &d.join(TESTS),
+        "test_command = \"pytest tests/api\"",
+        "test_command = \"python3 -m unittest discover -s tests/api\"",
+    );
+    edit(
+        &d.join(".stewards/units/store.test.toml"),
+        "test_command = \"pytest tests/store\"",
+        "test_command = \"node --test tests/store\"",
+    );
+    let other = tester(json!([]), json!([bug("b", "node --test tests/store", "e")]));
+    submit_rejected(
+        d,
+        "tester",
+        &other,
+        "command_not_allowed",
+        "bugs[0].repro",
+        CARD,
+    );
+    let own = "python3 -m unittest discover -s tests/api -k count";
+    let a = tester(
+        json!([scenario("count-ok", "create-item", Some(own))]),
+        json!([bug("b", own, "e")]),
+    );
+    submit_ok(d, "tester", &a);
+    // a submit never changes the command it allowed
+    assert_eq!(
+        test_card(d).test_command.as_deref(),
+        Some("python3 -m unittest discover -s tests/api")
+    );
 }
 
 #[test]
@@ -513,7 +550,7 @@ fn architect_on_an_inline_flow_array_is_invalid_toml_and_writes_nothing() {
         "{message}"
     );
     assert_eq!(fs::read(d.join(REPO_TOML)).unwrap(), before);
-    assert!(d.join(".stewards/briefs/architect.md").is_file());
+    assert!(d.join(common::brief(d, "architect")).is_file());
 }
 
 #[test]
@@ -609,8 +646,9 @@ fn each_roles_accepted_submit_writes_what_it_printed_to_its_result_file() {
     for (role, answer) in answers {
         let mut printed = submit_ok(d, role, &answer);
         printed.as_object_mut().unwrap().remove("stewards");
-        let result = d.join(format!(".stewards/briefs/{}.result.json", stem(role)));
-        let written: Value = serde_json::from_slice(&fs::read(result).unwrap()).unwrap();
+        let result = common::job_files(d, &stem(role), ".result.json");
+        let written: Value =
+            serde_json::from_slice(&fs::read(d.join(&result[0])).unwrap()).unwrap();
         assert_eq!(written, printed, "{role}");
     }
 }
@@ -646,10 +684,7 @@ fn shell_rejected(dir: &Path, role: &str, answer: &Value, field: &str, file: &st
         assert_eq!(v["error"]["code"], "command_not_allowed", "{v}");
     }
     assert_eq!(fs::read(dir.join(file)).unwrap(), before);
-    assert!(
-        dir.join(format!(".stewards/briefs/{}.md", stem(role)))
-            .is_file()
-    );
+    assert!(dir.join(common::brief(dir, &stem(role))).is_file());
 }
 
 #[test]
@@ -703,7 +738,7 @@ fn tester_command_with_test_id_characters_is_accepted() {
 /// `before` was recorded, as a parallel submit would.
 fn documenter_after(d: &Path, between: impl FnOnce(&Path)) -> anyhow::Result<()> {
     job(d, "documenter");
-    let header = read_header(&d.join(".stewards/briefs/api-documenter.md")).unwrap();
+    let header = read_header(&d.join(common::brief(d, "api-documenter"))).unwrap();
     let files = [CARD, "docs/units/api.md", "docs/units/README.md"].map(String::from);
     let before = record(d, &files).unwrap();
     between(d);
@@ -973,7 +1008,8 @@ fn documenter_writes_only_its_units_page_and_the_index() {
     let dir = fixture("single");
     let d = dir.path();
     job(d, "documenter");
-    let answer = ".stewards/briefs/api-documenter.answer.json";
+    let brief = common::brief(d, "api-documenter");
+    let answer = &common::answer(d, "api-documenter");
     fs::write(d.join(answer), documenter("Serves items.").to_string()).unwrap();
     // commit the brief and answer so the status shows only what submit writes
     common::git(d, &["add", "-A"]);
@@ -998,12 +1034,12 @@ fn documenter_writes_only_its_units_page_and_the_index() {
     assert_eq!(
         lines,
         [
-            " D .stewards/briefs/api-documenter.answer.json",
-            " D .stewards/briefs/api-documenter.md",
-            " M .stewards/units/api.toml",
-            "?? .stewards/briefs/api-documenter.result.json",
-            "?? docs/units/README.md",
-            "?? docs/units/api.md",
+            format!(" D {answer}"),
+            format!(" D {brief}"),
+            " M .stewards/units/api.toml".into(),
+            format!("?? {}", brief.replace(".md", ".result.json")),
+            "?? docs/units/README.md".into(),
+            "?? docs/units/api.md".into(),
         ],
         "{status}"
     );

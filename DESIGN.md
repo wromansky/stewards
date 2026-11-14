@@ -188,15 +188,33 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   The per-change reviewer writes no tests: it runs the unit's test command
   and may upsert scenarios.
 - **Job files:** one open job per (unit, role), or per task for developers,
-  and one review per repo. The brief is `.stewards/briefs/<unit>-<role>.md`
-  (`architect.md` for the architect, `review.md` for the reviewer,
-  `<unit>-developer-<n>.md` per task),
-  the answer `<same>.answer.json`, what its accepted submit printed
-  `<same>.result.json`; a new job overwrites the brief and answer, so
-  nothing accumulates. The brief's first line is a tool-owned header recording the
+  and one review per repo. The brief is
+  `.stewards/briefs/<unit>-<role>-<snap>.md` (`architect-<snap>.md` for
+  the architect, `review-<snap>.md` for the reviewer,
+  `<unit>-developer-<n>-<snap>.md` per task), `<snap>` the first 8 hex
+  characters of the snapshot it was packed from; the answer is
+  `<same>.answer.json`, what its accepted submit printed
+  `<same>.result.json`. One function (`brief::rel_path`) builds these
+  names and everything that reads one back (`submit`, `review`, the
+  eval's handoff detection) checks it against that function. A handoff
+  is therefore bound to its snapshot: one kept from an older round, or
+  started before `review` wrote the brief, names a file that does not
+  exist (twice a subagent was started with the fixed sentence before the
+  brief was written, or in the same step as an edit). Writing a brief
+  removes the job's stale answer and the briefs and answers of the same
+  job at any other snapshot, through `Repo::remove`, and only files whose
+  names `rel_path` gives for that job; result files are left for `review`
+  to report. So nothing accumulates. The brief's first line is a
+  tool-owned header recording the
   mode, the snapshot it was packed from, the pack's bytes and anchor count,
   the bug title for a validator job, and the units a reviewer job covers;
-  `submit` reads it. A successful
+  `submit` reads it, and refuses (`no_brief`) a header whose snapshot is
+  not the one in the brief's name. `submit` finds the brief by the answer
+  file's name when it is the job's `<same>.answer.json` (a developer's
+  must be, as it carries the task number), so an answer to an older
+  snapshot's brief finds none; an answer named otherwise takes the job's
+  one brief on disk, and with more than one it is `no_brief`, never a
+  guess. A successful
   `submit` removes the answer with the brief when `--file` is that
   `.answer.json` path; a failed one leaves both for a retry.
 - **Stamp:** only an approval stamps: a maintainer review `submit` with
@@ -688,7 +706,7 @@ that has a maintainer (stale), tester, or documenter job above: its reasons
 are each of those jobs' reasons led by the unit's name (`api: stale`, `api:
 interface changed: src/api.rs::create_item`), its changed files and debt
 are theirs, and units past the review budget add one reason, `next round,
-over the review budget: <units>`. Its brief is `.stewards/briefs/review.md`
+over the review budget: <units>`. Its brief is `.stewards/briefs/review-<snap>.md`
 and its command `stewards brief --role reviewer`. Each never-stamped unit
 keeps its maintainer job (a first review). Nothing else: no architect,
 tester, documenter, or validator job. A validator job for a bug the
@@ -784,10 +802,28 @@ route; group per unit.
    sibling regardless.
 4. Caps: more than 8 units in a root → keep the 8 largest, fold the rest
    into `<root>-misc`; fewer than 2 → the root is one unit.
-5. Write `units.toml` with `purpose = ""` and `repo.toml` with detected
-   `commands.test` and `test_roots`; append `.stewards/briefs/` and
+5. Write `units.toml` with `purpose = ""` and `repo.toml` with
+   `test_roots` and detected `commands.test`; append `.stewards/briefs/` and
    `.stewards/telemetry/` to `.gitignore`; list unrouted tracked files.
    Thresholds are constants; `units.toml` is the override.
+6. Test commands, each run from the repo root: a directory's are, in this
+   order, a Cargo manifest (`cargo test`, in a subdirectory `cargo test
+   --manifest-path <dir>/Cargo.toml`), a Python manifest (`pytest [<dir>]`)
+   or else `test*.py` files in it (`python3 -m unittest`, `python3 -m
+   unittest discover -s <dir>`), a `package.json` whose `test` script is
+   not npm's placeholder (`npm test [--prefix <dir>]`), a Makefile with a
+   `test` target (`make [-C <dir>] test`), then `go.mod`, `pom.xml`,
+   `build.gradle*`, `*.csproj`/`*.sln` (each with its own directory flag)
+   and, at the root only, a Gemfile. `commands.test` is the repo root's
+   own, every one found there, and nothing else. Each unit gets the first
+   command each of its own `<dir>/**` paths implies (never a parent's or
+   another unit's), on its test card's `test_command`, unless the root's
+   commands cover that toolchain; paths implying different commands give
+   none, and `init` says so for that unit. A unit with none is shown no
+   command as its own. (On a mixed-language fixture, one repo-wide `cargo
+   test` from a subdirectory's manifest was shown to a Python unit, a
+   reviewer flagged the command it could not run, and the loop could not
+   end.)
 
 ## Trust and safety
 
@@ -811,9 +847,12 @@ route; group per unit.
   only the characters that could start markup, a link or an autolink in card
   text, and refuse a `docs_path` at or outside the repo root.
 - **Execution.** Only commands whose argv starts with the whole argv of a
-  `commands.*` entry from `repo.toml` ever run (`pytest` does not allow
-  `pytest-x`): repro, plan step checks, scenario commands, test and
-  lint. argv split, no shell, from the repo root, inheriting env, timeout
+  `commands.*` entry from `repo.toml`, or for one unit's own jobs (its
+  scenarios, bug repros, task checks) of that unit's test card
+  `test_command`, ever run (`pytest` does not allow `pytest-x`): repro,
+  plan step checks, scenario commands, test and lint. No answer has a
+  field that sets `test_command`, so only `init` or a person writes it, as
+  for `repo.toml`. argv split, no shell, from the repo root, inheriting env, timeout
   from `commands.timeout_seconds`. Nothing from an answer file, card, issue,
   or PR runs otherwise.
 - **Writes.** The tool writes only `.stewards/**`, `docs/units/**`, the
@@ -872,7 +911,13 @@ route; group per unit.
   `--human` prints `error:` and `fix:` lines.
 - A failed `submit` returns `errors[] {field, problem, example}`; the brief
   says fix and rerun, and after the third failure reply to the caller with
-  the errors verbatim.
+  the errors verbatim. A rejection for length alone (`answer_too_long`)
+  does not count toward the three: each of its entries says how far over
+  the cap the field is and gives a target, 80% of the cap (`302
+  characters; the cap is 300; cut to 240 or fewer`, the example `at most
+  240 characters`), and the brief says to cut to that target, not to the
+  cap. (A reviewer once spent all three tries on one field at 308, 303,
+  and 302 characters against a 300 cap, and the review was lost.)
 - Git is required by every command.
 
 Error codes (stable; additions are minor versions, meanings never change):
@@ -887,8 +932,8 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `unknown_role` | role not in the seven | one of developer, maintainer, tester, documenter, validator, architect, reviewer |
 | `answer_parse_failed` | `submit` can't parse the file | the field errors listed; rerun submit |
 | `answer_dead_anchor` | a patch names an anchor that doesn't resolve | correct the anchor or drop it |
-| `answer_too_long` | field over cap | shorten `<field>` to ≤ N chars |
-| `command_not_allowed` | command outside the allowlist | prefix with one of `commands.test` or add it to `repo.toml` |
+| `answer_too_long` | field over cap | cut `<field>` to the target the error states (80% of its cap); this rejection does not count toward the three tries |
+| `command_not_allowed` | command outside the allowlist | prefix with one of `commands.test` or the unit's test command, or add it to `repo.toml` |
 | `command_timeout` | allowlisted command exceeded its timeout | raise `timeout_seconds` or fix the test |
 | `workspace_repo_missing` | `stewards.toml` lists a path that doesn't exist | fix `repos` in `<path>` |
 | `baml_runtime_unavailable` | `--direct` and the native lib is not found | set `BAML_LIBRARY_PATH` to the library, or set `STEWARDS_BAML_DOWNLOAD=1` to let stewards download it |
@@ -907,7 +952,7 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `card_changed` | a file `submit` was about to write changed since it was loaded (another submit finished first) | run the same submit again |
 | `no_tasks` | `brief --role developer` with no usable task list for the unit | brief the maintainer again with the change as `--task` |
 | `harness_missing` | `eval` and the harness binary (`pi`, `claude`) is not on PATH, or pi-subagents is not installed in the Pi agent directory | install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`), or Claude Code (`npm install -g @anthropic-ai/claude-code`) |
-| `eval_setup_incomplete` | `eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted | read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0 |
+| `eval_setup_incomplete` | `eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted; or a `repo` suite at `HEAD` has uncommitted changes under `src/`, `baml_src/`, or `.stewards/`, or an `[[absent]]` probe's text is already in its tree | read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0; commit the source and rebuild, or pin a commit before the task's change |
 | `not_implemented` | a command or flag not built yet | use a release that has it |
 | `internal` | any other failure | report a bug |
 
@@ -962,8 +1007,11 @@ Terse second person, no persona. Shared frame for every brief, in order:
    your answer to `<path>`. Run `stewards submit <unit> --role <role> --file
    <path>`. If it reports an error, fix the file and run it again; after the
    third failure reply with the errors verbatim. A field over its stated cap
-   is rejected: stay under it, do not aim at the limit. Reply to your caller with
-   exactly what submit prints, nothing else."
+   is rejected: stay under it, do not aim at the limit. A rejection for
+   length alone (`answer_too_long`) does not count toward the three: cut
+   each field it lists to the target the error states, not to the cap, and
+   run it again. Reply to your caller with exactly what submit prints,
+   nothing else."
 7. Repeat of the role line.
 
 Maintainer, review:
@@ -996,8 +1044,8 @@ Tester:
 > prove the contract. For this change: run the scenarios the diff affects,
 > then the unit's test command once; write the missing scenario for any
 > interface entry the diff touched; record results. A failing scenario is a
-> bug: give a title, the exact repro command (it must start with one of the
-> repo's test commands), and the evidence. You may write tests under the
+> bug: give a title, the exact repro command (it must start with the unit's test
+> command or one of the repo's), and the evidence. You may write tests under the
 > repo's test roots. You never edit source.
 
 Documenter:
@@ -1054,7 +1102,7 @@ Reviewer:
 > scenarios only if the contract changed. Write the doc when the unit has
 > none; rewrite it only if what a section says is no longer true. Report a
 > defect you will not fix as a bug. A bug's `repro` and a scenario's
-> `command` must start with one of the repo's test commands. Never edit
+> `command` must start with the unit's test command or one of the repo's. Never edit
 > source. Open more only by anchor. One answer, one `submit`.
 
 The reviewer's brief adds one line after the role text naming the units
@@ -1077,7 +1125,7 @@ check {command, pass, output} | null, scenario_patch[] | null, bugs[] |
 null, doc | null}`. All carry `pulled_anchors[]` and `notes`.
 
 A reviewer's answer copies the brief's `snapshot`: one that differs is
-`no_brief` (it answers an older `review.md`, which `next` rewrites), and
+`no_brief` (it answers an older review brief, which `next` replaced), and
 the fix is to read the brief again. `submit` also refuses (`no_brief`) a
 review brief whose header lists a unit that is unknown, never stamped, or
 listed twice. The answer names every unit of its brief exactly once and no
@@ -1157,9 +1205,22 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   because one pass on the fixture showed no delegation in `full` and more
   tokens than `bare`: at about 400 lines, reading is too cheap for
   delegation to pay. `self` is the stewards repository itself (about 8,500
-  lines of Rust, nine adopted units with cards and docs) at a pinned
-  `commit` (`bcfccf0`, where `next` lists no jobs), cloned from the
-  checkout holding `evals/` (no network) without its remote. Its `full`
+  lines of Rust, nine adopted units with cards and docs) at its manifest's
+  `commit`, `HEAD`: the commit the checkout holding `evals/` is on when
+  the eval starts, so the source the sessions read is the source the
+  binary was built from (an agent once read a fixed pin's old source,
+  where `review` was a stub taking `--pr`, and concluded `--task` did not
+  exist). The runner refuses to start (`eval_setup_incomplete`) while that
+  checkout has uncommitted changes under `src/`, `baml_src/`, or
+  `.stewards/`, since the binary and the tree could then disagree, and
+  when an edit task's change is already in the tree: the manifest's
+  `[[absent]]` probes name, per task, a literal text the task would add
+  and the file it must not yet occur in (task 1 `Debt {` and `Debt(` in
+  `src/main.rs`, task 3 `owner` in `src/model.rs`). A literal sha in
+  `commit` is still accepted, to rerun a past eval. Results from different
+  commits are therefore not comparable run to run: the resolved sha the
+  summary records is what identifies a run. The tree is cloned from that
+  checkout (no network) without its remote. Its `full`
   arm is that tree with this binary's AGENTS.md block upserted (as `init`
   does) and committed, and no adoption session; the runner checks
   `stewards next --no-brief` exits 0 there before any run (else
@@ -1181,7 +1242,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   and `git cat-file` in `full`, so those join the flagged history commands
   (see Runner). The summary records the commit git resolved. In this
   suite the `stewards` on `full`'s `PATH` is the eval's own binary, not
-  the pinned commit's code: a session that changes stewards itself runs
+  the tree's code: a session that changes stewards itself runs
   the older or newer binary, not its edit. Its manifest's `build` (`cargo
   build --all-targets && cargo clippy --all-targets`, so every arm starts
   with a warm lint cache too) runs once per invocation in the clone with
@@ -1200,7 +1261,8 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   minutes. The work directory is `<tmp>`, so run it with `TMPDIR` on a disk
   with room for a target directory per run (a reflink copy shares blocks
   only on the cache's filesystem), since a small RAM-backed `/tmp` fills.
-  The summary names the suite, the pinned commit, and its resolved hash.
+  The summary names the suite, its `commit` (`HEAD` or a sha), and the
+  full sha it resolved to.
 - **Fixture, zero external deps:** `evals/fixture/` with `api/` (Python
   in-memory items store, `unittest`), `client/` (TypeScript run by Node
   directly with type stripping, Node 22.18 or newer, no `tsc`;
@@ -1303,8 +1365,10 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   steps recorded per run are `status`, `route`, `next`, `review` (a shell
   command, in the main session or any child, whose argv starts with
   `stewards <cmd>`), `handoff` (a subagent launch with a handoff, ``Read
-  `<absolute path of a .md under .stewards/briefs/>` and follow it.``, in
-  one of its argument strings), `handoff_exact` (every such launch gives
+  `<absolute path of a brief under .stewards/briefs/>` and follow it.``, in
+  one of its argument strings, the file named as `brief::rel_path` names a
+  brief, `-<snap>` included, so a name an older stewards wrote does not
+  count), `handoff_exact` (every such launch gives
   each child exactly the handoff as its task, the `task` strings of a
   pi-subagents call or the `prompt` of a Claude Code `Task` call, nothing
   added), `reviewer_submit` (`stewards submit ...
@@ -1411,7 +1475,11 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `evals/full-units.toml` (`api`, `client`, `cli`; `init` proposes only the
   `cli` manifest root on the fixture; the root `.gitignore` and `AGENTS.md`
   stay unowned, anything else unowned stops the eval; the summary says so
-  in plain words), then an adoption session on the same model told to run
+  in plain words), each with its own test command on its test card from
+  `[source.test_commands]` in `evals/suites/fixture.toml` (`python3 -m
+  unittest discover -s api`, `node --test client/`, `cargo test
+  --manifest-path cli/Cargo.toml`; the root has no toolchain, so no
+  `commands.test`), then an adoption session on the same model told to run
   `stewards init --draft`, start one subagent per handoff it prints, then
   run `stewards review --roles` until it exits 0, recorded as a `setup`
   run. The runner then diffs the adopted state
@@ -1851,15 +1919,15 @@ Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
 [Agent] edits api/items.py, api/store.py, api/tests/test_items.py itself  # plannable from the unit page
 > stewards review --task "add a count endpoint to api"
 { task: { text: "add a count endpoint to api", from: "given" }, reported: [],
-  next: { jobs: [ { unit: "", role: reviewer, brief_path: "/work/repo/.stewards/briefs/review.md",
-                    handoff: "Read `/work/repo/.stewards/briefs/review.md` and follow it.",
+  next: { jobs: [ { unit: "", role: reviewer, brief_path: "/work/repo/.stewards/briefs/review-3f9a1c2e.md",
+                    handoff: "Read `/work/repo/.stewards/briefs/review-3f9a1c2e.md` and follow it.",
                     reasons: ["api: stale", "api: interface changed: api/items.py::list_items"] } ], ... },
   then: "Start one subagent per handoff below, giving it exactly that sentence as its whole task; when they have finished, run stewards review again." }   exit 1
-[Agent] starts a subagent with the task "Read `/work/repo/.stewards/briefs/review.md` and follow it."
+[Agent] starts a subagent with the task "Read `/work/repo/.stewards/briefs/review-3f9a1c2e.md` and follow it."
   └ subagent: reads the hunks, runs `python -m unittest` in api, writes the answer,
     runs `stewards submit --role reviewer --file ...`, replies with what it printed
 > stewards review --task "add a count endpoint to api"
-{ reported: [ { file: "review.result.json", role: reviewer, summary: "reviewer: api changes (1 finding; card: +interface count-items; 1 scenario upserted; not stamped)",
+{ reported: [ { file: "review-3f9a1c2e.result.json", role: reviewer, summary: "reviewer: api changes (1 finding; card: +interface count-items; 1 scenario upserted; not stamped)",
                  units: [ { unit: "api", verdict: "changes", stamped: false } ],
                  findings: [ { unit: "api", file: "api/store.py", line: 41,
                                cut: "the hand-rolled loop", replace_with: "len()" } ] } ],

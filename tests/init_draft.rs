@@ -59,6 +59,7 @@ fn jobs(v: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The files in the briefs dir, each brief's `-<snapshot>` cut from its name.
 fn briefs(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir.join(".stewards/briefs"))
         .map(|d| {
@@ -66,6 +67,13 @@ fn briefs(dir: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default();
+    for n in &mut names {
+        if let Some((stem, snap)) = n.strip_suffix(".md").and_then(|s| s.rsplit_once('-'))
+            && snap.len() == 8
+        {
+            *n = format!("{stem}.md");
+        }
+    }
     names.sort();
     names
 }
@@ -73,7 +81,7 @@ fn briefs(dir: &Path) -> Vec<String> {
 /// Writes `answer` to the job's answer path, submits it, and returns submit's JSON.
 fn submit(dir: &Path, unit: Option<&str>, role: &str, answer: &Value) -> Value {
     let stem = unit.map_or(role.to_string(), |u| format!("{u}-{role}"));
-    let file = dir.join(format!(".stewards/briefs/{stem}.answer.json"));
+    let file = dir.join(common::answer(dir, &stem));
     fs::write(&file, answer.to_string()).unwrap();
     let file = file.to_str().unwrap();
     let mut args = vec!["submit"];
@@ -205,13 +213,6 @@ fn draft_on_a_fresh_repo_writes_step_1_and_the_architect_and_first_review_briefs
 #[test]
 fn every_command_that_writes_a_brief_hands_it_off_with_the_same_sentence() {
     let (_tmp, dir) = repo_at("my proj");
-    let brief = dir
-        .canonicalize()
-        .unwrap()
-        .join(".stewards/briefs/a-maintainer.md");
-    // the path byte for byte, its space unquoted
-    let want = format!("Read `{}` and follow it.", brief.display());
-    assert!(want.contains("/my proj/.stewards/briefs/"), "{want}");
     let of = |v: &Value| {
         v["jobs"]
             .as_array()
@@ -223,6 +224,13 @@ fn every_command_that_writes_a_brief_hands_it_off_with_the_same_sentence() {
     };
     let (code, v) = run(&dir, &["init", "--draft"]);
     assert_eq!(code, 0, "{v}");
+    let brief = dir
+        .canonicalize()
+        .unwrap()
+        .join(common::brief(&dir, "a-maintainer"));
+    // the path byte for byte, its space unquoted
+    let want = format!("Read `{}` and follow it.", brief.display());
+    assert!(want.contains("/my proj/.stewards/briefs/"), "{want}");
     assert_eq!(of(&v), want);
     let (_, v) = run(&dir, &["next", "--roles"]);
     assert_eq!(of(&v), want);
@@ -248,8 +256,8 @@ fn draft_first_review_briefs_carry_the_first_review_task_and_name_the_units_file
     let task = "first review: read the unit's files, draft its card, and approve";
     for (i, unit) in [(1, "a"), (2, "b")] {
         assert_eq!(v["jobs"][i]["task"], task, "{v}");
-        let brief =
-            fs::read_to_string(dir.join(format!(".stewards/briefs/{unit}-maintainer.md"))).unwrap();
+        let brief = common::brief(&dir, &format!("{unit}-maintainer"));
+        let brief = fs::read_to_string(dir.join(brief)).unwrap();
         assert!(brief.contains(&format!("\nTask: {task}\n")), "{brief}");
         let data = data_section(&brief);
         assert!(
@@ -271,7 +279,7 @@ fn draft_first_review_briefs_carry_the_first_review_task_and_name_the_units_file
 fn an_architect_answer_built_only_from_its_brief_sets_the_purposes() {
     let (_tmp, dir) = repo();
     assert_eq!(run(&dir, &["init", "--draft"]).0, 0);
-    let brief = fs::read_to_string(dir.join(".stewards/briefs/architect.md")).unwrap();
+    let brief = fs::read_to_string(dir.join(common::brief(&dir, "architect"))).unwrap();
     let units = data_section(&brief).split("\n## Units\n\n").nth(1).unwrap();
     let mut lines = units.lines();
     assert_eq!(

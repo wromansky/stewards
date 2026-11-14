@@ -23,7 +23,7 @@ pub mod pi;
 pub mod suite;
 
 pub use grade::{Summary, TaskGrade, Verdict};
-pub use suite::{Source, Suite, SuiteTask};
+pub use suite::{Absent, Source, Suite, SuiteTask};
 
 /// The tool's own files, which adoption may add, change, or delete.
 const ADOPTION_OWN: [&str; 4] = [".stewards/", "docs/units/", "AGENTS.md", ".gitignore"];
@@ -243,15 +243,15 @@ pub enum Action {
     Dispatch { tasks: Vec<String> },
 }
 
-/// Whether `text` is exactly a handoff (`brief::handoff`) of a brief under `.stewards/briefs/`.
+/// Whether `text` is exactly a handoff (`brief::handoff`) of a brief under `.stewards/briefs/`,
+/// named as `brief::rel_path` names one (`review-<snap>.md`, `<unit>-<role>-<snap>.md`, ...).
 pub fn is_handoff(text: &str) -> bool {
     text.strip_prefix("Read `")
         .and_then(|r| r.strip_suffix("` and follow it."))
-        .is_some_and(|p| {
-            p.starts_with('/')
-                && !p.contains('`')
-                && p.contains("/.stewards/briefs/")
-                && p.ends_with(".md")
+        .filter(|p| p.starts_with('/'))
+        .and_then(|p| p.rsplit_once("/.stewards/briefs/"))
+        .is_some_and(|(dir, name)| {
+            !dir.contains('`') && name.ends_with(".md") && crate::brief::job_of(name).is_some()
         })
 }
 
@@ -1061,8 +1061,10 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
             units,
             unowned,
             tests,
-        } => Some((dir, units, unowned, tests)),
+            test_commands,
+        } => Some((dir, units, unowned, tests, test_commands)),
         Source::Repo { commit, build } => {
+            let commit = &pinned_commit(plan, commit)?;
             notes.build_s = Some(clone_and_build(plan, commit, build, &base, &cache)?);
             notes.resolved_commit = Some(git(&base, &["rev-parse", "HEAD"])?.trim().to_string());
             None
@@ -1088,11 +1090,17 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
                 check_setup_dir(d)?;
                 d.clone()
             }
-            (Some((source, units, unowned, _)), None) => {
+            (Some((source, units, unowned, _, test_commands)), None) => {
                 let dir = plan.work.join("0/repo");
                 arms_sh(plan, "full", &dir, &path_on, source)?;
                 add_context_file(driver, &dir)?;
-                notes.units = Some(set_full_units(&plan.evals, &dir, units, unowned)?);
+                notes.units = Some(set_full_units(
+                    &plan.evals,
+                    &dir,
+                    units,
+                    unowned,
+                    test_commands,
+                )?);
                 r.session(SessionSpec {
                     label: "adopt".into(),
                     task: None,
@@ -1113,7 +1121,7 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
             )?;
             Err(err)
         };
-        if let Some((_, _, unowned, tests)) = fixture {
+        if let Some((_, _, unowned, tests, _)) = fixture {
             if plan.setup_dir.is_none() {
                 git(&dir, &["add", "-A"])?;
             }
@@ -1285,9 +1293,16 @@ fn unowned_files(dir: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Replaces the units `stewards init` proposed in `dir` with `evals/<units>`, and returns the
-/// summary's plain-words note on what init proposed on its own.
-fn set_full_units(evals: &Path, dir: &Path, units: &Path, unowned: &[String]) -> Result<String> {
+/// Replaces the units `stewards init` proposed in `dir` with `evals/<units>`, gives each unit in
+/// `tests` that test command on its test card, and returns the summary's plain-words note on what
+/// init proposed on its own.
+fn set_full_units(
+    evals: &Path,
+    dir: &Path,
+    units: &Path,
+    unowned: &[String],
+    tests: &BTreeMap<String, String>,
+) -> Result<String> {
     let proposed: Vec<String> = crate::model::load_repo(dir)?
         .units
         .into_iter()
@@ -1296,6 +1311,17 @@ fn set_full_units(evals: &Path, dir: &Path, units: &Path, unowned: &[String]) ->
     let proposed_unowned = unowned_files(dir)?.len();
     std::fs::copy(evals.join(units), dir.join(".stewards/units.toml"))
         .with_context(|| format!("copying evals/{}", units.display()))?;
+    for (unit, cmd) in tests {
+        let card = crate::model::TestCard {
+            unit: unit.clone(),
+            primary_paths: vec![],
+            test_command: Some(cmd.clone()),
+            scenarios: vec![],
+        };
+        let path = dir.join(format!(".stewards/units/{unit}.test.toml"));
+        std::fs::write(&path, toml::to_string(&card)?)
+            .with_context(|| path.display().to_string())?;
+    }
     let units = units.display();
     Ok(format!(
         "Units were set by hand for this eval from evals/{units}, so these numbers do not measure `stewards init`'s unit proposal: on its own it proposed {} and left {proposed_unowned} tracked file(s) unowned. Unowned by design: {}.",
@@ -1660,6 +1686,57 @@ fn clone_and_build(
     std::fs::rename(base.join("target"), cache)
         .with_context(|| format!("`{}` left no target/", build.join(" ")))?;
     Ok(seconds)
+}
+
+/// The commit a `repo` suite's arms are made from, checked at the checkout holding `evals/`: for
+/// `HEAD`, that checkout's commit, refused while it has uncommitted changes under `src/`,
+/// `baml_src/` or `.stewards/` (the binary and the tree could then disagree); a literal commit
+/// as given. Either way, a tree where an `absent` probe's text occurs (that task is already
+/// done) is refused. All refusals are `eval_setup_incomplete`.
+fn pinned_commit(plan: &Plan, commit: &str) -> Result<String> {
+    let root = plan.evals.parent().context("evals/ has no parent")?;
+    let commit = if commit == "HEAD" {
+        let dirty = git(
+            root,
+            &[
+                "status",
+                "--porcelain",
+                "--",
+                "src",
+                "baml_src",
+                ".stewards",
+            ],
+        )?;
+        if !dirty.trim().is_empty() {
+            return Err(setup_error(
+                format!(
+                    "the checkout at {} has uncommitted changes under src/, baml_src/ or .stewards/, so the tree the sessions get may not be the source the binary was built from: {}",
+                    root.display(),
+                    dirty.trim().replace('\n', "; ")
+                ),
+                "commit or stash them, rebuild stewards, and run the eval again",
+            ));
+        }
+        git(root, &["rev-parse", "--verify", "HEAD^{commit}"])?
+            .trim()
+            .to_string()
+    } else {
+        commit.to_string()
+    };
+    for a in &plan.suite.absent {
+        // a file the commit lacks holds no text
+        let text = git(root, &["show", &format!("{commit}:{}", a.file)]).unwrap_or_default();
+        if text.contains(&a.text) {
+            return Err(setup_error(
+                format!(
+                    "task {}'s change is already in {commit}: {} contains `{}`",
+                    a.task, a.file, a.text
+                ),
+                "pin a commit before the change in the suite's `commit`, or update the task and its `absent` probe",
+            ));
+        }
+    }
+    Ok(commit)
 }
 
 /// The one commit message of every `repo` suite arm's history.

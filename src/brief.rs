@@ -60,18 +60,134 @@ pub fn read_header(path: &Path) -> Result<Header> {
         })
 }
 
-/// The repo-relative brief of the job: `.stewards/briefs/<unit>-<role>.md`, with `-<n>` for
-/// developer task `n`, or `architect.md`, or `review.md` for the reviewer.
-pub fn rel_path(unit: Option<&str>, role: Role, n: Option<usize>) -> String {
+/// Hex characters of the snapshot in a job file's name.
+const SNAP_LEN: usize = 8;
+
+/// The repo-relative brief of the job packed at `snapshot`: `.stewards/briefs/<unit>-<role>-<snap>.md`,
+/// with `-<n>` before `<snap>` for developer task `n`, or `architect-<snap>.md`, or
+/// `review-<snap>.md` for the reviewer; `<snap>` is the snapshot's first 8 hex characters, so a
+/// handoff for an older snapshot names a file that no longer exists.
+pub fn rel_path(unit: Option<&str>, role: Role, n: Option<usize>, snapshot: &str) -> String {
+    let snap: String = snapshot.chars().take(SNAP_LEN).collect();
     if role == Role::Reviewer {
-        return ".stewards/briefs/review.md".into();
+        return format!(".stewards/briefs/review-{snap}.md");
     }
     let role = role.as_str();
     match (unit, n) {
-        (Some(u), Some(n)) => format!(".stewards/briefs/{u}-{role}-{n}.md"),
-        (Some(u), None) => format!(".stewards/briefs/{u}-{role}.md"),
-        (None, _) => format!(".stewards/briefs/{role}.md"),
+        (Some(u), Some(n)) => format!(".stewards/briefs/{u}-{role}-{n}-{snap}.md"),
+        (Some(u), None) => format!(".stewards/briefs/{u}-{role}-{snap}.md"),
+        (None, _) => format!(".stewards/briefs/{role}-{snap}.md"),
     }
+}
+
+/// The job a file in `.stewards/briefs/` belongs to, read back from its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobName {
+    pub unit: Option<String>,
+    pub role: Role,
+    pub n: Option<usize>,
+    /// The snapshot's first 8 hex characters.
+    pub snap: String,
+}
+
+impl JobName {
+    fn is(&self, unit: Option<&str>, role: Role, n: Option<usize>) -> bool {
+        self.unit.as_deref() == unit && self.role == role && self.n == n
+    }
+}
+
+/// The job of the brief, answer, or result file `name`, only when `rel_path` builds exactly that
+/// name for it.
+pub fn job_of(name: &str) -> Option<JobName> {
+    let stem = [".md", ".answer.json", ".result.json"]
+        .iter()
+        .find_map(|s| name.strip_suffix(s))?;
+    let (rest, snap) = stem.rsplit_once('-')?;
+    let (rest, n) = match rest.rsplit_once('-') {
+        Some((r, d)) if d.parse::<usize>().is_ok() => (r, d.parse().ok()),
+        _ => (rest, None),
+    };
+    let (unit, role) = match rest.rsplit_once('-') {
+        Some((u, r)) => (Some(u), r),
+        None => (None, rest),
+    };
+    let role = if role == "review" {
+        Role::Reviewer
+    } else {
+        role.parse().ok()?
+    };
+    let snap_ok =
+        snap.len() == SNAP_LEN && snap.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    let rebuilt = rel_path(unit, role, n, snap);
+    (snap_ok && rebuilt == format!(".stewards/briefs/{stem}.md")).then(|| JobName {
+        unit: unit.map(String::from),
+        role,
+        n,
+        snap: snap.into(),
+    })
+}
+
+/// The names in `root`'s `.stewards/briefs/` that `job_of` reads, sorted, with their jobs.
+fn job_files(root: &Path) -> Result<Vec<(String, JobName)>> {
+    let dir = match std::fs::read_dir(root.join(".stewards/briefs")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        r => r?,
+    };
+    let mut files: Vec<(String, JobName)> = dir
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter_map(|name| job_of(&name).map(|j| (name, j)))
+        .collect();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(files)
+}
+
+/// The job's brief on disk: the one `rel_path` names for it at any snapshot; `no_brief` with none,
+/// or with more than one, since nothing says which the answer is for.
+pub fn find(root: &Path, unit: Option<&str>, role: Role, n: Option<usize>) -> Result<String> {
+    let mut briefs: Vec<String> = job_files(root)?
+        .into_iter()
+        .filter(|(name, j)| name.ends_with(".md") && j.is(unit, role, n))
+        .map(|(name, _)| format!(".stewards/briefs/{name}"))
+        .collect();
+    if briefs.len() == 1 {
+        return Ok(briefs.remove(0));
+    }
+    let job = match unit {
+        Some(u) => format!("{u} {}", role.as_str()),
+        None => role.as_str().to_string(),
+    };
+    bail!(CliError::new(
+        "no_brief",
+        if briefs.is_empty() {
+            format!("no brief for {job} in .stewards/briefs")
+        } else {
+            format!(
+                "{} briefs for {job} and the answer file's name does not say which: {}",
+                briefs.len(),
+                briefs.join(", ")
+            )
+        },
+        "write the brief again with `stewards review` or `stewards brief`, and answer to the path it names",
+    ))
+}
+
+/// The briefs and answers of the job (`unit`, `role`, `n`) at any snapshot but `snapshot`'s:
+/// what a new brief for the job supersedes. Result files are left for `review` to report.
+pub(crate) fn superseded(
+    root: &Path,
+    unit: Option<&str>,
+    role: Role,
+    n: Option<usize>,
+    snapshot: &str,
+) -> Result<Vec<String>> {
+    let snap: String = snapshot.chars().take(SNAP_LEN).collect();
+    Ok(job_files(root)?
+        .into_iter()
+        .filter(|(name, j)| {
+            !name.ends_with(".result.json") && j.is(unit, role, n) && j.snap != snap
+        })
+        .map(|(name, _)| format!(".stewards/briefs/{name}"))
+        .collect())
 }
 
 /// The answer file of the brief `brief_rel`: its `.md` replaced by `.answer.json`.
@@ -213,7 +329,12 @@ fn render(
             .collect();
         out += &format!("\nMemory:\n<<<DATA\n{}\nDATA>>>\n", data(&lines.join("\n")));
     }
-    let answer = root.join(answer_rel(&rel_path(unit, header.role, header.n)));
+    let answer = root.join(answer_rel(&rel_path(
+        unit,
+        header.role,
+        header.n,
+        &header.snapshot,
+    )));
     let file = shell_quote(&answer);
     let root = shell_quote(root);
     let submit = match unit {
@@ -232,6 +353,8 @@ fn render(
         "\n{schema}\n\n{snapshot}Write your answer to {answer}. Run {submit}. If it reports an error, \
          fix the file and run it again; after the third failure reply with the errors verbatim. \
          A field over its stated cap is rejected: stay under it, do not aim at the limit. \
+         A rejection for length alone (`answer_too_long`) does not count toward the three: cut \
+         each field it lists to the target the error states, not to the cap, and run it again. \
          Reply to your caller with exactly what submit prints, nothing else.\n\n{role_line}\n",
         answer = code(&answer.display().to_string()),
         submit = code(&submit),
@@ -362,17 +485,27 @@ fn frame(
     ))
 }
 
-/// Writes the brief `text` built for the job to its path, removing a stale answer; returns the
-/// absolute path.
-pub fn write_text(repo: &Repo, unit: Option<&str>, role: Role, text: &str) -> Result<PathBuf> {
-    let rel = rel_path(unit, role, None);
+/// Writes the brief `text` built for the job (developer task `n`) at `snapshot` to its path,
+/// removing a stale answer and the briefs and answers it supersedes; returns the absolute path.
+pub fn write_text(
+    repo: &Repo,
+    unit: Option<&str>,
+    role: Role,
+    n: Option<usize>,
+    snapshot: &str,
+    text: &str,
+) -> Result<PathBuf> {
+    let rel = rel_path(unit, role, n, snapshot);
     repo.write(&rel, text.as_bytes())?;
     repo.remove(&answer_rel(&rel))?;
+    for old in superseded(&repo.root, unit, role, n, snapshot)? {
+        repo.remove(&old)?;
+    }
     Ok(repo.root.join(rel))
 }
 
-/// Writes `.stewards/briefs/<unit>-<role>.md` (`architect.md`), removing a stale answer.
-/// Returns the absolute path and the brief's byte length.
+/// Writes `.stewards/briefs/<unit>-<role>-<snap>.md` (`architect-<snap>.md`), removing a stale
+/// answer and the job's older briefs. Returns the absolute path and the brief's byte length.
 pub fn write(
     repo: &Repo,
     unit: Option<&str>,
@@ -382,7 +515,10 @@ pub fn write(
     snapshot: &str,
 ) -> Result<(PathBuf, usize)> {
     let text = build(repo, unit, role, mode, task, snapshot)?;
-    Ok((write_text(repo, unit, role, &text)?, text.len()))
+    Ok((
+        write_text(repo, unit, role, None, snapshot, &text)?,
+        text.len(),
+    ))
 }
 
 #[derive(Serialize)]
@@ -456,8 +592,8 @@ impl Human for Jobs {
     }
 }
 
-/// Writes `<unit>-developer-<n>.md` for each task of the unit's task list, and removes the briefs
-/// and answers of tasks past its end.
+/// Writes `<unit>-developer-<n>-<snap>.md` for each task of the unit's task list, and removes the
+/// briefs and answers of tasks past its end.
 fn developer(
     g: &Global,
     repo: &Repo,
@@ -494,10 +630,14 @@ fn developer(
     }
     let mut jobs = vec![];
     for ((i, t), text) in tasks.iter().enumerate().zip(&texts) {
-        let rel = rel_path(Some(unit), Role::Developer, Some(i + 1));
-        repo.write(&rel, text.as_bytes())?;
-        repo.remove(&answer_rel(&rel))?;
-        let brief_path = repo.root.join(rel);
+        let brief_path = write_text(
+            repo,
+            Some(unit),
+            Role::Developer,
+            Some(i + 1),
+            snapshot,
+            text,
+        )?;
         jobs.push(Job {
             task: i + 1,
             title: t.title.clone(),
@@ -512,31 +652,19 @@ fn developer(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The repo-relative `<unit>-developer-<n>.md` and `<unit>-developer-<n>.answer.json` of `unit`
-/// with task number `n` past `last`; `n` is written as a plain number from 1, so
-/// `api-developer-01.md` and `api-developer-x.md` are not job files.
+/// The repo-relative developer briefs and answers of `unit` (`job_of` names, at any snapshot)
+/// with task number `n` past `last`.
 pub(crate) fn developer_files_past(root: &Path, unit: &str, last: usize) -> Result<Vec<String>> {
-    let prefix = format!("{unit}-developer-");
-    let past = |name: &str| {
-        name.strip_prefix(&prefix)
-            .and_then(|r| {
-                r.strip_suffix(".md")
-                    .or_else(|| r.strip_suffix(".answer.json"))
-            })
-            .and_then(|d| d.parse::<usize>().ok().filter(|n| n.to_string() == d))
-            .is_some_and(|n| n > last)
-    };
-    let dir = match std::fs::read_dir(root.join(".stewards/briefs")) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        r => r?,
-    };
-    let mut rels: Vec<String> = dir
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|name| past(name))
-        .map(|name| format!(".stewards/briefs/{name}"))
-        .collect();
-    rels.sort();
-    Ok(rels)
+    Ok(job_files(root)?
+        .into_iter()
+        .filter(|(name, j)| {
+            !name.ends_with(".result.json")
+                && j.role == Role::Developer
+                && j.unit.as_deref() == Some(unit)
+                && j.n.is_some_and(|n| n > last)
+        })
+        .map(|(name, _)| format!(".stewards/briefs/{name}"))
+        .collect())
 }
 
 pub fn run(
@@ -604,7 +732,54 @@ fn reviewer(
         return Ok(ExitCode::SUCCESS);
     }
     let bytes = text.len();
-    let path = write_text(repo, None, Role::Reviewer, &text)?;
+    let path = write_text(repo, None, Role::Reviewer, None, &snapshot, &text)?;
     emit(&Written::new(path, bytes)?, g.human);
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn job_of_reads_back_every_name_rel_path_builds_and_nothing_else() {
+        let snap = "0123abcd".to_string() + &"e".repeat(32);
+        for (unit, role, n) in [
+            (None, Role::Reviewer, None),
+            (None, Role::Architect, None),
+            (Some("api"), Role::Tester, None),
+            (Some("my-api"), Role::Maintainer, None),
+            (Some("my-api"), Role::Developer, Some(2)),
+            (Some("v-2"), Role::Documenter, None),
+        ] {
+            let rel = rel_path(unit, role, n, &snap);
+            let name = rel.strip_prefix(".stewards/briefs/").unwrap();
+            let want = JobName {
+                unit: unit.map(String::from),
+                role,
+                n,
+                snap: "0123abcd".into(),
+            };
+            for file in [name.to_string(), answer_rel(name), result_rel(name)] {
+                assert_eq!(job_of(&file), Some(want.clone()), "{file}");
+            }
+        }
+        assert_eq!(
+            rel_path(None, Role::Reviewer, None, &snap),
+            ".stewards/briefs/review-0123abcd.md"
+        );
+        for name in [
+            "review.md",
+            "api-tester.md",
+            "review-0123abc.md",
+            "review-0123ABCD.md",
+            "reviewer-0123abcd.md",
+            "x-review-0123abcd.md",
+            "api-developer-01-0123abcd.md",
+            "review-0123abcd.md.bak",
+            "review-task.txt",
+        ] {
+            assert_eq!(job_of(name), None, "{name}");
+        }
+    }
 }

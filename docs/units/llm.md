@@ -24,8 +24,8 @@ Start in baml_src: change a prompt or an answer shape there, never in src/llm_sc
 | prepare-baml-env | Unsafe, call before threads exist\: sets BAML\_LIBRARY\_DISABLE\_DOWNLOAD unless STEWARDS\_BAML\_DOWNLOAD is set, sets BAML\_LOG=off unless BAML\_LOG is set, removes every BOUNDARY\_\* variable. | [src/llm.rs\:\:prepare\_baml\_env](../../src/llm.rs#L289) |
 | direct-guards | Checks, in order\: \[models.direct\] \<role\> is \<provider\>/\<model\> with provider anthropic\|openai\|google-ai (else no\_direct\_model), the provider's API key env var is non-blank (else no\_api\_key), the BAML native library loads (else baml\_runtime\_unavailable). Returns (provider, model, key). | [src/llm.rs\:\:direct\_guards](../../src/llm.rs#L310) |
 | direct-call | After direct\_guards, calls the role's BAML function with a ClientRegistry client carrying the explicit model and api\_key, and returns the typed answer serialized as JSON text. Any BAML error becomes the fixed direct\_call\_failed error, never echoing the brief, reply, or provider response. | [src/llm.rs\:\:direct](../../src/llm.rs#L5) |
-| schema-freshness | src/baml\_client embeds every baml\_src file verbatim, llm\_sources.sha256 matches baml\_src/\*.baml plus src/llm\_schema/\*.txt, and every generated enum has the on\_generate snake\_case rename. Refresh\: baml-cli generate, then the ignored llm\:\:tests\:\:refresh\_llm\_schema. | [tests/llm.rs\:\:generated\_client\_and\_rendered\_text\_match\_baml\_src](../../tests/llm.rs#L518) |
-| schema-caps | Sampled fields of every role's schema state exactly submit's cap (ID\_CAP, LINE\_CAP, PROSE\_CAP, TASK\_CHANGE\_CAP, EXPLANATION\_CAP, LIST\_CAP), and every number a schema states after \`max \` is one of those caps. | [tests/llm.rs\:\:every\_role\_schema\_states\_the\_caps\_submit\_enforces](../../tests/llm.rs#L339) |
+| schema-freshness | src/baml\_client embeds every baml\_src file verbatim, llm\_sources.sha256 matches baml\_src/\*.baml plus src/llm\_schema/\*.txt, and every generated enum has the on\_generate snake\_case rename. Refresh\: baml-cli generate, then the ignored llm\:\:tests\:\:refresh\_llm\_schema. | [tests/llm.rs\:\:generated\_client\_and\_rendered\_text\_match\_baml\_src](../../tests/llm.rs#L561) |
+| schema-caps | Sampled fields of every role's schema state exactly submit's cap (ID\_CAP, LINE\_CAP, PROSE\_CAP, TASK\_CHANGE\_CAP, EXPLANATION\_CAP, LIST\_CAP), and every number a schema states after \`max \` is one of those caps. | [tests/llm.rs\:\:every\_role\_schema\_states\_the\_caps\_submit\_enforces](../../tests/llm.rs#L382) |
 
 ## Scenarios
 
@@ -56,4 +56,4 @@ Start in baml_src: change a prompt or an answer shape there, never in src/llm_sc
 
 ## Last reviewed
 
-2d972b0896b3296afa9472532b7f9f0cf954c19e
+0f569c2c9170d04e4f55bd3c68183e25778cdd1d

@@ -78,6 +78,8 @@ fn sections_appear_in_frame_order() {
         "Answer in JSON using this schema:",
         "Write your answer to",
         "A field over its stated cap is rejected: stay under it, do not aim at the limit.",
+        "A rejection for length alone (`answer_too_long`) does not count toward the three: cut \
+         each field it lists to the target the error states, not to the cap, and run it again.",
     ];
     let mut at = 0;
     for m in marks {
@@ -105,7 +107,7 @@ fn header_parses_back_with_mode_snapshot_and_pack_size() {
         &["api", "--role", "maintainer", "--task", "q"],
     );
     assert!(text.starts_with("<!-- stewards-job {"));
-    let h = read_header(&dir.path().join(".stewards/briefs/api-maintainer.md")).unwrap();
+    let h = read_header(&dir.path().join(common::brief(dir.path(), "api-maintainer"))).unwrap();
     assert_eq!(h.unit.as_deref(), Some("api"));
     assert_eq!(h.role, Role::Maintainer);
     assert_eq!(h.mode, Mode::Explain);
@@ -126,7 +128,11 @@ fn explain_brief_for_a_never_stamped_unit() {
         &["store", "--role", "maintainer", "--task", "q"],
     );
     assert!(text.contains("# Pack: store (maintainer)"));
-    let h = read_header(&dir.path().join(".stewards/briefs/store-maintainer.md")).unwrap();
+    let h = read_header(
+        &dir.path()
+            .join(common::brief(dir.path(), "store-maintainer")),
+    )
+    .unwrap();
     assert_eq!(h.mode, Mode::Explain);
 }
 
@@ -172,7 +178,7 @@ fn answer_path_and_submit_command_are_exact() {
     let (dir, home) = setup();
     let text = brief(dir.path(), home.path(), &["api", "--role", "documenter"]);
     let root = dir.path().canonicalize().unwrap();
-    let answer = root.join(".stewards/briefs/api-documenter.answer.json");
+    let answer = root.join(common::answer(&root, "api-documenter"));
     let (root, answer) = (root.display(), answer.display());
     assert!(text.contains(&format!(
         "Write your answer to `{answer}`. \
@@ -181,15 +187,38 @@ fn answer_path_and_submit_command_are_exact() {
 }
 
 #[test]
-fn writing_a_brief_overwrites_it_and_removes_a_stale_answer() {
+fn writing_a_brief_removes_the_jobs_superseded_brief_and_answer_and_nothing_else() {
     let (dir, home) = setup();
     let briefs = dir.path().join(".stewards/briefs");
     fs::create_dir_all(&briefs).unwrap();
-    fs::write(briefs.join("api-tester.md"), "old brief").unwrap();
-    fs::write(briefs.join("api-tester.answer.json"), "{}").unwrap();
+    let old = ["api-tester-00000000.md", "api-tester-00000000.answer.json"];
+    let kept = [
+        // what `review` reports, another job's brief, and names not of the tool's pattern
+        "api-tester-00000000.result.json",
+        "api-documenter-00000000.md",
+        "api-tester.md",
+        "api-tester-0000000.md",
+        "notes.md",
+    ];
+    for name in old.iter().chain(&kept) {
+        fs::write(briefs.join(name), "old").unwrap();
+    }
     let text = brief(dir.path(), home.path(), &["api", "--role", "tester"]);
     assert!(text.starts_with("<!-- stewards-job "));
-    assert!(!briefs.join("api-tester.answer.json").exists());
+    let snapshot = read_header(&dir.path().join(common::brief(dir.path(), "api-tester")))
+        .unwrap()
+        .snapshot;
+    assert!(
+        briefs
+            .join(format!("api-tester-{}.md", &snapshot[..8]))
+            .is_file()
+    );
+    for name in old {
+        assert!(!briefs.join(name).exists(), "{name}");
+    }
+    for name in kept {
+        assert!(briefs.join(name).is_file(), "{name}");
+    }
 }
 
 #[test]
@@ -198,17 +227,17 @@ fn architect_brief_has_no_unit() {
     let (code, v) = run(dir.path(), home.path(), &["brief", "--role", "architect"]);
     assert_eq!(code, 0, "{v}");
     let root = dir.path().canonicalize().unwrap();
-    let path = root.join(".stewards/briefs/architect.md");
+    let path = root.join(common::brief(&root, "architect"));
     assert_eq!(v["path"], path.to_str().unwrap());
     let text = fs::read_to_string(&path).unwrap();
-    let answer = root.join(".stewards/briefs/architect.answer.json");
+    let answer = root.join(common::answer(&root, "architect"));
     assert!(text.contains(&format!(
         "Run `stewards -C '{}' submit --role architect --file '{}'`.",
         root.display(),
         answer.display()
     )));
     assert_eq!(
-        read_header(&dir.path().join(".stewards/briefs/architect.md"))
+        read_header(&dir.path().join(common::brief(dir.path(), "architect")))
             .unwrap()
             .unit,
         None
@@ -250,7 +279,7 @@ fn validator_brief_names_the_first_unjudged_bug() {
              \n[[gap]]\nkind = \"bug\"\ntitle = \"crash on empty body\"\n";
     fs::write(&card, text).unwrap();
     brief(dir.path(), home.path(), &["api", "--role", "validator"]);
-    let h = read_header(&dir.path().join(".stewards/briefs/api-validator.md")).unwrap();
+    let h = read_header(&dir.path().join(common::brief(dir.path(), "api-validator"))).unwrap();
     assert_eq!(h.bug.as_deref(), Some("crash on empty body"));
 }
 
@@ -284,14 +313,16 @@ fn next_writes_briefs_and_fills_brief_path() {
         let path = j["brief_path"].as_str().unwrap();
         let role = j["role"].as_str().unwrap();
         let unit = j["unit"].as_str().unwrap();
-        let expected = root.join(format!(".stewards/briefs/{unit}-{role}.md"));
+        let snap = &j["snapshot"].as_str().unwrap()[..8];
+        let expected = root.join(format!(".stewards/briefs/{unit}-{role}-{snap}.md"));
         assert_eq!(path, expected.to_str().unwrap());
         let h = read_header(Path::new(path)).unwrap();
         assert_eq!(h.snapshot, j["snapshot"].as_str().unwrap());
     }
-    let h = read_header(&dir.path().join(".stewards/briefs/api-maintainer.md")).unwrap();
+    let h = read_header(&dir.path().join(common::brief(dir.path(), "api-maintainer"))).unwrap();
     assert_eq!(h.mode, Mode::Review);
-    let text = fs::read_to_string(dir.path().join(".stewards/briefs/api-maintainer.md")).unwrap();
+    let text =
+        fs::read_to_string(dir.path().join(common::brief(dir.path(), "api-maintainer"))).unwrap();
     assert!(text.contains("## Hunks"));
 }
 
@@ -369,7 +400,7 @@ fn a_gap_title_cannot_end_the_header_comment() {
     let first = text.lines().next().unwrap();
     assert!(first.ends_with(" -->"), "{first}");
     assert_eq!(first.matches("-->").count(), 1, "{first}");
-    let h = read_header(&dir.path().join(".stewards/briefs/api-validator.md")).unwrap();
+    let h = read_header(&dir.path().join(common::brief(dir.path(), "api-validator"))).unwrap();
     assert_eq!(h.bug.as_deref(), Some(title));
 }
 

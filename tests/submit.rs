@@ -14,8 +14,16 @@ use stewards::telemetry::rfc3339;
 use tempfile::TempDir;
 
 const CARD: &str = ".stewards/units/api.toml";
-const ANSWER: &str = ".stewards/briefs/api-maintainer.answer.json";
-const BRIEF: &str = ".stewards/briefs/api-maintainer.md";
+
+/// The maintainer brief on disk.
+fn brief(dir: &Path) -> String {
+    common::brief(dir, "api-maintainer")
+}
+
+/// The answer file the maintainer brief names.
+fn answer(dir: &Path) -> String {
+    common::answer(dir, "api-maintainer")
+}
 
 /// A copy of the single fixture and an empty STEWARDS_HOME.
 fn setup() -> (TempDir, TempDir) {
@@ -34,7 +42,7 @@ fn review_job(dir: &Path, home: &Path) {
         &["next", "--roles", "--task", "add a count endpoint"],
     );
     assert_eq!(code, 1, "{v}");
-    assert!(dir.join(".stewards/briefs/api-maintainer.md").is_file());
+    assert!(dir.join(common::brief(dir, "api-maintainer")).is_file());
 }
 
 /// Writes the explain brief for api with `brief`.
@@ -61,11 +69,12 @@ fn explain(explanation: &str) -> Value {
 }
 
 fn submit_text(dir: &Path, home: &Path, text: &str) -> (i32, Value) {
-    fs::write(dir.join(ANSWER), text).unwrap();
+    let answer = answer(dir);
+    fs::write(dir.join(&answer), text).unwrap();
     run(
         dir,
         home,
-        &["submit", "api", "--role", "maintainer", "--file", ANSWER],
+        &["submit", "api", "--role", "maintainer", "--file", &answer],
     )
 }
 
@@ -105,11 +114,11 @@ fn rejected(answer: &Value, code: &str, field: &str) {
     assert_eq!(fs::read(dir.path().join(CARD)).unwrap(), before);
     assert!(!dir.path().join(".stewards/telemetry").exists());
     assert!(
-        dir.path().join(BRIEF).is_file(),
+        dir.path().join(brief(dir.path())).is_file(),
         "a failed submit keeps the brief"
     );
     assert!(
-        dir.path().join(ANSWER).is_file(),
+        dir.path().join(self::answer(dir.path())).is_file(),
         "a failed submit keeps the answer for a retry"
     );
 }
@@ -123,7 +132,8 @@ fn approve_stamps_the_brief_snapshot_so_a_later_edit_stays_stale() {
         "router = []",
         "router = [1]",
     );
-    let header = read_header(&dir.path().join(".stewards/briefs/api-maintainer.md")).unwrap();
+    let header =
+        read_header(&dir.path().join(common::brief(dir.path(), "api-maintainer"))).unwrap();
     let (code, v) = submit(dir.path(), home.path(), &review("approve"));
     assert_eq!(code, 0, "{v}");
     assert_eq!(card(dir.path()).reviewed.unwrap().tree, header.snapshot);
@@ -207,7 +217,7 @@ fn changes_with_long_findings_writes_a_fix_task_the_developer_brief_reads() {
     assert_eq!(code, 0, "{v}");
     assert!(
         dir.path()
-            .join(".stewards/briefs/api-developer-1.md")
+            .join(common::brief(dir.path(), "api-developer-1"))
             .is_file()
     );
 }
@@ -239,7 +249,8 @@ fn explain_prints_the_explanation_truncated_and_does_not_stamp() {
     assert_eq!(freshness(dir.path(), home.path()), "unreviewed");
 
     explain_job(dir.path(), home.path());
-    fs::write(dir.path().join(ANSWER), explain(&long).to_string()).unwrap();
+    let answer = answer(dir.path());
+    fs::write(dir.path().join(&answer), explain(&long).to_string()).unwrap();
     let out = run_in(
         dir.path(),
         home.path(),
@@ -249,7 +260,7 @@ fn explain_prints_the_explanation_truncated_and_does_not_stamp() {
             "--role",
             "maintainer",
             "--file",
-            ANSWER,
+            &answer,
             "--human",
         ],
     );
@@ -266,14 +277,15 @@ fn explain_prints_the_explanation_truncated_and_does_not_stamp() {
 fn human_submit_output_shows_each_findings_replacement() {
     let (dir, home) = setup();
     review_job(dir.path(), home.path());
-    fs::write(dir.path().join(ANSWER), review("changes").to_string()).unwrap();
+    let answer = answer(dir.path());
+    fs::write(dir.path().join(&answer), review("changes").to_string()).unwrap();
     let args = [
         "submit",
         "api",
         "--role",
         "maintainer",
         "--file",
-        ANSWER,
+        &answer,
         "--human",
     ];
     let out = run_in(dir.path(), home.path(), &args);
@@ -377,6 +389,31 @@ fn over_cap_field_is_answer_too_long() {
 }
 
 #[test]
+fn answer_too_long_says_how_far_over_and_a_target_well_under_the_cap() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let mut a = review("changes");
+    a["pulled_anchors"] = json!(["x".repeat(302)]);
+    let (exit, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!(exit, 2, "{v}");
+    assert_eq!(v["error"]["code"], "answer_too_long", "{v}");
+    let e = &v["error"]["errors"][0];
+    assert_eq!(e["field"], "pulled_anchors[0]", "{v}");
+    assert_eq!(
+        e["problem"],
+        "302 characters; the cap is 300; cut to 240 or fewer"
+    );
+    assert_eq!(e["example"], "at most 240 characters");
+    assert!(
+        v["error"]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("does not count toward the three tries"),
+        "{v}"
+    );
+}
+
+#[test]
 fn control_character_in_a_title_is_rejected() {
     let mut a = review("changes");
     a["card_patch"] = json!({"gaps": [{"kind": "gap", "title": "a\u{7}b", "note": ""}]});
@@ -420,9 +457,9 @@ fn tester_needed_writes_the_tester_brief() {
     let (code, v) = submit(dir.path(), home.path(), &a);
     assert_eq!(code, 0, "{v}");
     let tester = dir.path().canonicalize().unwrap();
-    let tester = tester.join(".stewards/briefs/api-tester.md");
+    let tester = tester.join(common::brief(&tester, "api-tester"));
     assert_eq!(v["tester_brief"], tester.to_str().unwrap());
-    let h = read_header(&dir.path().join(".stewards/briefs/api-tester.md")).unwrap();
+    let h = read_header(&dir.path().join(common::brief(dir.path(), "api-tester"))).unwrap();
     assert_eq!(h.role, Role::Tester);
     assert_eq!(h.task, "add a count endpoint");
 }
@@ -484,14 +521,14 @@ fn a_telemetry_line_is_appended_for_the_current_month() {
 fn status_telemetry_summarises_two_submits() {
     let (dir, home) = setup();
     review_job(dir.path(), home.path());
-    let review_bytes = read_header(&dir.path().join(".stewards/briefs/api-maintainer.md"))
+    let review_bytes = read_header(&dir.path().join(common::brief(dir.path(), "api-maintainer")))
         .unwrap()
         .bytes;
     let mut a = review("changes");
     a["pulled_anchors"] = json!(["src/api/items.py::router"]);
     assert_eq!(submit(dir.path(), home.path(), &a).0, 0);
     explain_job(dir.path(), home.path());
-    let explain_bytes = read_header(&dir.path().join(".stewards/briefs/api-maintainer.md"))
+    let explain_bytes = read_header(&dir.path().join(common::brief(dir.path(), "api-maintainer")))
         .unwrap()
         .bytes;
     let mut a = explain("e");
@@ -550,7 +587,7 @@ fn rfc3339_converts_known_timestamps() {
 
 /// The brief's header JSON, changed by `change` and written back.
 fn edit_header(dir: &Path, change: impl FnOnce(&mut Value)) {
-    let path = dir.join(BRIEF);
+    let path = dir.join(brief(dir));
     let text = fs::read_to_string(&path).unwrap();
     let (first, rest) = text.split_once('\n').unwrap();
     let json = first
@@ -581,14 +618,14 @@ fn header_rejected(change: impl FnOnce(&Path, &mut Value)) {
     assert!(v["error"]["fix"].as_str().unwrap().contains("fresh brief"));
     assert_eq!(fs::read(dir.path().join(CARD)).unwrap(), before);
     assert!(!dir.path().join(".stewards/telemetry").exists());
-    assert!(dir.path().join(BRIEF).is_file());
+    assert!(dir.path().join(brief(dir.path())).is_file());
 }
 
 #[test]
 fn approve_with_a_card_patch_stamps_and_patches() {
     let (dir, home) = setup();
     review_job(dir.path(), home.path());
-    let header = read_header(&dir.path().join(BRIEF)).unwrap();
+    let header = read_header(&dir.path().join(brief(dir.path()))).unwrap();
     let mut a = review("approve");
     a["card_patch"] = json!({"interface": [
         {"id": "create-item", "anchor": "src/api/items.py::create_item", "contract": "POST"},
@@ -940,14 +977,49 @@ fn rfc3339_converts_year_end_and_mid_november() {
 fn a_second_submit_after_success_is_no_brief() {
     let (dir, home) = setup();
     review_job(dir.path(), home.path());
+    let answer = dir.path().join(answer(dir.path()));
     assert_eq!(submit(dir.path(), home.path(), &review("changes")).0, 0);
-    assert!(!dir.path().join(BRIEF).exists());
+    assert!(common::job_files(dir.path(), "api-maintainer", ".md").is_empty());
     assert!(
-        !dir.path().join(ANSWER).exists(),
+        !answer.exists(),
         "the job's own answer is retired with the brief"
     );
     let (code, v) = submit(dir.path(), home.path(), &review("changes"));
     assert_eq!((code, &v["error"]["code"]), (2, &json!("no_brief")), "{v}");
+}
+
+#[test]
+fn with_two_briefs_for_the_job_only_an_answer_named_for_one_finds_it() {
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let d = dir.path();
+    let current = brief(d);
+    let answer = answer(d);
+    // a second brief for the job, as only a hand or a crashed write could leave
+    let other = ".stewards/briefs/api-maintainer-0123abcd.md";
+    fs::copy(d.join(&current), d.join(other)).unwrap();
+    fs::write(d.join("answer.json"), review("changes").to_string()).unwrap();
+    let args = [
+        "submit",
+        "api",
+        "--role",
+        "maintainer",
+        "--file",
+        "answer.json",
+    ];
+    let (code, v) = run(d, home.path(), &args);
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("no_brief")), "{v}");
+    // the other brief's header names a snapshot its name does not
+    fs::write(d.join(other.replace(".md", ".answer.json")), "{}").unwrap();
+    let file = other.replace(".md", ".answer.json");
+    let args = ["submit", "api", "--role", "maintainer", "--file", &file];
+    let (code, v) = run(d, home.path(), &args);
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("no_brief")), "{v}");
+    fs::write(d.join(&answer), review("changes").to_string()).unwrap();
+    let args = ["submit", "api", "--role", "maintainer", "--file", &answer];
+    let (code, v) = run(d, home.path(), &args);
+    assert_eq!(code, 0, "{v}");
+    assert!(!d.join(&current).exists() && d.join(other).is_file());
 }
 
 #[test]
@@ -966,7 +1038,7 @@ fn an_answer_file_from_outside_the_briefs_dir_is_kept() {
     ];
     let (code, v) = run(dir.path(), home.path(), &args);
     assert_eq!(code, 0, "{v}");
-    assert!(!dir.path().join(BRIEF).exists());
+    assert!(common::job_files(dir.path(), "api-maintainer", ".md").is_empty());
     assert!(
         elsewhere.is_file(),
         "an answer given from elsewhere is the caller's"
@@ -1046,7 +1118,7 @@ fn an_oversize_or_irregular_answer_file_is_usage() {
     ];
     let (code, v) = run(dir.path(), home.path(), &args);
     assert_eq!((code, &v["error"]["code"]), (2, &json!("usage")), "{v}");
-    assert!(dir.path().join(BRIEF).is_file());
+    assert!(dir.path().join(brief(dir.path())).is_file());
 }
 
 #[test]
@@ -1136,7 +1208,9 @@ fn a_failed_write_names_what_was_already_written() {
     let (dir, home) = setup();
     review_job(dir.path(), home.path());
     // a directory where the tester brief goes: the card is written, the brief cannot be
-    let tester = dir.path().join(".stewards/briefs/api-tester.md");
+    let tester = dir
+        .path()
+        .join(brief(dir.path()).replace("api-maintainer", "api-tester"));
     fs::create_dir(&tester).unwrap();
     let mut a = review("approve");
     a["tester_needed"] = json!(true);
@@ -1148,14 +1222,16 @@ fn a_failed_write_names_what_was_already_written() {
         "{message}"
     );
     assert!(card(dir.path()).reviewed.is_some());
-    assert!(dir.path().join(BRIEF).is_file());
+    assert!(dir.path().join(brief(dir.path())).is_file());
 }
 
 #[test]
 fn status_telemetry_human_is_short_lines() {
     let (dir, home) = setup();
     review_job(dir.path(), home.path());
-    let bytes = read_header(&dir.path().join(BRIEF)).unwrap().bytes;
+    let bytes = read_header(&dir.path().join(brief(dir.path())))
+        .unwrap()
+        .bytes;
     assert_eq!(submit(dir.path(), home.path(), &review("changes")).0, 0);
     let out = run_in(
         dir.path(),
@@ -1170,6 +1246,8 @@ fn status_telemetry_human_is_short_lines() {
         "{text}"
     );
 }
+
+const BRIEF: &str = ".stewards/briefs/api-maintainer-0123abcd.md";
 
 /// A bare repo root with a card and a brief, for the write helper.
 fn card_and_brief(tmp: &TempDir) -> stewards::workspace::Repo {
@@ -1243,7 +1321,6 @@ fn write_and_retire_writes_files_unchanged_since_they_were_recorded() {
 /// beside the brief for `stewards review` to collect; a rejected one writes none.
 #[test]
 fn an_accepted_submit_writes_what_it_printed_to_the_result_file() {
-    let result = |d: &Path| d.join(".stewards/briefs/api-maintainer.result.json");
     for (job, answer) in [
         (review_job as fn(&Path, &Path), review("changes")),
         (explain_job, explain("it routes")),
@@ -1251,13 +1328,14 @@ fn an_accepted_submit_writes_what_it_printed_to_the_result_file() {
         let (dir, home) = setup();
         let d = dir.path();
         job(d, home.path());
+        let result = d.join(common::result(d, "api-maintainer"));
         let (exit, _) = submit_text(d, home.path(), "{");
         assert_eq!(exit, 2);
-        assert!(!result(d).exists());
+        assert!(!result.exists());
         let (code, mut printed) = submit(d, home.path(), &answer);
         assert_eq!(code, 0, "{printed}");
         printed.as_object_mut().unwrap().remove("stewards");
-        let written: Value = serde_json::from_slice(&fs::read(result(d)).unwrap()).unwrap();
+        let written: Value = serde_json::from_slice(&fs::read(&result).unwrap()).unwrap();
         assert_eq!(written, printed);
     }
 }

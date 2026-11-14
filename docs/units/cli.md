@@ -23,7 +23,7 @@ To add or change a command, start in src/main.rs: add the variant and its flags 
 | usage-errors | Clap parse failures (missing or unknown args) and a \`-C\` dir that cannot be entered are CliError code \`usage\`, exit 2, JSON unless --human appears in argv; --help and --version print clap's text and exit normally. | [src/main.rs\:\:main](../../src/main.rs#L176) |
 | global-flags | --human, --repo \<name\>, -C \<dir\> and --direct are accepted before or after any subcommand; -C changes the working directory before dispatch; --direct is also set by STEWARDS\_DIRECT=1. | [src/main.rs\:\:Cli](../../src/main.rs#L16) |
 | not-implemented | Unbuilt commands (completions, render, validate) and flags (review --pr, next --pr) parse and then fail with CliError code \`not\_implemented\`, exit 2. | [src/output.rs\:\:not\_implemented](../../src/output.rs#L117) |
-| review-command | \`review \[--task\] \[--roles\]\` shows up to 20 untracked result files per call as reported (not verified), removing them once output is written; lists next's jobs with handoffs unless findings or files remain; --task kept until done; exit 0 only when done, else 1. | [src/review.rs\:\:run](../../src/review.rs#L338) |
+| review-command | \`review \[--task\] \[--roles\]\` shows up to 20 untracked result files per call as reported (not verified), removing them once output is written; lists next's jobs with handoffs unless findings or files remain; --task kept until done; exit 0 only when done, else 1. | [src/review.rs\:\:run](../../src/review.rs#L325) |
 
 ## Scenarios
 
@@ -49,4 +49,4 @@ _None._
 
 ## Last reviewed
 
-7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51
+0f569c2c9170d04e4f55bd3c68183e25778cdd1d

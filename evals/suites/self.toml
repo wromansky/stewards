@@ -1,14 +1,17 @@
-# The stewards repository itself at a pinned commit (about 8,500 lines of Rust,
-# nine adopted units, cards, and docs), where reading is expensive enough for
-# delegation to pay. Cloned from the checkout holding `evals/`; already adopted,
-# so the `full` arm has no adoption session.
+# The stewards repository itself (about 8,500 lines of Rust, nine adopted
+# units, cards, and docs), where reading is expensive enough for delegation to
+# pay. Cloned from the checkout holding `evals/`; already adopted, so the `full`
+# arm has no adoption session.
 tasks_dir = "suites/self/tasks"
 session_minutes = 60
 
 [source]
 kind = "repo"
-# on main, where `stewards next` lists no jobs
-commit = "bcfccf0"
+# The commit the checkout is on when the eval starts, so the sessions read the
+# source the binary was built from (a stale pin once had them read a `review`
+# that took `--pr` and conclude `--task` did not exist). A literal sha reruns a
+# past eval. `stewards next` must list no jobs there.
+commit = "HEAD"
 # clippy too, so every arm starts with a warm lint cache
 build = ["sh", "-c", "cargo build --all-targets && cargo clippy --all-targets"]
 
@@ -27,3 +30,20 @@ number = 4
 read_only = true
 setup = 3
 files_opened_vs_bare = 2
+
+# Text each edit task adds, absent from the tree at setup, else that task is
+# already done there.
+[[absent]]
+task = 1
+file = "src/main.rs"
+text = "Debt {"
+
+[[absent]]
+task = 1
+file = "src/main.rs"
+text = "Debt("
+
+[[absent]]
+task = 3
+file = "src/model.rs"
+text = "owner"

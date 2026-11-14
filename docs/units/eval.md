@@ -23,7 +23,7 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers and t
 | driver | A harness\: \`start\` runs one session in a fresh environment (fresh\_session\_env) and waits for end or timeout; \`parse\` turns its transcript into a Run, tolerating a truncated last line only if truncation\_ok; \`context\_file\` names a file the runner commits beside AGENTS.md (none by default). | [src/eval/mod.rs\:\:Driver](../../src/eval/mod.rs#L613) |
 | pi\_parse | One Pi session tree to a Run\: main vs total tokens, cache refreshes apart, each record counted once by (id, timestamp), cost from usage.cost.total, files opened per session cwd, models and thinking levels, child reviewer submits, failed child stops; more than one top-level file is an error. | [src/eval/pi.rs\:\:parse](../../src/eval/pi.rs#L188) |
 | pi\_agent\_dir | Writes an isolated Pi agent dir\: settings with only npm\:pi-subagents and every child at the given thinking level, auth.json linked, models-store.json copied, npm/ linked; never writes the user's dir; error when pi-subagents is not installed. | [src/eval/pi.rs\:\:agent\_dir](../../src/eval/pi.rs#L24) |
-| suite\_load | Loads evals/suites/\<name\>.toml (fixture or repo source, tasks with read\_only, setup, files\_opened\_vs\_bare); an unknown name is a usage error listing the valid ones; unknown fields are rejected. | [src/eval/suite.rs\:\:load](../../src/eval/suite.rs#L68) |
+| suite\_load | Loads evals/suites/\<name\>.toml (fixture source with per-unit test\_commands, repo source with commit HEAD or a sha, absent probes, tasks with read\_only, setup, files\_opened\_vs\_bare); an unknown name is a usage error listing the valid ones; unknown fields are rejected. | [src/eval/suite.rs\:\:load](../../src/eval/suite.rs#L88) |
 | grade\_task | A compared run not ok, without transcript, or never started makes the task incomplete; else read-only is n/a and an edit task passes only when every full run has no gate\_misses; overhead ratios never change the verdict. | [src/eval/grade.rs\:\:grade\_task](../../src/eval/grade.rs#L162) |
 | gate\_misses | What one full run of an edit task misses\: changed, a \`stewards review\` ran, a subagent was given a handoff, and the runner's next --no-brief exited 0. Empty when it passes. | [src/eval/grade.rs\:\:gate\_misses](../../src/eval/grade.rs#L135) |
 | suite\_verdict | Fail when any task fails, else incomplete when any task is or there are none, else pass. | [src/eval/grade.rs\:\:suite\_verdict](../../src/eval/grade.rs#L285) |
@@ -33,13 +33,14 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers and t
 | existing\_files | The regular files among opened paths, in order and distinct; a last-component glob is expanded against the listing (dot names only by a dot pattern); directories and missing paths dropped. | [src/eval/mod.rs\:\:existing\_files](../../src/eval/mod.rs#L153) |
 | reviewed\_units | Units, verdicts and finding counts from a reviewer submit's JSON output; None for any other output. | [src/eval/mod.rs\:\:reviewed\_units](../../src/eval/mod.rs#L212) |
 | would\_exceed | True when spent plus the mean cost so far is over max; false with no cost known, so the first session always runs. | [src/eval/mod.rs\:\:would\_exceed](../../src/eval/mod.rs#L836) |
-| without\_developers | AGENTS.md with the developer Changing line cut to its first sentence; an error when that line is absent. | [src/eval/mod.rs\:\:without\_developers](../../src/eval/mod.rs#L1585) |
+| without\_developers | AGENTS.md with the developer Changing line cut to its first sentence; an error when that line is absent. | [src/eval/mod.rs\:\:without\_developers](../../src/eval/mod.rs#L1611) |
 | path\_without\_stewards | PATH with each directory holding stewards replaced by a mirror linking everything else in it. | [src/eval/mod.rs\:\:path\_without\_stewards](../../src/eval/mod.rs#L1038) |
 | next\_check | Runs stewards next --no-brief in a dir\: exit code and job count; writes no briefs. | [src/eval/mod.rs\:\:next\_check](../../src/eval/mod.rs#L778) |
 | kill\_leftovers | Kills every process whose cwd is under dir until none remain or 10 s pass; reports killed and survivors; None without /proc. | [src/eval/mod.rs\:\:kill\_leftovers](../../src/eval/mod.rs#L901) |
 | claude\_parse | A Claude Code session file plus its stdout.log to a Run\: main tokens from result.usage, total from summed modelUsage, both null without a result line; cost\_usd null, its figure kept as harness\_reported\_cost\_usd; Read/Grep/Glob/Bash reads per record cwd; thinking on/off; sidechain children. | [src/eval/claude.rs\:\:parse](../../src/eval/claude.rs#L156) |
 | claude\_config\_dir | Writes an isolated Claude Code config dir\: settings.json with only the user's model, .credentials.json linked when present; never writes the user's dir; returns a plain note and the user's model. | [src/eval/claude.rs\:\:config\_dir](../../src/eval/claude.rs#L24) |
 | task\_prompt | The task file \<dir\>/NN-\* verbatim; an error when none; a usage error when it contains \`think\` in any case. | [src/eval/mod.rs\:\:task\_prompt](../../src/eval/mod.rs#L1027) |
+| pinned\_commit | A repo suite's commit\: HEAD is the evals/ checkout's commit, refused when src/, baml\_src/ or .stewards/ have uncommitted changes; a sha as given; either refused when an absent probe's text is in its file there. Refusals are eval\_setup\_incomplete. | [src/eval/mod.rs\:\:pinned\_commit](../../src/eval/mod.rs#L1067) |
 
 ## Scenarios
 
@@ -69,4 +70,4 @@ _None._
 
 ## Last reviewed
 
-da01fc113109d4cff274a2cf280e9381a0a47b50
+0f569c2c9170d04e4f55bd3c68183e25778cdd1d

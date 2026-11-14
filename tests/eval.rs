@@ -248,7 +248,7 @@ fn dispatch(task: &str) -> Action {
     }
 }
 
-const HANDOFF: &str = "Read `/r r/.stewards/briefs/api-maintainer.md` and follow it.";
+const HANDOFF: &str = "Read `/r r/.stewards/briefs/api-maintainer-0123abcd.md` and follow it.";
 
 #[test]
 fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
@@ -280,13 +280,17 @@ fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
             assert_eq!(found[other], names.contains(&other), "{names:?}: {other}");
         }
     }
-    // a brief path without the sentence, a relative path, a path outside the code span, another
-    // role's submit, or the reviewer submit in the main session: none
+    // a brief path without the sentence, a relative path, a path outside the code span, a name
+    // with no snapshot (an older stewards') or not a brief's, another role's submit, or the
+    // reviewer submit in the main session: none
     let none = [
-        dispatch("Read `/r/.stewards/briefs/review.md`"),
-        dispatch("Read `.stewards/briefs/review.md` and follow it."),
+        dispatch("Read `/r/.stewards/briefs/review-0123abcd.md`"),
+        dispatch("Read `.stewards/briefs/review-0123abcd.md` and follow it."),
         dispatch("Read `/r/notes.md` and follow it."),
-        dispatch("Read /r/.stewards/briefs/review.md and follow it."),
+        dispatch("Read /r/.stewards/briefs/review-0123abcd.md and follow it."),
+        dispatch("Read `/r/.stewards/briefs/review.md` and follow it."),
+        dispatch("Read `/r/.stewards/briefs/review-0123abcd.answer.json` and follow it."),
+        dispatch("Read `/r/.stewards/briefs/notes-0123abcd.md` and follow it."),
         child_shell("stewards submit api --role tester --file a.json"),
         shell("stewards submit --role=reviewer --file a.json"),
     ];
@@ -299,10 +303,12 @@ fn each_ritual_step_is_detected_alone_and_absent_otherwise() {
 #[test]
 fn the_handoff_brief_prints_is_one_the_eval_reads_as_exact() {
     let h = stewards::brief::handoff(std::path::Path::new(
-        "/w/my repo/.stewards/briefs/review.md",
+        "/w/my repo/.stewards/briefs/review-0123abcd.md",
     ))
     .unwrap();
     assert!(stewards::eval::is_handoff(&h), "{h}");
+    let old = h.replace("review-0123abcd.md", "review.md");
+    assert!(!stewards::eval::is_handoff(&old), "{old}");
     assert!(stewards::eval::holds_handoff(&format!(
         "please: {h} thanks"
     )));
@@ -327,17 +333,20 @@ fn with_tasks(name: &str, replace: &[(&str, &str)]) -> Run {
 #[test]
 fn handoff_exact_reads_the_task_of_a_real_pi_subagent_call() {
     let single = r#""task":"Reply with the word ok and nothing else.""#;
-    let h = r#""task":"Read `/work/0/repo/.stewards/briefs/architect.md` and follow it.""#;
-    // every child of the parallel call: its brief path inside the handoff
+    let h = r#""task":"Read `/work/0/repo/.stewards/briefs/architect-0123abcd.md` and follow it.""#;
+    // every child of the parallel call: its brief path, given a snapshot, inside the handoff
     let (start, end) = (
         r#""task":"Execute the stewards brief at "#,
-        r#". You have shell access. Follow the brief, then reply with a short summary of what you did and any files written.""#,
+        r#".md. You have shell access. Follow the brief, then reply with a short summary of what you did and any files written.""#,
     );
     let exact = [
         with_tasks("subagent", &[(single, h)]),
         with_tasks(
             "ritual",
-            &[(start, r#""task":"Read `"#), (end, r#"` and follow it.""#)],
+            &[
+                (start, r#""task":"Read `"#),
+                (end, r#"-0123abcd.md` and follow it.""#),
+            ],
         ),
     ];
     for run in exact {
@@ -349,7 +358,13 @@ fn handoff_exact_reads_the_task_of_a_real_pi_subagent_call() {
             "subagent",
             &[(single, &h.replace("` and follow it.\"", added))],
         ),
-        with_tasks("ritual", &[(start, r#""task":"Read `"#), (end, added)]),
+        with_tasks(
+            "ritual",
+            &[
+                (start, r#""task":"Read `"#),
+                (end, &format!("-0123abcd.md{added}")),
+            ],
+        ),
     ];
     for run in not_exact {
         assert!(run.ritual_steps["handoff"] && !run.ritual_steps["handoff_exact"]);
@@ -1452,6 +1467,16 @@ fn full_arm_sets_the_hand_drawn_units_and_stops_when_adoption_is_not_clean() {
         std::fs::read_to_string(adopted.join(".stewards/units.toml")).unwrap(),
         std::fs::read_to_string(p.evals.join("full-units.toml")).unwrap()
     );
+    // every unit its own test command, and none repo-wide, so no unit is shown another's
+    let loaded = stewards::model::load_repo(&adopted).unwrap();
+    assert!(loaded.repo.commands.test.is_empty());
+    for (unit, cmd) in [
+        ("api", "python3 -m unittest discover -s api"),
+        ("client", "node --test client/"),
+        ("cli", "cargo test --manifest-path cli/Cargo.toml"),
+    ] {
+        assert_eq!(loaded.tests[unit].test_command.as_deref(), Some(cmd));
+    }
     let note = summary["setup"]["units"].as_str().unwrap();
     assert!(
         note.contains("set by hand")
@@ -1540,6 +1565,7 @@ fn the_fixture_manifest_reproduces_the_old_hard_coded_facts() {
         units,
         unowned,
         tests,
+        test_commands,
     } = &s.source
     else {
         panic!("{:?}", s.source)
@@ -1551,6 +1577,19 @@ fn the_fixture_manifest_reproduces_the_old_hard_coded_facts() {
         tests,
         &["api/test_*.py", "client/*.test.ts", "cli/tests/**"]
     );
+    // each unit's own command, run from the root as the fixture's tests are
+    let commands: Vec<(&str, &str)> = test_commands
+        .iter()
+        .map(|(u, c)| (u.as_str(), c.as_str()))
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            ("api", "python3 -m unittest discover -s api"),
+            ("cli", "cargo test --manifest-path cli/Cargo.toml"),
+            ("client", "node --test client/"),
+        ]
+    );
     assert_eq!(s.commit(), None);
     let tasks = evals().join(&s.tasks_dir);
     assert_eq!(tasks, evals().join("tasks"));
@@ -1561,10 +1600,23 @@ fn the_fixture_manifest_reproduces_the_old_hard_coded_facts() {
 }
 
 #[test]
-fn the_self_manifest_pins_its_commit_and_its_four_tasks() {
+fn the_self_manifest_takes_the_checkouts_commit_and_its_four_tasks() {
     let s = Suite::load(&evals(), "self").unwrap();
     assert_eq!(s.session_minutes, 60);
-    assert_eq!(s.commit(), Some("bcfccf0"));
+    assert_eq!(s.commit(), Some("HEAD"));
+    let probes: Vec<(u32, &str, &str)> = s
+        .absent
+        .iter()
+        .map(|a| (a.task, a.file.as_str(), a.text.as_str()))
+        .collect();
+    assert_eq!(
+        probes,
+        [
+            (1, "src/main.rs", "Debt {"),
+            (1, "src/main.rs", "Debt("),
+            (3, "src/model.rs", "owner"),
+        ]
+    );
     assert!(
         matches!(&s.source, Source::Repo { build, .. } if build == &["sh", "-c", "cargo build --all-targets && cargo clippy --all-targets"])
     );
@@ -1661,6 +1713,44 @@ fn self_plan(tmp: &Path, repo: &Path) -> Plan {
     p.evals = repo.join("evals");
     p.suite = Suite::load(&p.evals, "self").unwrap();
     p
+}
+
+/// `commit = "HEAD"` is the checkout's commit at the start, refused with uncommitted source or
+/// with an `absent` probe's text already in the tree.
+#[test]
+fn a_head_pinned_repo_suite_takes_the_checkouts_commit_and_refuses_a_dirty_or_done_tree() {
+    let (repo, _) = self_style_repo();
+    let dir = repo.path();
+    let manifest = dir.join("evals/suites/self.toml");
+    let pinned = std::fs::read_to_string(&manifest).unwrap();
+    let head = common::git(dir, &["rev-parse", "HEAD"]).trim().to_string();
+    let with = |probe: &str| {
+        let text = pinned.replace(&head, "HEAD")
+            + &format!("\n[[absent]]\ntask = 1\nfile = \"src/api/items.py\"\ntext = \"{probe}\"\n");
+        std::fs::write(&manifest, text).unwrap();
+    };
+    let tmp = TempDir::new().unwrap();
+    let run = |arms: Vec<Arm>| {
+        let mut p = self_plan(tmp.path(), dir);
+        p.arms = arms;
+        execute(&Replay::new(sample("subagent"), Status::Ok), &p)
+    };
+    // the task's change is already there
+    with("def create_item");
+    let e = setup_error(run(vec![Arm::Bare]).err().unwrap());
+    assert!(e.message.contains("task 1's change is already in"), "{e}");
+    // an edit to the source the binary may not have been built from
+    with("def count_items_by_name");
+    common::append(&dir.join("src/api/items.py"), "# edited\n");
+    let e = setup_error(run(vec![Arm::Bare]).err().unwrap());
+    assert!(e.message.contains("uncommitted changes"), "{e}");
+    common::git(dir, &["checkout", "--", "src/api/items.py"]);
+    let summary = run(vec![Arm::Bare]).unwrap();
+    assert_eq!(summary.commit.as_deref(), Some("HEAD"));
+    assert_eq!(
+        summary.setup.resolved_commit.as_deref(),
+        Some(head.as_str())
+    );
 }
 
 #[test]
@@ -1830,7 +1920,7 @@ fn after_an_edit_in_a_repo_suites_full_copy_the_review_pack_shows_hunks() {
     let dir = PathBuf::from(full["workdir"].as_str().unwrap());
     let (code, v) = common::run(&dir, &["next"]);
     assert_eq!(code, 1, "{v}");
-    let brief = std::fs::read_to_string(dir.join(".stewards/briefs/review.md")).unwrap();
+    let brief = std::fs::read_to_string(dir.join(common::brief(&dir, "review"))).unwrap();
     assert!(
         brief.contains("## Hunks") && brief.contains("```diff"),
         "{brief}"

@@ -13,7 +13,6 @@ use stewards::workspace::Repo;
 
 const TASKS: &str = ".stewards/briefs/api-tasks.json";
 const CARD: &str = ".stewards/units/api.toml";
-const MAINTAINER_ANSWER: &str = ".stewards/briefs/api-maintainer.answer.json";
 
 fn task(title: &str, files: &[&str]) -> Value {
     json!({"title": title, "change": format!("do {title}"), "files": files,
@@ -21,15 +20,9 @@ fn task(title: &str, files: &[&str]) -> Value {
 }
 
 fn submit_maintainer(dir: &Path, answer: &Value) -> (i32, Value) {
-    fs::write(dir.join(MAINTAINER_ANSWER), answer.to_string()).unwrap();
-    let args = [
-        "submit",
-        "api",
-        "--role",
-        "maintainer",
-        "--file",
-        MAINTAINER_ANSWER,
-    ];
+    let file = common::answer(dir, "api-maintainer");
+    fs::write(dir.join(&file), answer.to_string()).unwrap();
+    let args = ["submit", "api", "--role", "maintainer", "--file", &file];
     run(dir, &args)
 }
 
@@ -52,7 +45,7 @@ fn plan(dir: &Path, tasks: Value) -> (i32, Value) {
 /// Writes the api maintainer's review brief with `next` and submits `findings`.
 fn review(dir: &Path, verdict: &str, findings: Value) -> (i32, Value) {
     run(dir, &["next", "--roles", "--task", "t", "--no-run"]);
-    assert!(dir.join(".stewards/briefs/api-maintainer.md").is_file());
+    assert!(dir.join(common::brief(dir, "api-maintainer")).is_file());
     let answer = json!({"verdict": verdict, "findings": findings, "card_patch": null,
                         "tester_needed": false, "pulled_anchors": [], "notes": ""});
     submit_maintainer(dir, &answer)
@@ -101,7 +94,9 @@ fn submit_developer_as(dir: &Path, name: &str, answer: &Value) -> (i32, Value) {
 }
 
 fn submit_developer(dir: &Path, n: usize, answer: &Value) -> (i32, Value) {
-    submit_developer_as(dir, &format!("api-developer-{n}.answer.json"), answer)
+    let file = common::answer(dir, &format!("api-developer-{n}"));
+    let name = file.strip_prefix(".stewards/briefs/").unwrap();
+    submit_developer_as(dir, name, answer)
 }
 
 /// Asserts the plan is rejected with `code` naming `field` and no task list is written.
@@ -143,7 +138,7 @@ fn two_tasks_with_disjoint_lanes_give_two_briefs_with_their_task_and_lane() {
         (1, "count", "src/api/items.py"),
         (2, "test count", "tests/api/test_items.py"),
     ] {
-        let path = root.join(format!(".stewards/briefs/api-developer-{n}.md"));
+        let path = root.join(common::brief(&root, &format!("api-developer-{n}")));
         assert_eq!(
             v["jobs"][n - 1],
             json!({"task": n, "title": title, "brief_path": path,
@@ -246,18 +241,15 @@ fn an_approving_review_removes_the_task_list() {
 fn a_shorter_task_list_removes_the_extra_developer_brief() {
     let dir = fixture("single");
     two_developers(dir.path());
-    let briefs = dir.path().join(".stewards/briefs");
-    fs::write(briefs.join("api-developer-2.answer.json"), "{}").unwrap();
-    assert_eq!(
-        plan(dir.path(), json!([task("a", &["src/api/items.py"])])).0,
-        0
-    );
-    let (code, v) = developers(dir.path());
+    let d = dir.path();
+    fs::write(d.join(common::answer(d, "api-developer-2")), "{}").unwrap();
+    assert_eq!(plan(d, json!([task("a", &["src/api/items.py"])])).0, 0);
+    let (code, v) = developers(d);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["jobs"].as_array().unwrap().len(), 1);
-    assert!(briefs.join("api-developer-1.md").is_file());
-    assert!(!briefs.join("api-developer-2.md").exists());
-    assert!(!briefs.join("api-developer-2.answer.json").exists());
+    common::brief(d, "api-developer-1");
+    assert!(common::job_files(d, "api-developer-2", ".md").is_empty());
+    assert!(common::job_files(d, "api-developer-2", ".answer.json").is_empty());
 }
 
 #[test]
@@ -286,11 +278,7 @@ fn a_task_list_edited_to_add_an_unowned_file_is_no_tasks_and_writes_no_brief() {
     );
     let (code, v) = developers(dir.path());
     assert_eq!((code, &v["error"]["code"]), (2, &json!("no_tasks")), "{v}");
-    assert!(
-        !dir.path()
-            .join(".stewards/briefs/api-developer-1.md")
-            .exists()
-    );
+    assert!(common::job_files(dir.path(), "api-developer-1", ".md").is_empty());
 }
 
 #[test]
@@ -303,7 +291,11 @@ fn the_developer_pack_lists_only_the_anchors_in_the_lane() {
         0
     );
     assert_eq!(developers(dir.path()).0, 0);
-    let brief = fs::read_to_string(dir.path().join(".stewards/briefs/api-developer-1.md")).unwrap();
+    let brief = fs::read_to_string(
+        dir.path()
+            .join(common::brief(dir.path(), "api-developer-1")),
+    )
+    .unwrap();
     assert!(
         brief.contains("### `tests/api/test_items.py::test_create_ok`"),
         "{brief}"
@@ -330,16 +322,8 @@ fn a_developer_submit_leaves_the_card_stamp_and_task_list_unchanged() {
     assert_eq!(code, 0, "{v}");
     assert_eq!(fs::read(dir.path().join(CARD)).unwrap(), card);
     assert_eq!(fs::read(dir.path().join(TASKS)).unwrap(), tasks);
-    assert!(
-        !dir.path()
-            .join(".stewards/briefs/api-developer-1.md")
-            .exists()
-    );
-    assert!(
-        !dir.path()
-            .join(".stewards/briefs/api-developer-1.answer.json")
-            .exists()
-    );
+    assert!(common::job_files(dir.path(), "api-developer-1", ".md").is_empty());
+    assert!(common::job_files(dir.path(), "api-developer-1", ".answer.json").is_empty());
 }
 
 #[test]
@@ -396,6 +380,9 @@ fn blocked_on_is_printed_and_the_summary_says_blocked() {
     let dir = fixture("single");
     two_developers(dir.path());
     let answer = developer_answer(Some("need src/store/db.py\nfor the column"));
+    let result = dir
+        .path()
+        .join(common::result(dir.path(), "api-developer-1"));
     let (code, v) = submit_developer(dir.path(), 1, &answer);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["blocked_on"], "need src/store/db.py\nfor the column");
@@ -406,9 +393,6 @@ fn blocked_on_is_printed_and_the_summary_says_blocked() {
     // what it printed, for `review` to report, blocked_on and out_of_lane included
     let mut printed = v.clone();
     printed.as_object_mut().unwrap().remove("stewards");
-    let result = dir
-        .path()
-        .join(".stewards/briefs/api-developer-1.result.json");
     let written: Value = serde_json::from_slice(&std::fs::read(result).unwrap()).unwrap();
     assert_eq!(written, printed);
 }
@@ -426,10 +410,10 @@ fn an_answer_file_with_the_wrong_name_is_a_usage_error() {
 fn a_task_2_brief_under_task_1s_name_fails_the_header_check() {
     let dir = fixture("single");
     two_developers(dir.path());
-    let briefs = dir.path().join(".stewards/briefs");
+    let d = dir.path();
     fs::copy(
-        briefs.join("api-developer-2.md"),
-        briefs.join("api-developer-1.md"),
+        d.join(common::brief(d, "api-developer-2")),
+        d.join(common::brief(d, "api-developer-1")),
     )
     .unwrap();
     let (code, v) = submit_developer(dir.path(), 1, &developer_answer(None));
@@ -523,7 +507,7 @@ fn developer_submit_is_no_tasks(dir: &Path) {
     let before = telemetry(dir);
     let (code, v) = submit_developer(dir, 1, &developer_answer(None));
     assert_eq!((code, &v["error"]["code"]), (2, &json!("no_tasks")), "{v}");
-    assert!(dir.join(".stewards/briefs/api-developer-1.md").is_file());
+    assert!(dir.join(common::brief(dir, "api-developer-1")).is_file());
     assert_eq!(telemetry(dir), before);
 }
 
@@ -557,11 +541,7 @@ fn a_git_hook_edited_into_the_task_list_writes_no_brief_and_fails_developer_subm
     .unwrap();
     let (code, v) = developers(dir.path());
     assert_eq!((code, &v["error"]["code"]), (2, &json!("no_tasks")), "{v}");
-    assert!(
-        !dir.path()
-            .join(".stewards/briefs/api-developer-1.md")
-            .exists()
-    );
+    assert!(common::job_files(dir.path(), "api-developer-1", ".md").is_empty());
     // the brief written while the list was clean, then the hook edited in
     fs::write(dir.path().join(TASKS), &tasks).unwrap();
     assert_eq!(developers(dir.path()).0, 0);
@@ -650,12 +630,13 @@ fn neighbours(dir: &Path) -> Vec<std::path::PathBuf> {
     );
     let briefs = dir.join(".stewards/briefs");
     let files: Vec<std::path::PathBuf> = [
-        "api-v2-developer-1.md",
-        "api-v2-developer-3.md",
-        "api-v2-developer-3.answer.json",
-        "api-developer-01.md",
-        "api-developer-03.md",
-        "api-developer-x.md",
+        "api-v2-developer-1-0123abcd.md",
+        "api-v2-developer-3-0123abcd.md",
+        "api-v2-developer-3-0123abcd.answer.json",
+        "api-developer-01-0123abcd.md",
+        "api-developer-03-0123abcd.md",
+        "api-developer-x-0123abcd.md",
+        "api-developer-3.md",
     ]
     .iter()
     .map(|n| briefs.join(n))
@@ -671,17 +652,17 @@ fn an_approving_review_removes_every_developer_brief_and_answer_of_the_unit_only
     let dir = fixture("single");
     two_developers(dir.path());
     let kept = neighbours(dir.path());
-    let briefs = dir.path().join(".stewards/briefs");
-    fs::write(briefs.join("api-developer-1.answer.json"), "{}").unwrap();
-    let (code, v) = review(dir.path(), "approve", json!([]));
+    let d = dir.path();
+    fs::write(d.join(common::answer(d, "api-developer-1")), "{}").unwrap();
+    let (code, v) = review(d, "approve", json!([]));
     assert_eq!(code, 0, "{v}");
-    assert!(!dir.path().join(TASKS).exists());
-    for name in [
-        "api-developer-1.md",
-        "api-developer-2.md",
-        "api-developer-1.answer.json",
+    assert!(!d.join(TASKS).exists());
+    for (stem, suffix) in [
+        ("api-developer-1", ".md"),
+        ("api-developer-2", ".md"),
+        ("api-developer-1", ".answer.json"),
     ] {
-        assert!(!briefs.join(name).exists(), "{name}");
+        assert!(common::job_files(d, stem, suffix).is_empty(), "{stem}");
     }
     for f in &kept {
         assert_eq!(fs::read(f).unwrap(), b"keep", "{}", f.display());
@@ -696,9 +677,10 @@ fn an_explanation_with_no_tasks_removes_the_developer_briefs() {
     let (code, v) = plan(dir.path(), json!([]));
     assert_eq!(code, 0, "{v}");
     assert!(!dir.path().join(TASKS).exists());
-    let briefs = dir.path().join(".stewards/briefs");
-    assert!(!briefs.join("api-developer-1.md").exists());
-    assert!(!briefs.join("api-developer-2.md").exists());
+    for n in [1, 2] {
+        let stem = format!("api-developer-{n}");
+        assert!(common::job_files(dir.path(), &stem, ".md").is_empty());
+    }
     for f in &kept {
         assert!(f.is_file(), "{}", f.display());
     }
@@ -715,8 +697,8 @@ fn a_shorter_task_list_removes_brief_3_of_3_only_and_leaves_other_units_alone() 
     assert_eq!(plan(dir.path(), tasks).0, 0);
     assert_eq!(developers(dir.path()).0, 0);
     let kept = neighbours(dir.path());
-    let briefs = dir.path().join(".stewards/briefs");
-    fs::write(briefs.join("api-developer-3.answer.json"), "{}").unwrap();
+    let d = dir.path();
+    fs::write(d.join(common::answer(d, "api-developer-3")), "{}").unwrap();
     let two = json!([
         task("count", &["src/api/items.py"]),
         task("test count", &["tests/api/test_items.py"])
@@ -724,10 +706,10 @@ fn a_shorter_task_list_removes_brief_3_of_3_only_and_leaves_other_units_alone() 
     assert_eq!(plan(dir.path(), two).0, 0);
     let (code, v) = developers(dir.path());
     assert_eq!(code, 0, "{v}");
-    assert!(briefs.join("api-developer-1.md").is_file());
-    assert!(briefs.join("api-developer-2.md").is_file());
-    assert!(!briefs.join("api-developer-3.md").exists());
-    assert!(!briefs.join("api-developer-3.answer.json").exists());
+    common::brief(d, "api-developer-1");
+    common::brief(d, "api-developer-2");
+    assert!(common::job_files(d, "api-developer-3", ".md").is_empty());
+    assert!(common::job_files(d, "api-developer-3", ".answer.json").is_empty());
     for f in &kept {
         assert_eq!(fs::read(f).unwrap(), b"keep", "{}", f.display());
     }
@@ -760,15 +742,13 @@ fn a_change_in_another_unit_is_neither_counted_nor_out_of_lane() {
 fn a_developer_submit_for_task_1_leaves_task_2s_brief() {
     let dir = fixture("single");
     two_developers(dir.path());
-    let briefs = dir.path().join(".stewards/briefs");
-    let brief_2 = fs::read(briefs.join("api-developer-2.md")).unwrap();
-    let (code, v) = submit_developer(dir.path(), 1, &developer_answer(None));
+    let d = dir.path();
+    let path_2 = d.join(common::brief(d, "api-developer-2"));
+    let brief_2 = fs::read(&path_2).unwrap();
+    let (code, v) = submit_developer(d, 1, &developer_answer(None));
     assert_eq!(code, 0, "{v}");
-    assert!(!briefs.join("api-developer-1.md").exists());
-    assert_eq!(
-        fs::read(briefs.join("api-developer-2.md")).unwrap(),
-        brief_2
-    );
+    assert!(common::job_files(d, "api-developer-1", ".md").is_empty());
+    assert_eq!(fs::read(&path_2).unwrap(), brief_2);
 }
 
 #[test]
@@ -784,7 +764,7 @@ fn a_changes_review_with_no_findings_is_rejected() {
     assert!(!dir.path().join(TASKS).exists());
     assert!(
         dir.path()
-            .join(".stewards/briefs/api-maintainer.md")
+            .join(common::brief(dir.path(), "api-maintainer"))
             .is_file()
     );
 }
@@ -808,7 +788,7 @@ fn answer_files_not_named_for_a_task_of_the_unit_are_usage_errors() {
     }
     assert!(
         dir.path()
-            .join(".stewards/briefs/api-developer-1.md")
+            .join(common::brief(dir.path(), "api-developer-1"))
             .is_file()
     );
 }
@@ -838,10 +818,6 @@ fn a_task_list_edited_to_an_absolute_a_stewards_or_a_shared_lane_file_is_no_task
             (2, &json!("no_tasks")),
             "{to}: {v}"
         );
-        assert!(
-            !dir.path()
-                .join(".stewards/briefs/api-developer-1.md")
-                .exists()
-        );
+        assert!(common::job_files(dir.path(), "api-developer-1", ".md").is_empty());
     }
 }

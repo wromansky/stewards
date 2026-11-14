@@ -266,7 +266,8 @@ fn assert_unsafe(repo: &Path, args: &[&str]) {
 fn brief_through_a_symlinked_brief_file_is_unsafe_path() {
     let repo = fixture("single");
     let outside = TempDir::new().unwrap();
-    let rel = ".stewards/briefs/api-maintainer.md";
+    // an older snapshot's brief, which the new one supersedes and removes
+    let rel = ".stewards/briefs/api-maintainer-0123abcd.md";
     let target = link_to_secret(repo.path(), rel, outside.path());
     assert_unsafe(repo.path(), &["brief", "api", "--role", "maintainer"]);
     assert_eq!(fs::read(&target).unwrap(), SECRET);
@@ -276,7 +277,8 @@ fn brief_through_a_symlinked_brief_file_is_unsafe_path() {
 fn next_through_a_symlinked_brief_file_is_unsafe_path() {
     let repo = fixture("single");
     let outside = TempDir::new().unwrap();
-    let rel = ".stewards/briefs/api-maintainer.md";
+    // an older snapshot's brief, which the new one supersedes and removes
+    let rel = ".stewards/briefs/api-maintainer-0123abcd.md";
     let target = link_to_secret(repo.path(), rel, outside.path());
     assert_unsafe(repo.path(), &["next"]);
     assert_eq!(fs::read(&target).unwrap(), SECRET);
@@ -427,7 +429,7 @@ fn printed_submit_runs_in(name: &str) {
     assert_eq!(code, 0, "{v}");
     let command = printed_command(&fs::read_to_string(v["path"].as_str().unwrap()).unwrap());
     fs::write(
-        root.join(".stewards/briefs/api-maintainer.answer.json"),
+        root.join(common::answer(&root, "api-maintainer")),
         r#"{"explanation": "e", "tasks": [], "card_patch": null, "pulled_anchors": [],
             "notes": ""}"#,
     )
@@ -445,7 +447,7 @@ fn printed_submit_runs_in(name: &str) {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{command}: {stdout}");
     assert!(stdout.contains("api maintainer: explained"), "{stdout}");
-    assert!(!root.join(".stewards/briefs/api-maintainer.md").exists());
+    assert!(common::job_files(&root, "api-maintainer", ".md").is_empty());
     assert!(!tmp.path().join("pwned").exists() && !root.join("pwned").exists());
 }
 

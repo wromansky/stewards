@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use common::{git, stewards};
 use serde_json::Value;
 use stewards::guide;
-use stewards::model::load_repo;
+use stewards::model::{CommandEntry, load_repo};
 use tempfile::TempDir;
 
 fn write(root: &Path, rel: &str, text: &str) {
@@ -287,6 +287,35 @@ fn each_unit_gets_its_own_test_command_and_the_repo_only_its_roots() {
     assert!(!loaded.tests.contains_key("blank"));
 }
 
+/// A unit whose directories hold different toolchains gets no command, and init says why.
+#[test]
+fn a_unit_whose_directories_disagree_gets_no_command_and_a_note() {
+    let mut initial = vec![];
+    for d in ["src/a", "src/b", "src/c"] {
+        initial.extend(files_in(d, 3));
+    }
+    initial.extend(s(&["src/a/test_x.py", "src/b/Makefile"]));
+    let mut rounds: Vec<Vec<String>> = (0..3).map(|_| s(&["src/a/f0.py", "src/b/f0.py"])).collect();
+    rounds.extend(solo_rounds(&["src/c"]));
+    let (_tmp, dir) = build(&initial, &rounds);
+    write(&dir, "src/b/Makefile", "test:\n\techo ok\n");
+    let human = stewards(&dir, &["--human", "init"]);
+    let human = String::from_utf8_lossy(&human.stdout).into_owned();
+    std::fs::remove_dir_all(dir.join(".stewards")).unwrap();
+    let v = init(&dir);
+    let a = &v["units"][0];
+    assert_eq!(a["name"], "a", "{v}");
+    assert!(a.get("test_command").is_none(), "{v}");
+    let note = a["test_note"].as_str().unwrap();
+    for cmd in [
+        "python3 -m unittest discover -s src/a",
+        "make -C src/b test",
+    ] {
+        assert!(note.contains(cmd), "{note}");
+    }
+    assert!(human.contains(note), "{human}");
+}
+
 /// The fixture's layout: a Python test file and no manifest at the root give the repo-wide
 /// command, which a unit of the same toolchain leaves to the repo.
 #[test]
@@ -295,20 +324,10 @@ fn a_root_test_layout_sets_the_repo_wide_command() {
     let v = init(&dir);
     assert!(v["units"][0].get("test_command").is_none(), "{v}");
     let loaded = load_repo(&dir).unwrap();
-    let cmds: Vec<String> = loaded
-        .repo
-        .commands
-        .test
-        .iter()
-        .map(|c| {
-            serde_json::to_value(c)
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
-        .collect();
-    assert_eq!(cmds, ["python3 -m unittest"]);
+    assert!(matches!(
+        &loaded.repo.commands.test[..],
+        [CommandEntry::Plain(c)] if c == "python3 -m unittest"
+    ));
 }
 
 #[test]

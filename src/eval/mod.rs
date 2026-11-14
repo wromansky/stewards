@@ -1061,8 +1061,8 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
             units,
             unowned,
             tests,
-            ..
-        } => Some((dir, units, unowned, tests)),
+            test_commands,
+        } => Some((dir, units, unowned, tests, test_commands)),
         Source::Repo { commit, build } => {
             let commit = &pinned_commit(plan, commit)?;
             notes.build_s = Some(clone_and_build(plan, commit, build, &base, &cache)?);
@@ -1090,12 +1090,17 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
                 check_setup_dir(d)?;
                 d.clone()
             }
-            (Some((source, units, unowned, _)), None) => {
+            (Some((source, units, unowned, _, test_commands)), None) => {
                 let dir = plan.work.join("0/repo");
                 arms_sh(plan, "full", &dir, &path_on, source)?;
                 add_context_file(driver, &dir)?;
-                let tests = plan.suite.test_commands();
-                notes.units = Some(set_full_units(&plan.evals, &dir, units, unowned, &tests)?);
+                notes.units = Some(set_full_units(
+                    &plan.evals,
+                    &dir,
+                    units,
+                    unowned,
+                    test_commands,
+                )?);
                 r.session(SessionSpec {
                     label: "adopt".into(),
                     task: None,
@@ -1116,7 +1121,7 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
             )?;
             Err(err)
         };
-        if let Some((_, _, unowned, tests)) = fixture {
+        if let Some((_, _, unowned, tests, _)) = fixture {
             if plan.setup_dir.is_none() {
                 git(&dir, &["add", "-A"])?;
             }

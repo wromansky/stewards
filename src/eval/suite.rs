@@ -132,14 +132,6 @@ impl Suite {
         }
     }
 
-    /// The hand-set units' test commands of a `fixture` suite.
-    pub fn test_commands(&self) -> BTreeMap<String, String> {
-        match &self.source {
-            Source::Fixture { test_commands, .. } => test_commands.clone(),
-            Source::Repo { .. } => BTreeMap::new(),
-        }
-    }
-
     /// The pinned commit of a `repo` suite.
     pub fn commit(&self) -> Option<&str> {
         match &self.source {

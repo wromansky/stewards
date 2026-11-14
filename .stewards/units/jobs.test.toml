@@ -164,7 +164,7 @@ command = "cargo test --test review a_header_listing_an_unstamped_unknown_or_rep
 id = "submit-writes-result"
 interface = "submit-file"
 given = "a maintainer review or explain job, first answered with unparseable JSON, then with a valid answer"
-expect = "the rejected submit writes no result file; the accepted one writes exactly what it printed to api-maintainer.result.json"
+expect = "the rejected submit writes no result file; the accepted one writes exactly what it printed to api-maintainer-<snap>.result.json"
 level = "integration"
 command = "cargo test --test submit an_accepted_submit_writes_what_it_printed_to_the_result_file"
 
@@ -191,3 +191,51 @@ given = "a workspace repo directory whose name holds a backtick or instruction-l
 expect = "a backtick is unsafe_path; other text stays inside the handoff's code span"
 level = "integration"
 command = "cargo test --test next a_workspace_repo_directory_name_cannot_steer_the_handoff"
+
+[[scenario]]
+id = "answer-too-long-target"
+interface = "answer-too-long"
+given = "a maintainer answer with a 302-character field capped at 300"
+expect = "answer_too_long saying 302 characters, cap 300, cut to 240 or fewer; the fix says it does not count toward the three tries"
+level = "integration"
+command = "cargo test --test submit answer_too_long_says_how_far_over_and_a_target_well_under_the_cap"
+
+[[scenario]]
+id = "submit-brief-by-snapshot"
+interface = "submit-file"
+given = "two briefs for one job at different snapshots"
+expect = "an answer named for neither is no_brief; one named for a brief whose header disagrees is no_brief; one named for the current brief succeeds and leaves the other"
+level = "integration"
+command = "cargo test --test submit with_two_briefs_for_the_job_only_an_answer_named_for_one_finds_it"
+
+[[scenario]]
+id = "brief-write-removes-superseded"
+interface = "brief-write"
+given = "an older snapshot's tester brief and answer beside its result, another job's brief and non-job names"
+expect = "writing the tester brief removes only the older brief and answer"
+level = "integration"
+command = "cargo test --test brief writing_a_brief_removes_the_jobs_superseded_brief_and_answer_and_nothing_else"
+
+[[scenario]]
+id = "review-old-handoff-no-file"
+interface = "brief-path"
+given = "a review brief written again at a new snapshot"
+expect = "the old brief is gone, so the old handoff names a file that does not exist"
+level = "integration"
+command = "cargo test --test review a_new_review_brief_removes_the_superseded_one_so_an_old_handoff_names_no_file"
+
+[[scenario]]
+id = "job-name-round-trip"
+interface = "job-name"
+given = "every name rel_path builds, its answer and result names, and near-miss names"
+expect = "job_of reads each built name back and rejects every near miss"
+level = "unit"
+command = "cargo test --lib job_of_reads_back_every_name_rel_path_builds_and_nothing_else"
+
+[[scenario]]
+id = "unit-own-test-command"
+interface = "command-allowlist"
+given = "a tester repro using another unit's test command, then a scenario and repro using its own"
+expect = "the other unit's is command_not_allowed; its own is accepted and the test card command is unchanged"
+level = "integration"
+command = "cargo test --test submit_roles a_units_own_test_command_is_allowed_for_its_jobs_and_no_other_units"

@@ -1,11 +1,11 @@
 unit = "jobs"
 
 [reviewed]
-commit = "7757a5d8b2d99818f73c6d30b1c9fa5e02e9eb51"
-fingerprint = "sha256:e0a93f2d15fc7d4d8aa733575ed03157052f345a0119d899d6c1208813aa2915"
-tree = "21a94cc72a022309ab2edc6666879a5340598219"
-tester = "21a94cc72a022309ab2edc6666879a5340598219"
-documenter = "21a94cc72a022309ab2edc6666879a5340598219"
+commit = "0f569c2c9170d04e4f55bd3c68183e25778cdd1d"
+fingerprint = "sha256:51aa0b542fdfdcd7a824930d7a973f0efb12727efa726879e330e54765bacf75"
+tree = "4d596136cb664c816297691ed1f66376a7ec9e12"
+tester = "4d596136cb664c816297691ed1f66376a7ec9e12"
+documenter = "4d596136cb664c816297691ed1f66376a7ec9e12"
 
 [[interface]]
 id = "brief-header"
@@ -15,12 +15,12 @@ contract = "A brief's first line is `<!-- stewards-job {json Header} -->`; a mis
 [[interface]]
 id = "brief-path"
 anchor = "src/brief.rs::rel_path"
-contract = "Briefs live at `.stewards/briefs/<unit>-<role>.md` (`architect.md`, the reviewer's `review.md`); developer briefs at `<unit>-developer-<n>.md`, n from 1. A brief's answer file is its path with `.md` replaced by `.answer.json` (answer_rel), its result file by `.result.json` (result_rel)."
+contract = "Briefs live at `.stewards/briefs/<unit>-<role>-<snap>.md` (`architect-<snap>.md`, `review-<snap>.md`; developer `<unit>-developer-<n>-<snap>.md`, n from 1), <snap> the snapshot's first 8 hex chars. Answer and result files swap `.md` for `.answer.json` / `.result.json`."
 
 [[interface]]
 id = "brief-write"
 anchor = "src/brief.rs::write_text"
-contract = "Writing a brief removes its stale `.answer.json`; a developer brief run also removes job files past the task list's end."
+contract = "Writing a brief removes its stale `.answer.json` and the job's briefs and answers at other snapshots (result files stay); a developer brief run also removes job files past the task list's end."
 
 [[interface]]
 id = "brief-build"
@@ -30,7 +30,7 @@ contract = "Packs and frames a role's brief; `unsafe_path` for a repo root with 
 [[interface]]
 id = "submit-file"
 anchor = "src/submit.rs::submit_file"
-contract = "Needs a known unit (none for architect, reviewer), a header matching unit, role, task and tree id (a reviewer's units known, stamped, once), a regular answer file <=256 KiB; runs the handler, retires its own .answer.json, appends telemetry, writes its output to the brief's .result.json."
+contract = "Needs a known unit (none for architect, reviewer); an answer file named as a job file of this job picks the brief at that snapshot, else the job's one brief; the header must match unit, role, task, tree id and brief name; answer <=256 KiB; retires, logs telemetry, writes .result.json."
 
 [[interface]]
 id = "anchor-name-bare"
@@ -81,6 +81,21 @@ contract = "The answer's snapshot must match the header's (else no_brief) and gi
 id = "brief-handoff"
 anchor = "src/brief.rs::handoff"
 contract = "The one sentence for a brief at an absolute path, the same for every role and every command that writes a brief: Read `<path>` and follow it. A path check_root refuses is `unsafe_path`."
+
+[[interface]]
+id = "job-name"
+anchor = "src/brief.rs::job_of"
+contract = "Reads unit, role, task n and snap back from a brief, answer or result file name, only when rel_path builds exactly that name; any other name is None."
+
+[[interface]]
+id = "command-allowlist"
+anchor = "src/submit.rs::allowlist"
+contract = "A scenario command, repro or task check must start with a commands.test entry or the unit's own test card test_command, never another unit's; an architect flow check gets commands.test only."
+
+[[interface]]
+id = "answer-too-long"
+anchor = "src/submit.rs::check_text"
+contract = "A field over its cap is answer_too_long giving its length, the cap and a target at 80% of the cap; the fix says a length-only rejection does not count toward the three tries."
 
 [[anchor]]
 path = "src/brief.rs"
@@ -134,6 +149,30 @@ name = "handoff"
 path = "src/brief.rs"
 name = "result_rel"
 
+[[anchor]]
+path = "src/brief.rs"
+name = "job_of"
+
+[[anchor]]
+path = "src/brief.rs"
+name = "find"
+
+[[anchor]]
+path = "src/brief.rs"
+name = "superseded"
+
+[[anchor]]
+path = "src/submit.rs"
+name = "allowlist"
+
+[[anchor]]
+path = "src/submit.rs"
+name = "answered_job"
+
+[[anchor]]
+path = "src/submit.rs"
+name = "target"
+
 [[gap]]
 kind = "future"
 title = "unchanged check and writes are not atomic"
@@ -142,5 +181,5 @@ note = "A concurrent submit writing between check_unchanged and the writes is st
 
 [doc]
 overview = "The jobs unit is the hand-off between the tool and the agent that does a piece of work. The tool writes a brief for one role on one unit (or for the architect, who has no unit), or one reviewer brief covering every unit a change touched, and gives the agent one sentence to pass to a subagent: Read `<brief path>` and follow it. The agent answers in typed JSON, and submitting that answer checks it against the brief, writes the resulting updates, retires the brief, and leaves what it printed beside it as a result file for `stewards review` to collect. The brief carries the answer schema, with each field's length cap stated in it, and tells the agent that a field over its cap is rejected. Where the answer carries a card patch, submit also applies it to the unit's card: each list updates entries by key, and only the explicit remove lists delete. Each submit leaves one line of telemetry, so you can see how large the packs were and how many anchors agents had to open. It lives in src/brief.rs, src/submit.rs and src/telemetry.rs."
-how_it_works = "Building a brief packs and frames a role's context (build in src/brief.rs; build_review for the reviewer, whose header lists the units it covers and whose text asks the answer to copy its snapshot). It refuses an unsafe repo root (unsafe_path: a backtick, control, line-separator or invisible character), and a validator brief with no unjudged bug is a usage error. The brief goes to .stewards/briefs/<unit>-<role>.md (architect.md, review.md; <unit>-developer-<n>.md, n from 1) through rel_path; handoff turns its absolute path into the one sentence brief, next and init --draft print. Its first line is a JSON header that read_header parses; a missing file or bad header is no_brief. Submit (submit_file in src/submit.rs) checks the unit, the header and the answer file, then runs the role's handler. A text field over its cap is answer_too_long. check_patch validates a card patch before any write, and apply_patch upserts interface by id, anchors by path and name, gaps by title, then applies the remove lists. The reviewer's handler checks each unit with the maintainer, tester and documenter checks (check_review, check_scenarios, check_bugs, check_doc), writes nothing on any error, and per unit stamps an approval or writes a changes verdict's fix task; a review's output lists each unit's verdict and its findings with their replacements. Writes go through write_remove_and_retire, which refuses link paths and returns card_changed before any write if a checked file changed; it writes in order, then removes the brief. src/telemetry.rs then appends one JSON line of sizes and counts, and submit writes what it prints to the brief's .result.json (result_rel); either failure only warns."
+how_it_works = "Building a brief packs and frames a role's context (build in src/brief.rs; build_review for the reviewer, whose header lists its units and whose text asks the answer to copy its snapshot). It refuses an unsafe repo root (unsafe_path) and a validator brief with no unjudged bug (usage). rel_path names the brief .stewards/briefs/<unit>-<role>-<snap>.md (architect-<snap>.md, review-<snap>.md, <unit>-developer-<n>-<snap>.md), <snap> the snapshot's first 8 hex characters, so a handoff from an older round names no file; job_of reads a name back, and write_text removes the job's briefs and answers at other snapshots. handoff turns the path into the one sentence; read_header parses the JSON header line, and a missing file or bad header is no_brief. Submit (submit_file in src/submit.rs) takes the brief the answer file's name gives, else the job's one brief (find), checks the header, then runs the role's handler. A field over its cap is answer_too_long with a target at 80% of the cap. A command in an answer must start with a commands.test entry or that unit's own test command (allowlist). check_patch validates a card patch before any write; apply_patch upserts, then applies the remove lists. The reviewer's handler runs the maintainer, tester and documenter checks per unit and writes nothing on any error. Writes go through write_remove_and_retire: it refuses link paths, returns card_changed if a checked file changed, writes in order, then removes the brief. src/telemetry.rs appends one JSON line of sizes and counts, and submit writes what it prints to the brief's .result.json; either failure only warns."
 how_to_change = "Start in src/brief.rs for what a brief says or where it lives, and in src/submit.rs for what an answer must satisfy or what a submit writes. Keep the header line format and the brief path scheme in step, because submit finds the brief by path and trusts the header to match. Build a job path only through rel_path, and its answer and result paths through answer_rel and result_rel. Give a subagent a brief only through handoff, and keep check_root refusing every character that could end or hide its code span. Print brief text only through emit. Keep the caps the schema states in step with the caps check_text enforces. Keep write_remove_and_retire checking for changed files and link paths before it writes, and the brief removal last, so a failed submit leaves the brief to retry. A check a role's handler makes belongs in a shared function the reviewer calls too, so a review answer is held to the same rules; review re-checks a result's findings with ShownFinding::passes_submit_checks, so keep it in step with what submit checks. For card patches, an entry leaves the card only by a remove list that check_patch has checked. Keep telemetry to sizes and counts, never content, and never let it or the result file fail a submit. The tests are tests/brief.rs, tests/submit.rs, tests/submit_roles.rs, tests/developer.rs and tests/review.rs; for a change to what a brief contains, assert on the rendered brief text."

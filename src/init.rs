@@ -152,7 +152,7 @@ fn unit_test(
 ) -> (Option<String>, Option<String>) {
     let mut found: Vec<String> = vec![];
     for p in paths {
-        let Some(dir) = p.strip_suffix("/**").or((p == "**").then_some("")) else {
+        let Some(dir) = p.strip_suffix("/**") else {
             continue;
         };
         // simplified: one command per directory, the first in `dir_tests`' order

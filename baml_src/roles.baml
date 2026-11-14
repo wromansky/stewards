@@ -15,7 +15,8 @@ function MaintainerReview(unit: string, brief: string) -> MaintainerReviewAnswer
     anchors that moved, interface entries that changed, gaps opened or closed.
     `card_patch: null` when nothing changed. Set `tester_needed` when an
     interface's behavior changed on purpose. With no diff in the pack this is
-    a first review: draft the card from source and approve.
+    a first review of existing code: draft the card from source, record each
+    problem as a gap in the card patch, not a finding, and approve.
 
     {{ ctx.output_format }}
 

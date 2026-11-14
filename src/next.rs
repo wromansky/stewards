@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::anchors;
 use crate::brief;
-use crate::check::{CheckReport, changed_since, check_at, one_line, stale_files};
+use crate::check::{CheckReport, changed_since, check_at, one_line, stale_files, unowned_ok};
 use crate::debt::{DebtItem, is_debt_line};
 use crate::git;
 use crate::llm::Mode;
@@ -51,6 +51,22 @@ pub struct NextReport {
     pub architect: bool,
     pub flow_checks: Vec<FlowCheck>,
     pub check: CheckReport,
+    /// Files no unit owns that changed or were added since a stamp, outside `unowned_ok`: no
+    /// reviewer is shown them, so `next` and `review` are not clean while any is left.
+    pub unowned_changed: Vec<String>,
+}
+
+impl NextReport {
+    /// The guidance line for `unowned_changed`, when it has any.
+    pub fn unowned_line(&self) -> Option<String> {
+        (!self.unowned_changed.is_empty()).then(|| {
+            format!(
+                "These changed files belong to no unit and were not reviewed: {}. Add them to a \
+                 unit in .stewards/units.toml, then run stewards review again.",
+                self.unowned_changed.join(", ")
+            )
+        })
+    }
 }
 
 /// What `next` does with the brief of each job it lists.
@@ -113,12 +129,52 @@ pub fn next(ws: &Workspace, task: Option<&str>, briefs: Briefs, roles: bool) -> 
         }
         jobs.extend(first_reviews);
     }
+    let mut unowned_changed = vec![];
+    for ((repo, loaded), snapshot) in ws.loaded_repos()?.into_iter().zip(&snapshots) {
+        let paths = changed_unowned(repo, loaded, snapshot)?;
+        unowned_changed.extend(paths.iter().map(|p| ws.display_name(repo, p)));
+    }
     Ok(NextReport {
         architect: jobs.iter().any(|j| j.role == Role::Architect),
         jobs,
         flow_checks: vec![],
         check: check_at(ws, None, &snapshots)?,
+        unowned_changed,
     })
+}
+
+/// The files in `snapshot` that no unit owns and `unowned_ok` does not list, changed or added
+/// since the oldest stamp of the repo: since any stamp, as a tree has no time.
+fn changed_unowned(
+    repo: &Repo,
+    loaded: &crate::model::Loaded,
+    snapshot: &str,
+) -> Result<Vec<String>> {
+    let root = &repo.root;
+    let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+    let ok = unowned_ok(&loaded.repo)?;
+    let entries = git::ls_tree(root, snapshot)?;
+    let mut trees: Vec<&str> = loaded
+        .cards
+        .values()
+        .filter_map(|c| c.reviewed.as_ref().map(|r| r.tree.as_str()))
+        .filter(|t| git::has_object(root, t))
+        .collect();
+    trees.sort();
+    trees.dedup();
+    let mut paths = vec![];
+    for tree in trees {
+        paths.extend(git::diff_names(root, tree, snapshot)?);
+    }
+    paths.retain(|p| {
+        router.owner(p).is_none()
+            && !router.tool_owned(p)
+            && !ok.is_match(p)
+            && entries.iter().any(|(e, _)| e == p)
+    });
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 fn write_role_brief(repo: &Repo, unit: Option<&str>, briefs: Briefs, job: &mut Job) -> Result<()> {
@@ -584,6 +640,7 @@ impl Human for NextReport {
                 format!("  - debt added {path}:{}: {}", d.line, one_line(&d.text))
             }));
         }
+        out.extend(self.unowned_line().map(|l| format!("\n{}", one_line(&l))));
         out.push(String::new());
         out.push(self.check.render());
         out.join("\n")
@@ -610,7 +667,10 @@ pub fn run(
     let report = next(&ws, task, briefs, roles)?;
     emit(&report, g.human);
     Ok(
-        if report.jobs.is_empty() && report.check.failures.is_empty() {
+        if report.jobs.is_empty()
+            && report.check.failures.is_empty()
+            && report.unowned_changed.is_empty()
+        {
             ExitCode::SUCCESS
         } else {
             ExitCode::from(1)

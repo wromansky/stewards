@@ -439,8 +439,21 @@ fn maintainer(
     let entries = git::ls_tree(root, &snapshot)?;
     let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
     let mut problems = vec![];
+    let old = loaded.card(unit);
+    // never stamped: a first review of existing code records problems as gaps and approves
+    let first_review = old.reviewed.is_none();
     // `tasks` is the developers' task list to write; None removes it.
     let (patch, pulled, notes, tester_needed, tasks) = match &answer {
+        Answer::MaintainerReview(a) if first_review => {
+            check_first_review(&mut problems, &a.verdict, &a.findings);
+            (
+                &a.card_patch,
+                &a.pulled_anchors,
+                &a.notes,
+                a.tester_needed,
+                None,
+            )
+        }
         Answer::MaintainerReview(a) => {
             let fix = check_review(&mut problems, &a.verdict, &a.findings, root, unit, &router);
             (
@@ -461,12 +474,18 @@ fn maintainer(
         }
         _ => unreachable!("a maintainer answer parses to a maintainer variant"),
     };
-    let old = loaded.card(unit);
     let alive = |a: &model::Anchor| anchor_alive(root, &entries, &router, unit, a);
     check_patch(&mut problems, patch.as_ref(), &old, alive);
     check_common(&mut problems, pulled, notes);
     if !problems.is_empty() {
-        return Err(rejected(problems));
+        let asked_changes = problems
+            .iter()
+            .any(|(_, e)| e.problem.starts_with(FIRST_REVIEW));
+        let mut err = rejected(problems);
+        if asked_changes && let Some(e) = err.downcast_mut::<CliError>() {
+            e.fix = FIRST_REVIEW_FIX.into();
+        }
+        return Err(err);
     }
 
     let (mut card, patched) = apply_patch(&old, patch.as_ref());
@@ -583,6 +602,43 @@ fn maintainer(
     let brief_rel = brief::rel_path(Some(unit), Role::Maintainer, None, &header.snapshot);
     write_remove_and_retire(repo, before, &checked, &edits, &brief_rel)?;
     Ok(out)
+}
+
+/// How each first-review problem starts; it also picks `FIRST_REVIEW_FIX` as the error's fix.
+const FIRST_REVIEW: &str = "a first review of existing code";
+const FIRST_REVIEW_FIX: &str = "move each finding into `card_patch.gaps` (kind `bug` with a repro \
+when you can show one, otherwise `gap`), set the verdict to `approve` with no findings, and rerun \
+submit; a first review records problems and never asks for existing code to change";
+
+/// A never-stamped unit's review: `approve` and no findings, each problem a gap instead.
+fn check_first_review(problems: &mut Problems, verdict: &Verdict, findings: &[types::Finding]) {
+    if *verdict == Verdict::Changes {
+        problems.push((
+            "answer_parse_failed",
+            FieldError {
+                field: "verdict".into(),
+                problem: format!(
+                    "{FIRST_REVIEW} is `approve`; it records problems as gaps, not `changes`"
+                ),
+                example: "\"approve\"".into(),
+            },
+        ));
+    }
+    for (i, f) in findings.iter().enumerate() {
+        problems.push((
+            "answer_parse_failed",
+            FieldError {
+                field: format!("findings[{i}]"),
+                problem: format!(
+                    "{FIRST_REVIEW} has no findings; record {}:{} as a gap in card_patch.gaps",
+                    f.file, f.line
+                ),
+                example: "{\"kind\": \"gap\", \"title\": \"list returns every item\", \
+                          \"anchor\": \"src/api/items.py::list_items\", \"note\": \"no pagination\"}"
+                    .into(),
+            },
+        ));
+    }
 }
 
 /// The name of a finding's rung, as the answer spells it.
@@ -889,7 +945,7 @@ fn tester(
     }
 
     apply_scenarios(&mut tests, &a.scenario_patch);
-    apply_bugs(&mut card, &a.bugs);
+    let duplicates = apply_bugs(&mut card, &a.bugs);
     // At submit time, so the tester's own new test files do not call the tester back.
     if let Some(r) = card.reviewed.as_mut() {
         r.tester = Some(git::snapshot(&repo.root)?);
@@ -916,15 +972,20 @@ fn tester(
 
     let ids = a.scenario_patch.iter().map(|s| s.id.as_str());
     let titles = a.bugs.iter().map(|b| b.title.as_str());
+    let titles = titles.filter(|t| card.gaps.iter().any(|g| g.title == *t));
     let passed = a.results.iter().filter(|r| r.pass).count();
+    let mut summary = format!(
+        "{unit} tester: {}; {passed}/{} pass; {}; {} written",
+        named(count(ids.len(), "scenario") + " upserted", ids),
+        a.results.len(),
+        named(count(titles.clone().count(), "bug"), titles),
+        count(a.tests_written.len(), "test"),
+    );
+    for d in &duplicates {
+        summary += &format!("; {}", one_line(d));
+    }
     Ok(Submitted {
-        summary: format!(
-            "{unit} tester: {}; {passed}/{} pass; {}; {} written",
-            named(count(ids.len(), "scenario") + " upserted", ids),
-            a.results.len(),
-            named(count(titles.len(), "bug"), titles),
-            count(a.tests_written.len(), "test"),
-        ),
+        summary,
         pulled_anchors: a.pulled_anchors,
         ..Default::default()
     })
@@ -1035,8 +1096,17 @@ fn apply_scenarios(tests: &mut TestCard, scenarios: &[types::Scenario]) {
     }
 }
 
-/// Upserts each bug onto the card as a bug gap, by title.
-fn apply_bugs(card: &mut UnitCard, bugs: &[types::Bug]) {
+/// Upserts each bug onto the card as a bug gap, by title. A bug with a new title on the anchor
+/// of a bug the card already has is a probable duplicate: it is not added, and the summary line
+/// saying so is returned, one per such bug.
+fn apply_bugs(card: &mut UnitCard, bugs: &[types::Bug]) -> Vec<String> {
+    let known: Vec<model::Gap> = card
+        .gaps
+        .iter()
+        .filter(|g| g.kind == GapKind::Bug)
+        .cloned()
+        .collect();
+    let mut duplicates = vec![];
     for b in bugs {
         // the named interface's anchor shows the validator where the bug is; a known bug keeps
         // its severity and issue, and its anchor when no interface is named
@@ -1045,12 +1115,25 @@ fn apply_bugs(card: &mut UnitCard, bugs: &[types::Bug]) {
             .as_ref()
             .and_then(|id| card.interface.iter().find(|i| &i.id == id));
         let kept = card.gaps.iter().find(|g| g.title == b.title);
+        let anchor = named
+            .map(|i| i.anchor.clone())
+            .or_else(|| kept.and_then(|o| o.anchor.clone()));
+        if kept.is_none()
+            && let Some(same) = known
+                .iter()
+                .find(|o| o.anchor.is_some() && o.anchor == anchor)
+        {
+            duplicates.push(format!(
+                "bug \"{}\": possible duplicate of \"{}\"; reuse that title to update it, or give \
+                 a different anchor",
+                b.title, same.title
+            ));
+            continue;
+        }
         let g = model::Gap {
             kind: GapKind::Bug,
             title: b.title.clone(),
-            anchor: named
-                .map(|i| i.anchor.clone())
-                .or_else(|| kept.and_then(|o| o.anchor.clone())),
+            anchor,
             note: b.evidence.clone(),
             repro: Some(b.repro.clone()),
             severity: kept.and_then(|o| o.severity.clone()),
@@ -1058,6 +1141,7 @@ fn apply_bugs(card: &mut UnitCard, bugs: &[types::Bug]) {
         };
         put(&mut card.gaps, g, |o, n| o.title == n.title);
     }
+    duplicates
 }
 
 /// The documenter's submit after its brief and `before` are read; public for the lost-update tests.
@@ -1310,8 +1394,9 @@ pub fn reviewer(
     let short: String = header.snapshot.chars().take(7).collect();
     for (u, old, mut card, fix) in reviews {
         let unit = u.unit.as_str();
-        apply_bugs(&mut card, u.bugs.as_deref().unwrap_or_default());
+        let duplicates = apply_bugs(&mut card, u.bugs.as_deref().unwrap_or_default());
         let mut part = vec![card_line(&old, &card)];
+        part.extend(duplicates);
         if let Some(doc) = &u.doc {
             card.doc = Some(model_doc(doc));
             part.push("doc updated".into());
@@ -1884,7 +1969,8 @@ fn check_list(out: &mut Problems, field: &str, len: usize) {
             FieldError {
                 field: field.to_string(),
                 problem: format!(
-                    "{len} entries; the cap is {LIST_CAP}; cut to {} or fewer",
+                    "{len} entries; {} over the cap of {LIST_CAP}; cut to {} or fewer",
+                    len - LIST_CAP,
                     target(LIST_CAP)
                 ),
                 example: format!("at most {} entries", target(LIST_CAP)),
@@ -2124,7 +2210,8 @@ fn check_text(out: &mut Problems, field: &str, value: &str, cap: usize, one_line
         add(
             "answer_too_long",
             format!(
-                "{n} characters; the cap is {cap}; cut to {} or fewer",
+                "{n} characters; {} over the cap of {cap}; cut to {} or fewer",
+                n - cap,
                 target(cap)
             ),
             &example,

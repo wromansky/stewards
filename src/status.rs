@@ -32,6 +32,8 @@ pub struct UnitStatus {
 pub struct StatusReport {
     pub units: Vec<UnitStatus>,
     pub uninitialized: Vec<String>,
+    /// What `fresh` rests on: `guide::STAMP_CLAIM`.
+    pub stamp_claim: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<serde_json::Value>,
 }
@@ -40,6 +42,7 @@ pub fn status(ws: &Workspace) -> Result<StatusReport> {
     let mut report = StatusReport {
         units: vec![],
         uninitialized: vec![],
+        stamp_claim: crate::guide::STAMP_CLAIM,
         telemetry: None,
     };
     for repo in &ws.repos {
@@ -103,6 +106,8 @@ impl Human for StatusReport {
                 one_line(&u.purpose).replace('|', "\\|")
             )
         }));
+        out.push(String::new());
+        out.push(self.stamp_claim.to_string());
         if !self.uninitialized.is_empty() {
             out.push(String::new());
             out.push(format!(

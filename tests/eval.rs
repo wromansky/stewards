@@ -17,6 +17,7 @@ use stewards::eval::{
     path_without_stewards, reads_git_history, reviewed_units, ritual_steps, shell_reads,
     stewards_commands, task_prompt, without_developers, would_exceed,
 };
+use stewards::eval::{credential_secrets, redact_secrets};
 use stewards::output::CliError;
 use tempfile::TempDir;
 
@@ -1171,6 +1172,7 @@ struct Replay {
     adopt_stamps: &'static [&'static str],
     task_writes: Vec<(&'static str, &'static str)>,
     context: Option<(&'static str, &'static str)>,
+    credentials: Vec<PathBuf>,
 }
 
 impl Replay {
@@ -1182,6 +1184,7 @@ impl Replay {
             adopt_stamps: &[],
             task_writes: vec![],
             context: None,
+            credentials: vec![],
         }
     }
 }
@@ -1253,6 +1256,10 @@ impl Driver for Replay {
 
     fn context_file(&self) -> Option<(&'static str, &'static str)> {
         self.context
+    }
+
+    fn credential_files(&self) -> Vec<PathBuf> {
+        self.credentials.clone()
     }
 }
 
@@ -1472,6 +1479,8 @@ fn full_arm_sets_the_hand_drawn_units_and_stops_when_adoption_is_not_clean() {
     // every unit its own test command, and none repo-wide, so no unit is shown another's
     let loaded = stewards::model::load_repo(&adopted).unwrap();
     assert!(loaded.repo.commands.test.is_empty());
+    // the suite's allowed-unowned names are the adopted repo's `unowned_ok`
+    assert_eq!(loaded.repo.unowned_ok, [".gitignore", "AGENTS.md"]);
     for (unit, cmd) in [
         ("api", "python3 -m unittest discover -s api"),
         ("client", "node --test client/"),
@@ -1814,6 +1823,8 @@ fn a_repo_suite_prepares_each_arm_from_one_clone_and_copies_one_build() {
                 assert!(agents.starts_with("# notes\n") && agents.contains(block));
                 assert!(!agents.contains("old block"));
                 assert_eq!(run["next_check"]["exit_code"], 0);
+                let loaded = stewards::model::load_repo(&dir).unwrap();
+                assert_eq!(loaded.repo.unowned_ok, ["AGENTS.md"]);
             }
             other => panic!("{other}"),
         }
@@ -2366,6 +2377,26 @@ fn every_driver_maps_its_subagent_sample_the_same_way() {
     }
 }
 
+/// The context file a run copy gets is newer than every stamp and no unit owns it: the `full`
+/// tree allows it, so `next` stays clean there.
+#[test]
+fn a_repo_suites_full_tree_allows_the_context_file_unowned_and_next_stays_clean() {
+    let (repo, _) = self_style_repo();
+    let tmp = TempDir::new().unwrap();
+    let mut p = self_plan(tmp.path(), repo.path());
+    p.arms = vec![Arm::Full];
+    p.keep_work = true;
+    let mut driver = Replay::new(sample("subagent"), Status::Ok);
+    driver.context = Some(("CLAUDE.md", "@AGENTS.md\n"));
+    execute(&driver, &p).unwrap();
+    let runs = run_files(&tmp.path().join("results"));
+    let dir = PathBuf::from(runs[0]["workdir"].as_str().unwrap());
+    assert!(dir.join("CLAUDE.md").is_file());
+    assert_eq!(runs[0]["next_check"]["exit_code"], 0, "{}", runs[0]);
+    let loaded = stewards::model::load_repo(&dir).unwrap();
+    assert_eq!(loaded.repo.unowned_ok, ["AGENTS.md", "CLAUDE.md"]);
+}
+
 #[test]
 fn a_context_file_is_committed_into_every_arm_copy_with_an_agents_md() {
     let tmp = TempDir::new().unwrap();
@@ -2413,6 +2444,11 @@ fn a_context_file_is_committed_into_every_arm_copy_with_an_agents_md() {
     let summary = summary_json(tmp.path());
     let adopted = PathBuf::from(summary["adoption"]["workdir"].as_str().unwrap());
     assert!(adopted.join("CLAUDE.md").is_file());
+    let loaded = stewards::model::load_repo(&adopted).unwrap();
+    assert_eq!(
+        loaded.repo.unowned_ok,
+        [".gitignore", "AGENTS.md", "CLAUDE.md"]
+    );
     assert_eq!(
         summary["setup"]["added_paths"],
         serde_json::json!(["AGENTS.md"])
@@ -3211,7 +3247,9 @@ fn hermes_driver_runs_each_session_in_its_own_home_and_kills_the_daemon() {
     let key = "sk-test-0123456789abcdef";
     std::fs::write(
         user.join(".env"),
-        format!("DEEPSEEK_API_KEY={key}\nexport GH_TOKEN='tok-0123456789'\nREGION=eu-west-123\n"),
+        format!(
+            "DEEPSEEK_API_KEY={key}\nexport GH_TOKEN='tok-0123456789abcdef'\nREGION=eu-west-123\n"
+        ),
     )
     .unwrap();
     std::fs::write(user.join("SOUL.md"), "personal").unwrap();
@@ -3267,10 +3305,12 @@ fn hermes_driver_runs_each_session_in_its_own_home_and_kills_the_daemon() {
         .parse(&sessions.join("transcript.jsonl"), 0.0, true)
         .unwrap();
     assert_eq!(run.peak_main_context, Some(9));
-    // the key and token the session printed are not kept; other values are
+    // the key and token the session printed are not kept, once the runner's shared step ran;
+    // other values are
+    redact_secrets(&hermes, &sessions).unwrap();
     let out = std::fs::read_to_string(sessions.join("stdout.log")).unwrap();
     assert!(
-        !out.contains(key) && !out.contains("tok-0123456789"),
+        !out.contains(key) && !out.contains("tok-0123456789abcdef"),
         "{out}"
     );
     assert!(
@@ -3482,4 +3522,156 @@ fn a_listing_opens_no_file_on_any_driver() {
             run.files_opened_tree
         );
     }
+}
+
+/// Writes `files` (path, text) under `dir`.
+fn write_files(dir: &Path, files: &[(&str, &str)]) {
+    for (path, text) in files {
+        let path = dir.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+}
+
+/// Each driver names the credential file it links; the runner's one step redacts every secret
+/// value of it in every kept session file, nested ones too, and leaves short and non-secret
+/// values.
+#[test]
+fn every_drivers_credential_secrets_are_redacted_in_its_kept_session_files() {
+    let tmp = TempDir::new().unwrap();
+    let t = tmp.path();
+    let limit = Duration::from_secs(1);
+    // fake credentials, as each harness writes them
+    let pi_access = "pi-access-AAAAAAAAAAAAAAAAAAAA";
+    let pi_refresh = "pi-refresh-BBBBBBBBBBBBBBBBBBBB";
+    let pi_key = "sk-pi-CCCCCCCCCCCCCCCCCCCC";
+    write_files(
+        &t.join("pi"),
+        &[(
+            "auth.json",
+            &format!(
+                r#"{{"anthropic": {{"type": "oauth", "access": "{pi_access}", "refresh": "{pi_refresh}", "expires": 1767225600000}}, "openai": {{"type": "api_key", "key": "{pi_key}"}}}}"#
+            ),
+        )],
+    );
+    let claude_access = "sk-ant-oat01-DDDDDDDDDDDDDDDDDDDD";
+    let claude_refresh = "sk-ant-ort01-EEEEEEEEEEEEEEEEEEEE";
+    write_files(
+        &t.join("claude"),
+        &[(
+            ".credentials.json",
+            &format!(
+                r#"{{"claudeAiOauth": {{"accessToken": "{claude_access}", "refreshToken": "{claude_refresh}", "expiresAt": 1767225600000, "scopes": ["user:inference-scope-long"], "subscriptionType": "subscription-type-long"}}}}"#
+            ),
+        )],
+    );
+    let hermes_key = "sk-hermes-FFFFFFFFFFFFFFFFFFFF";
+    write_files(
+        &t.join("hermes"),
+        &[(
+            ".env",
+            &format!(
+                "DEEPSEEK_API_KEY=\"{hermes_key}\"\nexport GH_TOKEN=short-token\nREGION=eu-west-1-a-long-region\n"
+            ),
+        )],
+    );
+    let pi = Pi {
+        bin: t.join("pi-bin"),
+        limit,
+        agent_dir: Some(t.join("pi")),
+    };
+    let claude = ClaudeCode {
+        bin: t.join("claude-bin"),
+        limit,
+        config_dir: Some(t.join("claude")),
+        default_model: None,
+    };
+    let hermes = Hermes {
+        bin: t.join("hermes-bin"),
+        limit,
+        template: Some(t.join("hermes")),
+        installs: vec![],
+    };
+    let cases: [(&dyn Driver, Vec<&str>, Vec<&str>); 3] = [
+        (
+            &pi,
+            vec![pi_access, pi_refresh, pi_key],
+            vec!["1767225600000", "oauth"],
+        ),
+        (
+            &claude,
+            vec![claude_access, claude_refresh],
+            vec!["user:inference-scope-long", "subscription-type-long"],
+        ),
+        (
+            &hermes,
+            vec![hermes_key],
+            vec!["short-token", "eu-west-1-a-long-region"],
+        ),
+    ];
+    for (i, (driver, secrets, kept)) in cases.into_iter().enumerate() {
+        let mut found = credential_secrets(&driver.credential_files());
+        found.sort();
+        let mut want: Vec<String> = secrets.iter().map(|s| s.to_string()).collect();
+        want.sort();
+        assert_eq!(found, want, "driver {i}");
+        // a fake transcript and log, one nested as a child session's is
+        let all = [secrets.clone(), kept.clone()].concat().join(" ");
+        let sessions = t.join(format!("sessions-{i}"));
+        write_files(
+            &sessions,
+            &[
+                ("transcript.jsonl", &format!("{{\"text\": \"{all}\"}}\n")),
+                ("child/run-0/session.jsonl", &format!("cat creds: {all}\n")),
+            ],
+        );
+        redact_secrets(driver, &sessions).unwrap();
+        for f in ["transcript.jsonl", "child/run-0/session.jsonl"] {
+            let text = std::fs::read_to_string(sessions.join(f)).unwrap();
+            for s in &secrets {
+                assert!(!text.contains(s), "driver {i} {f}: {text}");
+            }
+            assert_eq!(text.matches("[redacted]").count(), secrets.len(), "{text}");
+            for k in &kept {
+                assert!(text.contains(k), "driver {i} {f}: {text}");
+            }
+        }
+    }
+}
+
+/// The runner applies the step to every session: the kept transcripts and the run record hold no
+/// credential value.
+#[test]
+fn the_runner_keeps_no_credential_value_in_session_files_or_run_records() {
+    let tmp = TempDir::new().unwrap();
+    // a value the sample transcripts hold, posing as a token
+    let token = "claude-haiku-5-5";
+    let creds = tmp.path().join("creds.json");
+    std::fs::write(&creds, format!(r#"{{"x": {{"accessToken": "{token}"}}}}"#)).unwrap();
+    let mut driver = Replay::new(sample("subagent"), Status::Ok);
+    driver.credentials = vec![creds];
+    let mut p = plan(tmp.path(), 1, None);
+    p.arms = vec![Arm::Bare];
+    execute(&driver, &p).unwrap();
+    let results = tmp.path().join("results");
+    let mut files = vec![];
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    walk(&results, &mut files);
+    let mut redacted = 0;
+    for f in &files {
+        let text = std::fs::read_to_string(f).unwrap();
+        assert!(!text.contains(token), "{}", f.display());
+        redacted += text.matches("[redacted]").count();
+    }
+    assert!(redacted > 0);
+    assert!(files.iter().any(|f| f.starts_with(results.join("runs"))));
 }

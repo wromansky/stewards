@@ -642,6 +642,102 @@ pub trait Driver {
     fn context_file(&self) -> Option<(&'static str, &'static str)> {
         None
     }
+
+    /// The credential files this harness's sessions are linked to (Pi's `auth.json`, Claude
+    /// Code's `.credentials.json`, Hermes's `.env`): `redact_secrets` keeps their values out of
+    /// the results.
+    fn credential_files(&self) -> Vec<PathBuf> {
+        vec![]
+    }
+}
+
+/// Words that mark a credential entry's value as a secret, matched in its name in any case.
+const SECRET_NAMES: [&str; 6] = ["key", "token", "secret", "password", "access", "refresh"];
+/// The shortest value taken as a secret: shorter ones (a region, a flag) are left in the results.
+const SECRET_MIN: usize = 16;
+
+/// Every value in the credential `files` that looks like a secret: in a JSON file each string,
+/// at any depth, under a name holding one of `SECRET_NAMES`; in any other (a dotenv file) each
+/// `NAME=value` line's value under such a name, quotes and `export ` removed; at least
+/// `SECRET_MIN` characters. A file that cannot be read gives none. No value is ever printed.
+pub fn credential_secrets(files: &[PathBuf]) -> Vec<String> {
+    fn secret_name(name: &str) -> bool {
+        let name = name.to_lowercase();
+        SECRET_NAMES.iter().any(|w| name.contains(w))
+    }
+    fn walk(v: &Value, secret: bool, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) if secret => out.push(s.clone()),
+            Value::Array(a) => a.iter().for_each(|v| walk(v, secret, out)),
+            Value::Object(o) => o
+                .iter()
+                .for_each(|(k, v)| walk(v, secret || secret_name(k), out)),
+            _ => {}
+        }
+    }
+    let mut out = vec![];
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        match serde_json::from_str::<Value>(&text) {
+            Ok(v) => walk(&v, false, &mut out),
+            Err(_) => out.extend(
+                text.lines()
+                    .filter_map(|l| l.trim().trim_start_matches("export ").split_once('='))
+                    .filter(|(name, _)| secret_name(name))
+                    .map(|(_, v)| v.trim().trim_matches(['"', '\'']).to_string()),
+            ),
+        }
+    }
+    out.retain(|s| s.chars().count() >= SECRET_MIN);
+    // the longest first, so one secret holding another is replaced whole
+    out.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    out.dedup();
+    out
+}
+
+/// `text` with every occurrence of each of `secrets` replaced by `[redacted]`.
+// simplified: exact occurrences only; a secret a transcript holds escaped (a JSON string of one
+// with a quote or backslash) or split stays. Match escaped forms if a credential ever has them.
+pub fn redact_text(text: &str, secrets: &[String]) -> String {
+    let mut text = text.to_string();
+    for s in secrets {
+        if text.contains(s.as_str()) {
+            text = text.replace(s.as_str(), "[redacted]");
+        }
+    }
+    text
+}
+
+/// Reads `driver`'s credential secrets now (after the session, so a token it refreshed is
+/// included) and redacts them in every text file under `dir`, at any depth; returns them, for
+/// the run record. Every driver's kept transcripts and logs go through this.
+pub fn redact_secrets(driver: &dyn Driver, dir: &Path) -> Result<Vec<String>> {
+    fn walk(dir: &Path, secrets: &[String]) -> Result<()> {
+        for e in std::fs::read_dir(dir)? {
+            let e = e?;
+            let path = e.path();
+            // a link (Hermes's home links) is not followed: its target is not kept
+            let kind = e.file_type()?;
+            if kind.is_dir() {
+                walk(&path, secrets)?;
+            } else if kind.is_file()
+                && let Ok(text) = std::fs::read_to_string(&path)
+            {
+                let redacted = redact_text(&text, secrets);
+                if redacted != text {
+                    std::fs::write(&path, redacted)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    let secrets = credential_secrets(&driver.credential_files());
+    if !secrets.is_empty() && dir.is_dir() {
+        walk(dir, &secrets)?;
+    }
+    Ok(secrets)
 }
 
 /// Set by a SIGINT or SIGTERM to the runner; `run_session` clears it when it kills its command.
@@ -960,6 +1056,7 @@ impl Runner<'_> {
         } else {
             None
         };
+        let secrets = redact_secrets(self.driver, &sessions)?;
         let kept = self.plan.results.join("sessions").join(&label);
         copy_dir(&sessions, &kept)?;
         if !self.plan.keep_work {
@@ -1050,7 +1147,7 @@ impl Runner<'_> {
         std::fs::create_dir_all(&runs)?;
         std::fs::write(
             runs.join(format!("{label}.json")),
-            serde_json::to_string_pretty(&record)?,
+            redact_text(&serde_json::to_string_pretty(&record)?, &secrets),
         )?;
         let survived = record
             .leftovers
@@ -1143,7 +1240,11 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
         let dir = match (fixture, &plan.setup_dir) {
             (None, _) => {
                 let dir = plan.work.join("0/repo");
-                full_repo_tree(&base, &dir)?;
+                // the block and the context file this eval writes are unowned and newer than
+                // every stamp
+                let mut allowed = vec!["AGENTS.md".to_string()];
+                allowed.extend(driver.context_file().map(|(name, _)| name.to_string()));
+                full_repo_tree(&base, &dir, &allowed)?;
                 notes.units = Some(format!(
                     "Units, cards, and docs are the repository's own at {}, with this binary's AGENTS.md block; no adoption session.",
                     plan.suite.commit().unwrap_or_default()
@@ -1169,6 +1270,9 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
                     unowned,
                     test_commands,
                 )?);
+                let mut allowed = unowned.clone();
+                allowed.extend(driver.context_file().map(|(name, _)| name.to_string()));
+                allow_unowned(&dir, &allowed)?;
                 let ran = r.session(SessionSpec {
                     label: "adopt".into(),
                     task: None,
@@ -1395,6 +1499,27 @@ fn set_full_units(
         proposed.join(", "),
         unowned.join(", ")
     ))
+}
+
+/// Adds `names` to `unowned_ok` in `dir`'s `.stewards/repo.toml`, keeping the rest of the file,
+/// so `next` and `review` do not ask for them to be given a unit.
+fn allow_unowned(dir: &Path, names: &[String]) -> Result<()> {
+    let path = dir.join(".stewards/repo.toml");
+    let text = std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
+    let mut doc: toml_edit::DocumentMut =
+        text.parse().with_context(|| path.display().to_string())?;
+    let list = doc
+        .entry("unowned_ok")
+        .or_insert(toml_edit::value(toml_edit::Array::new()))
+        .as_array_mut()
+        .with_context(|| format!("{}: unowned_ok is not an array", path.display()))?;
+    for name in names {
+        if !list.iter().any(|v| v.as_str() == Some(name)) {
+            list.push(name.as_str());
+        }
+    }
+    std::fs::write(&path, doc.to_string()).with_context(|| path.display().to_string())?;
+    Ok(())
 }
 
 fn setup_error(message: String, fix: &str) -> anyhow::Error {
@@ -1822,11 +1947,11 @@ fn pinned_commit(plan: &Plan, commit: &str) -> Result<String> {
 const ROOT_COMMIT: &str = "initial";
 
 /// A `repo` suite's `full` tree: `base` with this binary's AGENTS.md block upserted (as
-/// `stewards init` does), committed as the one root commit of `main`, every other ref deleted and
+/// `stewards init` does) and `allowed` added to `unowned_ok`, committed as the one root commit of `main`, every other ref deleted and
 /// the reflog expired. The clone's object store stays, unpruned: the units' stamp and role-mark
 /// trees are unreachable objects there, and `next` and the review pack diff from them; a unit
 /// whose tree is missing is `eval_setup_incomplete`.
-fn full_repo_tree(base: &Path, dir: &Path) -> Result<()> {
+fn full_repo_tree(base: &Path, dir: &Path, allowed: &[String]) -> Result<()> {
     copy_dir(base, dir)?;
     let repo = crate::workspace::Repo {
         name: String::new(),
@@ -1834,6 +1959,7 @@ fn full_repo_tree(base: &Path, dir: &Path) -> Result<()> {
         loaded: None,
     };
     crate::guide::upsert_block(&repo)?;
+    allow_unowned(dir, allowed)?;
     git(dir, &["checkout", "-q", "--orphan", "root"])?;
     git(dir, &["add", "-A"])?;
     git(dir, &["commit", "-qm", ROOT_COMMIT])?;

@@ -184,7 +184,11 @@ pub fn run(
 
 const ROLES: &str = "Roles (the tool packs their context; you only pass the handoff)
 - reviewer: reviews one change across the units it touched, runs their tests, keeps cards and docs true.
-- maintainer, tester, documenter, validator, architect, developer: the per-unit specialists behind `--roles`, plans and first reviews.";
+- maintainer, tester, documenter, validator, architect, developer: the per-unit specialists behind `--roles`, plans and first reviews.
+An approval stamps the unit: one reviewer, shown this snapshot's diff, reported no finding. A stamp is not proof the code is right; `stewards review --roles` is the deeper pass.";
+
+/// What a stamp claims, said by `status` beside freshness.
+pub const STAMP_CLAIM: &str = "A stamp records that one reviewer, shown this snapshot's diff, reported no finding; it is not proof the code is right. `stewards review --roles` is the deeper pass.";
 
 /// How a repository adopts stewards.
 const ADOPTION: &str = "Run `stewards init` and correct `.stewards/units.toml`, then `stewards init --draft` (it names the units and drafts each card) and start one subagent per handoff it prints, then run `stewards review --roles` until it exits 0.";
@@ -403,7 +407,10 @@ static GLOSSARY: [Term; 21] = [
         "snapshot",
         "a git tree of the working tree as it is now: tracked, modified, and untracked-but-not-ignored files.",
     ),
-    t("stamp", "recording that a unit was reviewed at a snapshot."),
+    t(
+        "stamp",
+        "recording that a unit was reviewed at a snapshot: one reviewer, shown that snapshot's diff, reported no finding. It is not proof the code is right; `review --roles` is the deeper pass.",
+    ),
     t(
         "fingerprint",
         "sha256 over the blobs of the files a unit owns in a snapshot; **stale**: the current fingerprint differs from the stamped one.",

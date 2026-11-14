@@ -1,6 +1,7 @@
 schema = 1
 name = "stewards"
 test_roots = ["tests"]
+unowned_ok = [".github/workflows/ci.yml", ".gitignore", "AGENTS.md", "Cargo.lock", "Cargo.toml", "DESIGN.md", "LICENSE", "README.md"]
 
 [commands]
 test = ["cargo test"]

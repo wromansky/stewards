@@ -46,4 +46,4 @@ paths = ["src/init.rs", "src/guide.rs", "src/harness.rs", "src/docs.rs", "tests/
 [[unit]]
 name = "eval"
 purpose = "The eval runner: suites and their manifests, arm setup, the Pi driver and transcript parser, the ritual gate and overhead report, and the fixture, tasks and seeded-bug repros it runs on."
-paths = ["src/eval/**", "tests/eval.rs", "tests/fixtures/transcripts/**", "evals/**"]
+paths = ["src/eval/**", "tests/eval.rs", "tests/eval_interrupt.rs", "tests/fixtures/transcripts/**", "evals/**"]

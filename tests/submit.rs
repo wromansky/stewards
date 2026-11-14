@@ -34,8 +34,13 @@ fn run(dir: &Path, home: &Path, args: &[&str]) -> (i32, Value) {
     common::json(run_in(dir, home, args))
 }
 
-/// Writes the review brief for api with `next`.
+/// Writes the review brief for api with `next`: a re-review, so api is stamped first (once) and
+/// then changed, since a first review may not ask for changes.
 fn review_job(dir: &Path, home: &Path) {
+    if card(dir).reviewed.is_none() {
+        assert_eq!(run(dir, home, &["stamp", "api"]).0, 0);
+        common::append(&dir.join("src/api/items.py"), "\n# changed\n");
+    }
     let (code, v) = run(
         dir,
         home,
@@ -123,6 +128,38 @@ fn rejected(answer: &Value, code: &str, field: &str) {
     );
 }
 
+/// A first review (api never stamped) approving with a finding is refused, writing nothing.
+#[test]
+fn a_first_review_approving_with_a_finding_is_rejected_and_writes_nothing() {
+    let (dir, home) = setup();
+    let d = dir.path();
+    let (code, v) = run(d, home.path(), &["next", "--roles", "--task", "adopt"]);
+    assert_eq!(code, 1, "{v}");
+    let before = fs::read(d.join(CARD)).unwrap();
+    let mut a = review("changes");
+    a["verdict"] = json!("approve");
+    let (code, v) = submit(d, home.path(), &a);
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (2, &json!("answer_parse_failed")),
+        "{v}"
+    );
+    assert_eq!(v["error"]["errors"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["error"]["errors"][0]["field"], "findings[0]", "{v}");
+    assert!(
+        v["error"]["errors"][0]["problem"]
+            .as_str()
+            .unwrap()
+            .contains("record src/api/items.py:4 as a gap in card_patch.gaps"),
+        "{v}"
+    );
+    assert_eq!(fs::read(d.join(CARD)).unwrap(), before);
+    assert!(
+        d.join(brief(d)).is_file(),
+        "a failed submit keeps the brief"
+    );
+}
+
 #[test]
 fn approve_stamps_the_brief_snapshot_so_a_later_edit_stays_stale() {
     let (dir, home) = setup();
@@ -194,7 +231,7 @@ fn changes_does_not_stamp_and_names_the_developer_brief() {
         )
     );
     assert_eq!(fs::read(dir.path().join(CARD)).unwrap(), before);
-    assert_eq!(freshness(dir.path(), home.path()), "unreviewed");
+    assert_eq!(freshness(dir.path(), home.path()), "stale");
 }
 
 #[test]
@@ -401,7 +438,7 @@ fn answer_too_long_says_how_far_over_and_a_target_well_under_the_cap() {
     assert_eq!(e["field"], "pulled_anchors[0]", "{v}");
     assert_eq!(
         e["problem"],
-        "302 characters; the cap is 300; cut to 240 or fewer"
+        "302 characters; 2 over the cap of 300; cut to 240 or fewer"
     );
     assert_eq!(e["example"], "at most 240 characters");
     assert!(
@@ -445,7 +482,7 @@ fn duplicate_verdict_key_is_rejected() {
     assert_eq!(code, 2);
     assert_eq!(v["error"]["code"], "answer_parse_failed");
     assert_eq!(v["error"]["errors"][0]["field"], "verdict");
-    assert_eq!(freshness(dir.path(), home.path()), "unreviewed");
+    assert_eq!(freshness(dir.path(), home.path()), "stale");
 }
 
 #[test]
@@ -1050,7 +1087,7 @@ fn a_header_mode_edited_from_explain_to_review_is_still_a_job() {
     let (dir, home) = setup();
     explain_job(dir.path(), home.path());
     edit_header(dir.path(), |h| h["mode"] = json!("review"));
-    let (code, v) = submit(dir.path(), home.path(), &review("changes"));
+    let (code, v) = submit(dir.path(), home.path(), &review("approve"));
     assert_eq!(code, 0, "{v}");
 }
 

@@ -47,7 +47,7 @@ pub enum Source {
         dir: PathBuf,
         /// The hand-set units of the `full` arm, relative to `evals/`.
         units: PathBuf,
-        /// The only tracked files `units` may leave unowned.
+        /// The only tracked files `units` may leave unowned; the adopted copy's `unowned_ok`.
         unowned: Vec<String>,
         /// Globs where adoption may add new files (a tester may add tests).
         tests: Vec<String>,

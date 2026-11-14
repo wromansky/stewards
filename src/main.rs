@@ -48,8 +48,6 @@ enum Command {
         #[arg(long)]
         draft: bool,
         #[arg(long)]
-        hooks: bool,
-        #[arg(long)]
         ci: bool,
     },
     /// Units, freshness, coverage, gaps
@@ -125,18 +123,15 @@ enum Command {
         roles: bool,
         #[arg(long)]
         pr: Option<u64>,
+        /// A reason not to apply a finding of the last review, as `<unit>: <file>:<line>: <reason>`
+        /// with the prefix review printed for it; repeatable. A reviewer accepts or contests it.
+        #[arg(long)]
+        answer: Vec<String>,
     },
     /// `simplified:` comments attached to units
     Debt,
     /// Render docs/units/<unit>.md and the index
     Docs { unit: Option<String> },
-    /// Write the seven native role agents
-    Render {
-        #[arg(long)]
-        harness: String,
-        #[arg(long)]
-        repo_level: bool,
-    },
     /// Run the eval suite
     Eval {
         #[arg(long)]
@@ -229,7 +224,7 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
             errors,
             glossary,
         } => guide::run(g, harness.as_deref(), all, errors, glossary),
-        Command::Init { draft, hooks, ci } => init::run(g, draft, hooks, ci),
+        Command::Init { draft, ci } => init::run(g, draft, ci),
         Command::Status { telemetry } => status::run(g, telemetry),
         Command::Route { paths } => route::run(g, &paths),
         Command::Pack {
@@ -269,13 +264,14 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
         } => next::run(g, task.as_deref(), no_brief, roles, no_run, pr),
         Command::Check => check::run(g),
         Command::Validate { report, export } => validate::run(g, report.as_deref(), export),
-        Command::Review { task, roles, pr } => review::run(g, task.as_deref(), roles, pr),
+        Command::Review {
+            task,
+            roles,
+            pr,
+            answer,
+        } => review::run(g, task.as_deref(), roles, pr, &answer),
         Command::Debt => debt::run(g),
         Command::Docs { unit } => docs::run(g, unit.as_deref()),
-        Command::Render {
-            harness,
-            repo_level,
-        } => render::run(g, &harness, repo_level),
         Command::Eval {
             harness,
             suite,

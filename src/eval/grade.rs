@@ -332,6 +332,8 @@ pub fn overhead_medians(grades: &[TaskGrade]) -> Vec<OverheadMedian> {
 pub struct RunReviews {
     pub label: String,
     pub reviews: Vec<UnitReview>,
+    /// Findings the run answered with `stewards review --answer`.
+    pub answers: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -493,6 +495,7 @@ pub fn summarize(
             .map(|r| RunReviews {
                 label: r.label.clone(),
                 reviews: r.reviews.clone(),
+                answers: r.answers,
             })
             .collect(),
         grades,
@@ -710,11 +713,13 @@ pub fn render(s: &Summary) -> String {
             .iter()
             .map(|u| {
                 format!(
-                    "round {} {} {} ({} findings, bugs: {}, tests {})",
+                    "round {} {} {} ({} findings, {} notes, {} contested, bugs: {}, tests {})",
                     u.round,
                     u.unit,
                     u.verdict,
                     u.findings,
+                    u.notes,
+                    u.contested,
                     if u.bugs.is_empty() {
                         "none".to_string()
                     } else {
@@ -725,13 +730,14 @@ pub fn render(s: &Summary) -> String {
             })
             .collect();
         out.push(format!(
-            "- {}: {}",
+            "- {}: {}; {} answered",
             r.label,
             if units.is_empty() {
                 "no reviewer submit".to_string()
             } else {
                 units.join("; ")
-            }
+            },
+            r.answers
         ));
     }
     out.join("\n") + "\n"

@@ -8,7 +8,7 @@ The cli unit is the stewards binary itself: the part a person or an agent actual
 
 ## How it works
 
-Everything starts in src/main.rs. The Cli struct declares the four global flags, accepted before or after any subcommand, and a Command enum with one variant per subcommand. --help or --version prints clap's text and exits normally; any other parse failure becomes a CliError with code usage, JSON unless --human is in argv, exit 2. After a good parse main builds a Global (human, repo, direct; direct also from STEWARDS_DIRECT=1), changes directory for -C (a directory it cannot enter is a usage error), and dispatch calls the owning module's run. completions, render and validate are stubs returning not_implemented; review --pr, init's unbuilt flags and next --pr reuse that helper. src/review.rs runs stewards review: it keeps --task in .stewards/briefs/review-task.txt until review is done, reads up to 20 untracked result files submit wrote, shows each as reported, not verified, and lists next's jobs with their handoffs unless a result reports findings or files are left. It removes the files only once its output is written, and exits 0 only when no job or check failure is left. src/output.rs holds the shared pieces. emit prints a payload as enveloped JSON or, with --human, through Human::render, and returns whether it was all written; a closed pipe is dropped quietly, other write errors go to stderr. CliError carries code, message, fix and, for a failed submit, field errors serialised only when non-empty. with_note appends a note to a CliError's message or adds context to any other error. A CliError from dispatch is emitted as is, any other error as code internal with fix 'report a bug'; both exit 2. Tests live in tests/skeleton.rs and tests/review.rs, with helpers in tests/common/mod.rs such as fixture, run and stewards.
+Everything starts in src/main.rs. The Cli struct declares the four global flags, accepted before or after any subcommand, and a Command enum with one variant per subcommand. --help or --version prints clap's text and exits normally; any other parse failure becomes a CliError with code usage, JSON unless --human is in argv, exit 2. After a good parse main builds a Global (human, repo, direct; direct also from STEWARDS_DIRECT=1), changes directory for -C (a directory it cannot enter is a usage error), and dispatch calls the owning module's run. completions and validate are stubs returning not_implemented; review --pr, init's unbuilt flags and next --pr reuse that helper. src/review.rs runs stewards review: it first records each --answer '&lt;unit>: &lt;file>:&lt;line>: &lt;reason>' in the unit's stored findings (all checked before any is written), keeps --task in .stewards/briefs/review-task.txt until review is done, reads up to 20 untracked result files submit wrote, shows each as reported, not verified (blocking findings with their answer prefix, non-blocking ones as notes), and lists every due unit's job with its handoff unless a result reports findings or files are left. It removes the files only once its output is written, and exits 0 only when no job or check failure is left. src/output.rs holds the shared pieces. emit prints a payload as enveloped JSON or, with --human, through Human::render, and returns whether it was all written; a closed pipe is dropped quietly. CliError carries code, message, fix and, for a failed submit, field errors serialised only when non-empty. A CliError from dispatch is emitted as is, any other error as code internal with fix 'report a bug'; both exit 2. Tests live in tests/skeleton.rs and tests/review.rs, with helpers in tests/common/mod.rs.
 
 ## How to change it
 
@@ -20,10 +20,10 @@ To add or change a command, start in src/main.rs: add the variant and its flags 
 |---|---|---|
 | json-envelope | Every command prints one JSON object on stdout\: \`stewards\: {version, schema\: 1}\` flattened with the payload; --human prints \`Human\:\:render\` instead. A closed pipe is dropped silently, other write errors go to stderr; returns whether all was written. | [src/output.rs\:\:emit](../../src/output.rs#L33) |
 | cli-error | A failed command prints the envelope with \`error\: {code, message, fix}\` (+ \`errors\` when non-empty) on stdout and exits 2; --human prints \`error\:\` and \`fix\:\` lines plus one line per field error. A non-CliError prints as code \`internal\`. | [src/output.rs\:\:CliError](../../src/output.rs#L57) |
-| usage-errors | Clap parse failures (missing or unknown args) and a \`-C\` dir that cannot be entered are CliError code \`usage\`, exit 2, JSON unless --human appears in argv; --help and --version print clap's text and exit normally. | [src/main.rs\:\:main](../../src/main.rs#L176) |
+| usage-errors | Clap parse failures (missing or unknown args) and a \`-C\` dir that cannot be entered are CliError code \`usage\`, exit 2, JSON unless --human appears in argv; --help and --version print clap's text and exit normally. | [src/main.rs\:\:main](../../src/main.rs#L171) |
 | global-flags | --human, --repo \<name\>, -C \<dir\> and --direct are accepted before or after any subcommand; -C changes the working directory before dispatch; --direct is also set by STEWARDS\_DIRECT=1. | [src/main.rs\:\:Cli](../../src/main.rs#L16) |
-| not-implemented | Unbuilt commands (completions, render, validate) and flags (review --pr, next --pr) parse and then fail with CliError code \`not\_implemented\`, exit 2. | [src/output.rs\:\:not\_implemented](../../src/output.rs#L117) |
-| review-command | \`review \[--task\] \[--roles\]\` shows up to 20 untracked result files per call as reported (not verified), removing them once written; lists next's jobs unless findings, files or unowned changed files remain; --task kept until done; exit 0 only when done. | [src/review.rs\:\:run](../../src/review.rs#L325) |
+| not-implemented | Unbuilt commands (completions, validate) and flags (review --pr, next --pr) parse and then fail with CliError code \`not\_implemented\`, exit 2; render and the init --hooks flag no longer exist and are usage errors. | [src/output.rs\:\:not\_implemented](../../src/output.rs#L117) |
+| review-command | \`review \[--task\] \[--roles\] \[--answer ...\]\` records answers, shows up to 20 result files per call as reported (blocking findings, non-blocking notes), lists every due job unless findings, files or unowned changes remain; exit 0 only when done. | [src/review.rs\:\:run](../../src/review.rs#L415) |
 
 ## Scenarios
 
@@ -33,6 +33,8 @@ To add or change a command, start in src/main.rs: add the variant and its flags 
 | review-done | review-command | a repo with nothing due | stewards review prints then\: done, no jobs, exit 0 | integration |
 | review-findings-block-jobs | review-command | a result file reporting a finding | the finding is shown as reported, no jobs are listed, exit 1; after the fix the unit is listed again | integration |
 | review-removes-after-write | review-command | result files and a stdout closed before the output is written | the result files stay for the next call | integration |
+| review-answer-contested | review-command | a finding answered with \`review --answer\`, which the next reviewer contests | the finding comes back blocking with the contest, a second --answer for it is a usage error; an accepted answer lets the unit stamp | integration |
+| review-notes-do-not-block | review-command | a review approving a unit with only non-blocking findings | the notes are printed and recorded, the unit stamps, no fix task is written | integration |
 
 ## Flows
 
@@ -43,10 +45,9 @@ _None._
 | kind | title | note |
 |---|---|---|
 | future | completions is a stub | \`stewards completions \<shell\>\` returns not\_implemented; it already receives \`Cli\:\:command()\` for clap\_complete. |
-| future | render is a stub | \`stewards render --harness\` returns not\_implemented. |
 | future | validate is a stub | \`stewards validate\` returns not\_implemented. |
 | future | review --pr is a stub | \`stewards review --pr \<n\>\` returns not\_implemented; plain \`review\` and \`review --roles\` are built. |
 
 ## Last reviewed
 
-8f1830aabdf439b0e9581b490c46180bb773c51f
+8b41f486851a23b5cb84c49253be3626e3082a83

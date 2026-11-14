@@ -315,6 +315,59 @@ impl CheckRunClassBuilder {
     }
 }
 
+/// Wrapper for the `ContestedFinding` class builder.
+///
+/// Provides type-safe method access to fields defined in the schema.
+/// Access fields via methods: `builder.field_name()`
+
+pub struct ContestedFindingClassBuilder {
+    inner: ::baml::ClassBuilder,
+}
+
+impl ContestedFindingClassBuilder {
+    /// Create wrapper from runtime ClassBuilder.
+    pub(crate) fn new(inner: ::baml::ClassBuilder) -> Self {
+        Self { inner }
+    }
+
+    /// Get the underlying ClassBuilder.
+    pub fn inner(&self) -> &::baml::ClassBuilder {
+        &self.inner
+    }
+
+    /// Get the class as a type definition.
+    pub fn r#type(&self) -> ::baml::TypeDef {
+        self.inner
+            .as_type()
+            .expect("ContestedFinding is statically defined in .baml and should always have a type")
+    }
+
+    // =========================================================================
+    // Field Accessors (1:1 with schema field names)
+    // =========================================================================
+
+    /// Access the `file` field builder.
+    pub fn property_file(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("file").expect(
+            "ContestedFinding.file is statically defined in .baml and should always be present",
+        )
+    }
+
+    /// Access the `line` field builder.
+    pub fn property_line(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("line").expect(
+            "ContestedFinding.line is statically defined in .baml and should always be present",
+        )
+    }
+
+    /// Access the `why` field builder.
+    pub fn property_why(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("why").expect(
+            "ContestedFinding.why is statically defined in .baml and should always be present",
+        )
+    }
+}
+
 /// Wrapper for the `Decision` class builder.
 ///
 /// Provides type-safe method access to fields defined in the schema.
@@ -595,6 +648,13 @@ impl FindingClassBuilder {
         self.inner.get_property("replace_with").expect(
             "Finding.replace_with is statically defined in .baml and should always be present",
         )
+    }
+
+    /// Access the `blocking` field builder.
+    pub fn property_blocking(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner
+            .get_property("blocking")
+            .expect("Finding.blocking is statically defined in .baml and should always be present")
     }
 }
 
@@ -1469,6 +1529,13 @@ impl UnitReviewClassBuilder {
         self.inner
             .get_property("doc")
             .expect("UnitReview.doc is statically defined in .baml and should always be present")
+    }
+
+    /// Access the `contested` field builder.
+    pub fn property_contested(&self) -> ::baml::ClassPropertyBuilder {
+        self.inner.get_property("contested").expect(
+            "UnitReview.contested is statically defined in .baml and should always be present",
+        )
     }
 }
 

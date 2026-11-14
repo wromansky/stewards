@@ -59,7 +59,7 @@ fn explain_job(dir: &Path, home: &Path) {
 /// A review answer; `changes` carries one finding on a file api owns, since it needs one.
 fn review(verdict: &str) -> Value {
     let findings = if verdict == "changes" {
-        json!([{"file": "src/api/items.py", "line": 4, "rung": "one_line", "cut": "x",
+        json!([{"file": "src/api/items.py", "line": 4, "rung": "one_line", "blocking": true, "cut": "x",
                 "replace_with": "y"}])
     } else {
         json!([])
@@ -220,7 +220,7 @@ fn approve_after_an_edit_made_before_the_brief_is_fresh() {
 #[test]
 fn approve_with_a_finding_is_rejected_and_writes_nothing() {
     let mut a = review("approve");
-    a["findings"] = json!([{"file": "src/api/items.py", "line": 4, "rung": "one_line",
+    a["findings"] = json!([{"file": "src/api/items.py", "line": 4, "rung": "one_line", "blocking": true,
                             "cut": "x", "replace_with": "y"}]);
     rejected(&a, "answer_parse_failed", "verdict");
 }
@@ -238,7 +238,7 @@ fn changes_does_not_stamp_and_names_the_developer_brief() {
     review_job(dir.path(), home.path());
     let before = fs::read(dir.path().join(CARD)).unwrap();
     let mut a = review("changes");
-    a["findings"] = json!([{"file": "src/api/items.py", "line": 4, "rung": "one_line",
+    a["findings"] = json!([{"file": "src/api/items.py", "line": 4, "rung": "one_line", "blocking": true,
                             "cut": "x", "replace_with": "y"}]);
     let (code, v) = submit(dir.path(), home.path(), &a);
     assert_eq!(code, 0, "{v}");
@@ -259,7 +259,7 @@ fn changes_with_long_findings_writes_a_fix_task_the_developer_brief_reads() {
     let (dir, home) = setup();
     review_job(dir.path(), home.path());
     let finding = |line: u32| {
-        json!({"file": "src/api/items.py", "line": line, "rung": "one_line",
+        json!({"file": "src/api/items.py", "line": line, "rung": "one_line", "blocking": true,
                "cut": "c".repeat(750), "replace_with": "r".repeat(750)})
     };
     let mut a = review("changes");
@@ -282,7 +282,7 @@ fn changes_with_long_findings_writes_a_fix_task_the_developer_brief_reads() {
 #[test]
 fn findings_whose_fix_task_passes_the_task_cap_are_answer_too_long() {
     let finding = |line: u32| {
-        json!({"file": "src/api/items.py", "line": line, "rung": "one_line",
+        json!({"file": "src/api/items.py", "line": line, "rung": "one_line", "blocking": true,
                "cut": "c".repeat(2000), "replace_with": "r".repeat(2000)})
     };
     let mut a = review("changes");
@@ -554,6 +554,7 @@ fn a_telemetry_line_is_appended_for_the_current_month() {
             "bytes",
             "harness",
             "mode",
+            "notes",
             "pulled_anchors",
             "role",
             "task",

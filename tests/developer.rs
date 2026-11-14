@@ -57,7 +57,7 @@ fn review(dir: &Path, verdict: &str, findings: Value) -> (i32, Value) {
 }
 
 fn finding(file: &str, line: u32) -> Value {
-    json!({"file": file, "line": line, "rung": "one_line", "cut": "the loop",
+    json!({"file": file, "line": line, "rung": "one_line", "blocking": true, "cut": "the loop",
            "replace_with": "sum()"})
 }
 

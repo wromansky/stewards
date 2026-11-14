@@ -37,7 +37,6 @@ fn clap_errors_are_usage_errors() {
     for (cmd, arg) in [
         ("route", "<PATHS>"),
         ("stamp", "<UNIT>"),
-        ("render", "--harness"),
         ("completions", "<SHELL>"),
     ] {
         let (v, code) = json_error(&[cmd]);
@@ -256,7 +255,7 @@ fn every_command_parses_its_flags() {
             "--errors",
             "--glossary",
         ],
-        &["init", "--draft", "--hooks", "--ci"],
+        &["init", "--draft", "--ci"],
         &["status", "--telemetry"],
         &["route", "src/api/items.py", "Makefile"],
         &[
@@ -282,7 +281,6 @@ fn every_command_parses_its_flags() {
         &["review", "--pr", "7"],
         &["debt"],
         &["docs", "api"],
-        &["render", "--harness", "pi", "--repo-level"],
         &[
             "eval",
             "--harness",

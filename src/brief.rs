@@ -65,18 +65,20 @@ const SNAP_LEN: usize = 8;
 
 /// The repo-relative brief of the job packed at `snapshot`: `.stewards/briefs/<unit>-<role>-<snap>.md`,
 /// with `-<n>` before `<snap>` for developer task `n`, or `architect-<snap>.md`, or
-/// `review-<snap>.md` for the reviewer; `<snap>` is the snapshot's first 8 hex characters, so a
-/// handoff for an older snapshot names a file that no longer exists.
+/// `review-<n>-<snap>.md` for review brief `n` of a round; `<snap>` is the snapshot's first 8 hex
+/// characters, so a handoff for an older snapshot names a file that no longer exists.
 pub fn rel_path(unit: Option<&str>, role: Role, n: Option<usize>, snapshot: &str) -> String {
     let snap: String = snapshot.chars().take(SNAP_LEN).collect();
-    if role == Role::Reviewer {
-        return format!(".stewards/briefs/review-{snap}.md");
-    }
-    let role = role.as_str();
+    // the reviewer covers units, so no unit names its brief
+    let (unit, role) = match role {
+        Role::Reviewer => (None, "review"),
+        r => (unit, r.as_str()),
+    };
     match (unit, n) {
         (Some(u), Some(n)) => format!(".stewards/briefs/{u}-{role}-{n}-{snap}.md"),
         (Some(u), None) => format!(".stewards/briefs/{u}-{role}-{snap}.md"),
-        (None, _) => format!(".stewards/briefs/{role}-{snap}.md"),
+        (None, Some(n)) => format!(".stewards/briefs/{role}-{n}-{snap}.md"),
+        (None, None) => format!(".stewards/briefs/{role}-{snap}.md"),
     }
 }
 
@@ -141,17 +143,22 @@ fn job_files(root: &Path) -> Result<Vec<(String, JobName)>> {
     Ok(files)
 }
 
-/// The job's brief on disk: the one `rel_path` names for it at any snapshot; `no_brief` with none,
-/// or with more than one, since nothing says which the answer is for.
-pub fn find(root: &Path, unit: Option<&str>, role: Role, n: Option<usize>) -> Result<String> {
-    let mut briefs: Vec<String> = job_files(root)?
+/// The job's brief on disk and its number: the one `rel_path` names for it (for the reviewer, any
+/// brief of a round) at any snapshot; `no_brief` with none, or with more than one, since nothing
+/// says which the answer is for.
+pub fn find(root: &Path, unit: Option<&str>, role: Role) -> Result<(String, Option<usize>)> {
+    let mut briefs: Vec<(String, Option<usize>)> = job_files(root)?
         .into_iter()
-        .filter(|(name, j)| name.ends_with(".md") && j.is(unit, role, n))
-        .map(|(name, _)| format!(".stewards/briefs/{name}"))
+        .filter(|(name, j)| {
+            let numbered = role == Role::Reviewer && j.role == role;
+            name.ends_with(".md") && (numbered || j.is(unit, role, None))
+        })
+        .map(|(name, j)| (format!(".stewards/briefs/{name}"), j.n))
         .collect();
     if briefs.len() == 1 {
         return Ok(briefs.remove(0));
     }
+    let briefs: Vec<String> = briefs.into_iter().map(|(b, _)| b).collect();
     let job = match unit {
         Some(u) => format!("{u} {}", role.as_str()),
         None => role.as_str().to_string(),
@@ -171,8 +178,9 @@ pub fn find(root: &Path, unit: Option<&str>, role: Role, n: Option<usize>) -> Re
     ))
 }
 
-/// The briefs and answers of the job (`unit`, `role`, `n`) at any snapshot but `snapshot`'s:
-/// what a new brief for the job supersedes. Result files are left for `review` to report.
+/// The briefs and answers of the job (`unit`, `role`, `n`; for the reviewer, any brief of a
+/// round) at any snapshot but `snapshot`'s: what a new brief for the job supersedes. Result files
+/// are left for `review` to report.
 pub(crate) fn superseded(
     root: &Path,
     unit: Option<&str>,
@@ -184,7 +192,8 @@ pub(crate) fn superseded(
     Ok(job_files(root)?
         .into_iter()
         .filter(|(name, j)| {
-            !name.ends_with(".result.json") && j.is(unit, role, n) && j.snap != snap
+            let same = j.is(unit, role, n) || (role == Role::Reviewer && j.role == role);
+            !name.ends_with(".result.json") && same && j.snap != snap
         })
         .map(|(name, _)| format!(".stewards/briefs/{name}"))
         .collect())
@@ -401,45 +410,70 @@ pub fn build(
     frame(repo, &pack, mode, snapshot, None)
 }
 
-/// The review brief of the `due` units (units.toml order) and its pack: the units that fit the
-/// review budget are covered, the rest named as next round.
+/// The review briefs of the `due` units (units.toml order) with their packs: every due unit in
+/// exactly one, brief `n` (from 1) covering group `n` of `pack::review`.
 pub fn build_review(
     repo: &Repo,
     due: &[next::DueUnit],
     task: &str,
     snapshot: &str,
-) -> Result<(String, ReviewPack)> {
+) -> Result<Vec<(String, ReviewPack)>> {
     check_root(&repo.root)?;
-    let pack = pack::review(repo, due, task, snapshot)?;
-    let header = Header {
-        unit: None,
-        role: Role::Reviewer,
-        mode: Mode::Review,
-        snapshot: snapshot.to_string(),
-        task: task.to_string(),
-        bytes: pack.bytes,
-        anchors: pack
-            .units
-            .iter()
-            .map(|p| p.anchors.as_ref().map_or(0, Vec::len))
-            .sum(),
-        bug: None,
-        n: None,
-        lane: None,
-        units: Some(pack.units.iter().filter_map(|p| p.unit.clone()).collect()),
-    };
     let memory = memory(repo, None, Role::Reviewer, snapshot)?;
-    let text = render(
-        &header,
-        task,
-        pack.budget,
-        &pack.render(),
-        &memory.iter().collect::<Vec<_>>(),
-        &repo.root,
-        // `submit` refuses a review brief that lists a never-stamped unit
-        false,
-    );
-    Ok((text, pack))
+    let memory: Vec<&Entry> = memory.iter().collect();
+    let round = pack::review(repo, due, task, snapshot)?;
+    let mut briefs = vec![];
+    for (i, pack) in round.groups.into_iter().enumerate() {
+        let header = Header {
+            unit: None,
+            role: Role::Reviewer,
+            mode: Mode::Review,
+            snapshot: snapshot.to_string(),
+            task: task.to_string(),
+            bytes: pack.bytes,
+            anchors: pack
+                .units
+                .iter()
+                .map(|p| p.anchors.as_ref().map_or(0, Vec::len))
+                .sum(),
+            bug: None,
+            n: Some(i + 1),
+            lane: None,
+            units: Some(pack.units.iter().filter_map(|p| p.unit.clone()).collect()),
+        };
+        let text = render(
+            &header,
+            task,
+            pack.budget,
+            &pack.render(),
+            &memory,
+            &repo.root,
+            // `submit` refuses a review brief that lists a never-stamped unit
+            false,
+        );
+        briefs.push((text, pack));
+    }
+    Ok(briefs)
+}
+
+/// Writes the review briefs `texts` of one round (brief `n` is `texts[n - 1]`) and removes the
+/// briefs and answers of any other round: other snapshots, and briefs past the last here.
+pub fn write_round(repo: &Repo, snapshot: &str, texts: &[&str]) -> Result<Vec<PathBuf>> {
+    let mut paths = vec![];
+    for (i, text) in texts.iter().enumerate() {
+        paths.push(write_text(
+            repo,
+            None,
+            Role::Reviewer,
+            Some(i + 1),
+            snapshot,
+            text,
+        )?);
+    }
+    for rel in files_past(&repo.root, None, Role::Reviewer, texts.len())? {
+        repo.remove(&rel)?;
+    }
+    Ok(paths)
 }
 
 /// The user memory entries for `role`, matched on the languages of the files `unit` owns (every
@@ -665,22 +699,27 @@ fn developer(
             brief_path,
         });
     }
-    for rel in developer_files_past(&repo.root, unit, tasks.len())? {
+    for rel in files_past(&repo.root, Some(unit), Role::Developer, tasks.len())? {
         repo.remove(&rel)?;
     }
     emit(&Jobs { jobs }, g.human);
     Ok(ExitCode::SUCCESS)
 }
 
-/// The repo-relative developer briefs and answers of `unit` (`job_of` names, at any snapshot)
-/// with task number `n` past `last`.
-pub(crate) fn developer_files_past(root: &Path, unit: &str, last: usize) -> Result<Vec<String>> {
+/// The repo-relative briefs and answers of the numbered jobs of `unit` and `role` (developer
+/// tasks, a round's review briefs; `job_of` names, at any snapshot) with number `n` past `last`.
+pub(crate) fn files_past(
+    root: &Path,
+    unit: Option<&str>,
+    role: Role,
+    last: usize,
+) -> Result<Vec<String>> {
     Ok(job_files(root)?
         .into_iter()
         .filter(|(name, j)| {
             !name.ends_with(".result.json")
-                && j.role == Role::Developer
-                && j.unit.as_deref() == Some(unit)
+                && j.role == role
+                && j.unit.as_deref() == unit
                 && j.n.is_some_and(|n| n > last)
         })
         .map(|(name, _)| format!(".stewards/briefs/{name}"))
@@ -746,15 +785,33 @@ fn reviewer(
             "run `stewards next`; a never-reviewed unit gets its maintainer's first review",
         ));
     }
-    let (text, _) = build_review(repo, &due, &task, &snapshot)?;
+    let built = build_review(repo, &due, &task, &snapshot)?;
+    let texts: Vec<&str> = built.iter().map(|(t, _)| t.as_str()).collect();
     if stdout {
-        emit(&BriefText(text), true);
+        emit(&BriefText(texts.concat()), true);
         return Ok(ExitCode::SUCCESS);
     }
-    let bytes = text.len();
-    let path = write_text(repo, None, Role::Reviewer, None, &snapshot, &text)?;
-    emit(&Written::new(path, bytes)?, g.human);
+    let paths = write_round(repo, &snapshot, &texts)?;
+    let briefs = paths
+        .into_iter()
+        .zip(&texts)
+        .map(|(path, text)| Written::new(path, text.len()))
+        .collect::<Result<_>>()?;
+    emit(&Round { briefs }, g.human);
     Ok(ExitCode::SUCCESS)
+}
+
+/// The review briefs `brief --role reviewer` wrote, one per group of the round.
+#[derive(Serialize)]
+struct Round {
+    briefs: Vec<Written>,
+}
+
+impl Human for Round {
+    fn render(&self) -> String {
+        let lines: Vec<String> = self.briefs.iter().map(Human::render).collect();
+        lines.join("\n")
+    }
 }
 
 #[cfg(test)]
@@ -766,6 +823,7 @@ mod tests {
         let snap = "0123abcd".to_string() + &"e".repeat(32);
         for (unit, role, n) in [
             (None, Role::Reviewer, None),
+            (None, Role::Reviewer, Some(2)),
             (None, Role::Architect, None),
             (Some("api"), Role::Tester, None),
             (Some("my-api"), Role::Maintainer, None),
@@ -788,6 +846,10 @@ mod tests {
             rel_path(None, Role::Reviewer, None, &snap),
             ".stewards/briefs/review-0123abcd.md"
         );
+        assert_eq!(
+            rel_path(Some("api"), Role::Reviewer, Some(1), &snap),
+            ".stewards/briefs/review-1-0123abcd.md"
+        );
         for name in [
             "review.md",
             "api-tester.md",
@@ -795,6 +857,7 @@ mod tests {
             "review-0123ABCD.md",
             "reviewer-0123abcd.md",
             "x-review-0123abcd.md",
+            "x-review-1-0123abcd.md",
             "api-developer-01-0123abcd.md",
             "review-0123abcd.md.bak",
             "review-task.txt",

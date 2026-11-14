@@ -2,17 +2,17 @@
 // `next` lists now, each job with its handoff. It never starts a session.
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::check::{escape_invisible, one_line};
 use crate::model::{Loaded, Role};
 use crate::next::{self, Briefs, NextReport};
-use crate::output::{Global, Human, emit, not_implemented};
+use crate::output::{CliError, Global, Human, emit, not_implemented};
 use crate::route::Router;
-use crate::submit::{ShownFinding, TASK_CHANGE_CAP, UnitVerdict};
-use crate::workspace::{Repo, here, safe_path};
+use crate::submit::{self, ShownFinding, TASK_CHANGE_CAP, UnitVerdict};
+use crate::workspace::{Repo, Workspace, here, safe_path};
 use crate::{brief, git};
 
 const TASK_HINT: &str = "pass `--task \"<what you changed and why>\"`: the reviewer checks that every changed line traces to the request";
@@ -75,6 +75,8 @@ struct Reported {
     /// A review's verdict per unit.
     units: Vec<UnitVerdict>,
     findings: Vec<ShownFinding>,
+    /// A review's non-blocking findings: shown, never to fix first.
+    notes: Vec<ShownFinding>,
     /// Every other field of the result (explanation, unit proposals, tester brief, out-of-lane
     /// files, blocked_on, warning, ...), as `shown_value` prints it.
     other: Map<String, Value>,
@@ -99,6 +101,7 @@ impl Reported {
             summary: String::new(),
             units: vec![],
             findings: vec![],
+            notes: vec![],
             other: Map::new(),
             invalid: 0,
             not_shown: 0,
@@ -106,9 +109,13 @@ impl Reported {
         }
     }
 
-    /// Fills the result from `bytes`, read in `repo`; false when they are not a JSON object.
-    fn read(&mut self, bytes: &[u8], repo: &Repo, loaded: &Loaded, router: &Router) -> bool {
+    /// Fills the result from `bytes`, read in `repo`; false when they are not a JSON object. Each
+    /// finding's `review --answer` prefix comes from the unit's stored findings, not the file.
+    fn read(&mut self, bytes: &[u8], ws: &Workspace, repo: &Repo, router: &Router) -> bool {
         let Ok(Value::Object(mut map)) = serde_json::from_slice(bytes) else {
+            return false;
+        };
+        let Ok(loaded) = repo.loaded() else {
             return false;
         };
         let is_unit = |u: &str| loaded.units.iter().any(|d| d.name == u);
@@ -116,26 +123,56 @@ impl Reported {
             Some(Value::Array(a)) => a,
             _ => vec![],
         };
-        let (units, findings) = (list("units"), list("findings"));
-        let total = units.len() + findings.len();
+        let (units, findings, notes) = (list("units"), list("findings"), list("notes"));
+        let total = units.len() + findings.len() + notes.len();
         self.units = units
             .into_iter()
             .filter_map(|u| serde_json::from_value::<UnitVerdict>(u).ok())
             .filter(|u| is_unit(&u.unit) && ["approve", "changes"].contains(&u.verdict.as_str()))
             .collect();
-        self.findings = findings
-            .into_iter()
-            .filter_map(|f| serde_json::from_value::<ShownFinding>(f).ok())
-            .filter(|f| f.passes_submit_checks(&repo.root, router))
-            .map(ShownFinding::capped)
-            .collect();
-        self.invalid = total - self.units.len() - self.findings.len();
+        let valid = |list: Vec<Value>| -> Vec<ShownFinding> {
+            list.into_iter()
+                .filter_map(|f| serde_json::from_value::<ShownFinding>(f).ok())
+                .filter(|f| f.passes_submit_checks(&repo.root, router))
+                .map(|f| ShownFinding { answer: None, ..f })
+                .collect()
+        };
+        self.findings = valid(findings);
+        self.notes = valid(notes);
+        let mut taken: Vec<(String, usize)> = vec![];
+        for f in &mut self.findings {
+            let Ok(stored) = submit::read_findings(repo, &f.unit) else {
+                continue;
+            };
+            let at = (0..stored.len()).find(|&i| {
+                let s = &stored[i];
+                s.answerable()
+                    && (s.file.as_str(), s.line) == (f.file.as_str(), f.line)
+                    && !taken.contains(&(f.unit.clone(), i))
+            });
+            if let Some(i) = at {
+                taken.push((f.unit.clone(), i));
+                let shown = ws.display_name(repo, &f.unit);
+                f.answer = Some(submit::answer_prefix(&shown, &stored, i));
+            }
+        }
+        let capped = |list: &mut Vec<ShownFinding>| {
+            *list = std::mem::take(list)
+                .into_iter()
+                .map(ShownFinding::capped)
+                .collect();
+        };
+        capped(&mut self.findings);
+        capped(&mut self.notes);
+        self.invalid = total - self.units.len() - self.findings.len() - self.notes.len();
         self.changes =
             !self.findings.is_empty() || self.units.iter().any(|u| u.verdict == "changes");
         self.not_shown = self.units.len().saturating_sub(LIST_SHOWN)
-            + self.findings.len().saturating_sub(LIST_SHOWN);
+            + self.findings.len().saturating_sub(LIST_SHOWN)
+            + self.notes.len().saturating_sub(LIST_SHOWN);
         self.units.truncate(LIST_SHOWN);
         self.findings.truncate(LIST_SHOWN);
+        self.notes.truncate(LIST_SHOWN);
         self.summary = map
             .remove("summary")
             .and_then(|s| s.as_str().map(shown))
@@ -212,12 +249,8 @@ impl Human for Review {
                 let stamped = if u.stamped { "stamped" } else { "not stamped" };
                 format!("  - unit {}: {}, {stamped}", u.unit, u.verdict)
             }));
-            out.extend(r.findings.iter().map(|f| {
-                format!(
-                    "  - finding {} {}:{}: cut {}; replace with {}",
-                    f.unit, f.file, f.line, f.cut, f.replace_with
-                )
-            }));
+            out.extend(r.findings.iter().map(|f| f.line_text("  - finding")));
+            out.extend(r.notes.iter().map(|f| f.line_text("  - note")));
             out.extend(r.other.iter().map(|(k, v)| match v {
                 Value::String(s) => format!("  - {k}: {s}"),
                 v => format!("  - {k}: {v}"),
@@ -259,7 +292,12 @@ impl Human for Review {
 // simplified: a result planted by a hostile subagent (it can write here) cannot be told apart
 // from one submit wrote without a key kept outside the repository; until then results are shown
 // as reported, never as verified, and cannot make `review` pass.
-fn collect<'a>(repo: &'a Repo, loaded: &Loaded, c: &mut Collected<'a>) -> Result<()> {
+fn collect<'a>(
+    ws: &Workspace,
+    repo: &'a Repo,
+    loaded: &Loaded,
+    c: &mut Collected<'a>,
+) -> Result<()> {
     let dir = match std::fs::read_dir(repo.root.join(".stewards/briefs")) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         r => r?,
@@ -306,7 +344,7 @@ fn collect<'a>(repo: &'a Repo, loaded: &Loaded, c: &mut Collected<'a>) -> Result
         c.read.push((repo, rel.clone()));
         match repo.read(&rel, RESULT_BYTES) {
             Err(e) => r.not_a_result = Some(shown(&format!("{e:#}"))),
-            Ok(bytes) if r.read(&bytes, repo, loaded, &router) => {}
+            Ok(bytes) if r.read(&bytes, ws, repo, &router) => {}
             Ok(_) => r.not_a_result = Some("not the JSON object submit writes".into()),
         }
         c.reported.push(r);
@@ -322,12 +360,71 @@ fn stored_task(repo: &Repo) -> Option<String> {
         .filter(|t| !t.trim().is_empty())
 }
 
-pub fn run(g: &Global, task: Option<&str>, roles: bool, pr: Option<u64>) -> Result<ExitCode> {
+/// How `--answer` is written.
+const ANSWER_FORM: &str = "--answer \"<unit>: <file>:<line>: <reason>\", copying the prefix review printed for the finding";
+
+/// Records each `--answer` (`<unit>: <location>: <reason>`) on its unit's stored findings: every
+/// answer is checked before any is written, so a rejected one records none.
+fn record_answers(ws: &Workspace, answers: &[String]) -> Result<()> {
+    let usage = |message: String| -> anyhow::Error {
+        CliError::new("usage", message, format!("pass {ANSWER_FORM}")).into()
+    };
+    // (repo, unit, its findings as answered so far)
+    let mut changed: Vec<(&Repo, String, Vec<submit::StoredFinding>)> = vec![];
+    for a in answers {
+        let parts = a
+            .split_once(": ")
+            .and_then(|(unit, rest)| Some((unit.trim(), rest.split_once(": ")?)));
+        let Some((shown, (location, reason))) = parts else {
+            return Err(usage(format!(
+                "`{}` is not <unit>: <file>:<line>: <reason>",
+                one_line(a)
+            )));
+        };
+        let mut owners = vec![];
+        for (repo, loaded) in ws.loaded_repos()? {
+            for def in &loaded.units {
+                if ws.display_name(repo, &def.name) == shown || def.name == shown {
+                    owners.push((repo, def.name.clone()));
+                }
+            }
+        }
+        let [(repo, unit)] = owners.as_slice() else {
+            bail!(CliError::new(
+                "unknown_unit",
+                format!("`{}` names no one unit", one_line(shown)),
+                "use the unit name review printed with the finding",
+            ));
+        };
+        let at = changed
+            .iter()
+            .position(|(r, u, _)| std::ptr::eq(*r, *repo) && u == unit);
+        let stored = match at {
+            Some(i) => changed.remove(i).2,
+            None => submit::read_findings(repo, unit)?,
+        };
+        let stored = submit::answer_finding(stored, shown, location.trim(), reason)?;
+        changed.push((repo, unit.clone(), stored));
+    }
+    for (repo, unit, stored) in &changed {
+        submit::write_findings(repo, unit, stored)?;
+    }
+    Ok(())
+}
+
+pub fn run(
+    g: &Global,
+    task: Option<&str>,
+    roles: bool,
+    pr: Option<u64>,
+    answers: &[String],
+) -> Result<ExitCode> {
     if pr.is_some() {
         return not_implemented("review --pr");
     }
     let command = if roles { "review --roles" } else { "review" };
     let (_, ws) = here(g)?;
+    record_answers(&ws, answers)?;
     let repos = ws.loaded_repos()?;
     let (task, from) = match task {
         Some(t) => {
@@ -344,7 +441,7 @@ pub fn run(g: &Global, task: Option<&str>, roles: bool, pr: Option<u64>) -> Resu
     };
     let mut c = Collected::default();
     for (repo, loaded) in &repos {
-        collect(repo, loaded, &mut c)?;
+        collect(&ws, repo, loaded, &mut c)?;
     }
     let changes = c.reported.iter().any(|r| r.changes);
     let report = if changes || c.left > 0 {
@@ -358,10 +455,19 @@ pub fn run(g: &Global, task: Option<&str>, roles: bool, pr: Option<u64>) -> Resu
         )?)
     };
     let (mut then, mut clean) = match &report {
-        None if changes => (
-            format!("Fix the findings, then run stewards {command} again."),
-            false,
-        ),
+        None if changes => {
+            let mut then = format!("Fix the findings, then run stewards {command} again.");
+            let findings = || c.reported.iter().flat_map(|r| &r.findings);
+            if findings().any(|f| f.answer.is_some()) {
+                then += &format!(
+                    " A finding you will not apply: run stewards {command} --answer \"<its answer prefix><your reason>\" instead; a reviewer sees the reason and accepts or contests it."
+                );
+            }
+            if findings().any(|f| f.contested.is_some()) {
+                then += " A contested finding cannot be answered again: apply it, or change the task with --task.";
+            }
+            (then, false)
+        }
         None => (
             format!(
                 "Run stewards {command} again to read the {} result files left.",
@@ -371,7 +477,7 @@ pub fn run(g: &Global, task: Option<&str>, roles: bool, pr: Option<u64>) -> Resu
         ),
         Some(r) if !r.jobs.is_empty() => {
             let mut then = format!(
-                "Start one subagent per handoff below, giving it exactly that sentence as its whole task; when they have finished, run stewards {command} again."
+                "Start one subagent per handoff below, giving it exactly that sentence as its whole task (you can start them together); when they have finished, run stewards {command} again."
             );
             if r.jobs.iter().any(|j| j.waiting) {
                 then += " A waiting job's brief has no submit yet: if its subagent already replied, it did not finish; start a new one with the same handoff.";

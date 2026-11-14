@@ -326,12 +326,12 @@ fn review_submits(recs: &[&Value]) -> Vec<(String, ReviewSubmit)> {
     out
 }
 
-/// The distinct paths one session opened, relative to `root` (the main session's starting
-/// directory), in order: each `Read` tool `file_path`, each `Grep` tool `path` (a directory is
-/// dropped later by `existing_files`), each file a `Glob` call matched as its persisted result
-/// lists them (`toolUseResult.filenames`; a call without that result counts nothing), and each
-/// path `shell_reads` finds in a `Bash` command. A relative path is resolved against the `cwd`
-/// of the record that made the call, since a `cd` in one `Bash` call carries over to the next.
+/// The distinct paths one session opened (see `Run::files_opened`), relative to `root` (the main
+/// session's starting directory), in order: each `Read` tool `file_path`, each `Grep` tool
+/// `path` (a directory is dropped later by `existing_files`; a `Glob` listing opens nothing), and
+/// each path `shell_reads` finds in a `Bash` command. A relative path is resolved against the
+/// `cwd` of the record that made the call, since a `cd` in one `Bash` call carries over to the
+/// next.
 fn files_opened(recs: &[&Value], root: &str) -> Vec<String> {
     let mut out: Vec<String> = vec![];
     for r in recs.iter().filter(|r| r["type"] == "assistant") {
@@ -353,13 +353,6 @@ fn files_opened(recs: &[&Value], root: &str) -> Vec<String> {
                     .as_str()
                     .map(String::from)
                     .into_iter()
-                    .collect(),
-                Some("Glob") => tool_result(recs, b)
-                    .map(|(res, _)| &res["toolUseResult"]["filenames"])
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|f| f.as_str().map(String::from))
                     .collect(),
                 Some("Bash") => shell_reads(input["command"].as_str().unwrap_or_default()),
                 _ => vec![],
@@ -534,7 +527,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         main_tokens,
         total_tokens,
         cache_warming: Tokens::default(),
-        peak_main_context,
+        peak_main_context: Some(peak_main_context),
         tool_calls: tool_uses(main)
             .map(|b| b["name"].as_str().unwrap_or_default().to_string())
             .collect(),
@@ -557,6 +550,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         thinking_levels: thinking_levels.into_iter().collect(),
         sessions_without_thinking,
         subagent_sessions: sessions.len() - 1,
+        uncounted_sessions: vec![],
         reviews: reviews.into_iter().map(|(_, r)| r).collect(),
         git_history_commands,
         stop_reason,

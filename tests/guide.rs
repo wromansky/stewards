@@ -363,6 +363,7 @@ fn no_source_outside_the_eval_knows_a_harness_command_line_or_instruction_file()
         let text = std::fs::read_to_string(&p).unwrap();
         for flag in [
             "--dangerously",
+            "--oneshot",
             "--mode json",
             "exec --json",
             "CLAUDE.md",

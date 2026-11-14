@@ -1,21 +1,21 @@
 unit = "eval"
 
 [reviewed]
-commit = "0f569c2c9170d04e4f55bd3c68183e25778cdd1d"
-fingerprint = "sha256:ae59f952334091d3066b4286d3b8dbfa0197d58cf6abb36db6744cadfda25b14"
-tree = "f0dc44ce3f6a0a9622108b05bf9a60a85edac06a"
-tester = "f0dc44ce3f6a0a9622108b05bf9a60a85edac06a"
-documenter = "f0dc44ce3f6a0a9622108b05bf9a60a85edac06a"
+commit = "65d2bd1692e49079478538c4cc437390e93f9270"
+fingerprint = "sha256:a5348640bc82a4e7d938ec5550be4691ec9843df430e8733d1fc6ffb6fffd064"
+tree = "cf4a6959af1e865f973ae0fab7d2589d5791f6f2"
+tester = "cf4a6959af1e865f973ae0fab7d2589d5791f6f2"
+documenter = "cf4a6959af1e865f973ae0fab7d2589d5791f6f2"
 
 [[interface]]
 id = "eval_run"
 anchor = "src/eval/mod.rs::run"
-contract = "`stewards eval`: pi and claude-code (others not_implemented); claude-code runs at thinking off and refuses --max-cost; arms default to bare, block-only, full (full-no-developers with --no-developers); unknown arm, suite, task: usage error; --setup-dir refused for a repo suite; exit 0 only on pass."
+contract = "`stewards eval`: pi, claude-code and hermes (others not_implemented); claude-code runs at thinking off; --max-cost refused for every harness but pi; hermes needs --model provider/model; arms default to bare, block-only, full; unknown arm, suite, task: usage error; exit 0 only on pass."
 
 [[interface]]
 id = "execute"
 anchor = "src/eval/mod.rs::execute"
-contract = "Reads every task prompt first, then runs sequentially: clone and build, full setup, per task, per run, each arm in a fresh copy with the driver's context_file committed; a timed-out run's tokens are null; writes runs/*.json, summary.json, summary.md; stops before a session over --max-cost."
+contract = "Reads every task prompt first, then runs sequentially per task, run and arm in a fresh copy; a timed-out or interrupted run's tokens are null; a SIGINT/SIGTERM stops the session, records it failed (interrupted), writes the summary and returns an interrupted error."
 
 [[interface]]
 id = "driver"
@@ -100,12 +100,12 @@ contract = "Runs stewards next --no-brief in a dir: exit code and job count; wri
 [[interface]]
 id = "kill_leftovers"
 anchor = "src/eval/mod.rs::kill_leftovers"
-contract = "Kills every process whose cwd is under dir until none remain or 10 s pass; reports killed and survivors; None without /proc."
+contract = "Kills every process whose cwd is under dir, or whose HERMES_HOME (no other variable) is under it, until none remain or 10 s pass; reports killed and survivors; None without /proc."
 
 [[interface]]
 id = "claude_parse"
 anchor = "src/eval/claude.rs::parse"
-contract = "A Claude Code session file plus its stdout.log to a Run: main tokens from result.usage, total from summed modelUsage, both null without a result line; cost_usd null, its figure kept as harness_reported_cost_usd; Read/Grep/Glob/Bash reads per record cwd; thinking on/off; sidechain children."
+contract = "A Claude Code session file plus its stdout.log to a Run: main tokens from result.usage, total from summed modelUsage, null without a result line; cost_usd null, figure kept as harness_reported_cost_usd; Read/Grep/Bash reads per record cwd, a Glob listing opens nothing; sidechain children."
 
 [[interface]]
 id = "claude_config_dir"
@@ -121,6 +121,21 @@ contract = "The task file <dir>/NN-* verbatim; an error when none; a usage error
 id = "pinned_commit"
 anchor = "src/eval/mod.rs::pinned_commit"
 contract = "A repo suite's commit: HEAD is the evals/ checkout's commit, refused when src/, baml_src/ or .stewards/ have uncommitted changes; a sha as given; either refused when an absent probe's text is in its file there. Refusals are eval_setup_incomplete."
+
+[[interface]]
+id = "hermes_parse"
+anchor = "src/eval/hermes.rs::parse"
+contract = "A Hermes sessions export to a Run: the first-started top-level row is the task's, other top-level rows uncounted and flagged; only source subagent rows are children; a refused delegate_task launches nothing; peak context from agent.log or None; cost_usd null."
+
+[[interface]]
+id = "hermes_template"
+anchor = "src/eval/hermes.rs::template"
+contract = "Writes the eval's template Hermes home: config.yaml lifting the one-shot subagent cap and auto-approving children, .env linked, installs/ built; never writes the user's home; each session gets a fresh home linking it and its daemon is killed after."
+
+[[interface]]
+id = "hermes_redact_keys"
+anchor = "src/eval/hermes.rs::redact_keys"
+contract = "Replaces every key, token, secret or password value (8+ chars) of the linked .env with [redacted] in each kept session file."
 
 [[anchor]]
 path = "src/eval/mod.rs"
@@ -266,6 +281,30 @@ name = "run_session"
 path = "src/eval/mod.rs"
 name = "pinned_commit"
 
+[[anchor]]
+path = "src/eval/hermes.rs"
+name = "Hermes"
+
+[[anchor]]
+path = "src/eval/hermes.rs"
+name = "parse"
+
+[[anchor]]
+path = "src/eval/hermes.rs"
+name = "template"
+
+[[anchor]]
+path = "src/eval/hermes.rs"
+name = "redact_keys"
+
+[[anchor]]
+path = "src/eval/hermes.rs"
+name = "fingerprint"
+
+[[anchor]]
+path = "src/eval/hermes.rs"
+name = "files_opened"
+
 [[gap]]
 kind = "gap"
 title = "Ritual steps are best-effort from transcripts"
@@ -288,13 +327,7 @@ note = "simplified: only JSON submit output is read; upgrade if reviewers start 
 kind = "gap"
 title = "Leftover processes are killed only on Linux"
 anchor = "src/eval/mod.rs::kill_leftovers"
-note = "Uses /proc/<pid>/cwd; without /proc nothing is killed and leftovers is None."
-
-[[gap]]
-kind = "future"
-title = "Only the Pi and Claude Code harnesses are driven"
-anchor = "src/eval/mod.rs::run"
-note = "Any other --harness is not_implemented; a new one needs a Driver and a branch in run."
+note = "Uses /proc/<pid>/cwd and /proc/<pid>/environ (HERMES_HOME); without /proc nothing is killed and leftovers is None."
 
 [[gap]]
 kind = "gap"
@@ -302,7 +335,31 @@ title = "Claude Code runs have no trusted cost"
 anchor = "src/eval/claude.rs::parse"
 note = "Claude Code 1.0.128 prices unknown model ids at another model's rates, so cost_usd is null, spent_usd is null for a claude-code eval, and --max-cost is refused for it."
 
+[[gap]]
+kind = "future"
+title = "Only the Pi, Claude Code and Hermes harnesses are driven"
+anchor = "src/eval/mod.rs::run"
+note = "Any other --harness is not_implemented; a new one needs a Driver and a branch in run."
+
+[[gap]]
+kind = "gap"
+title = "Hermes runs have no trusted cost"
+anchor = "src/eval/hermes.rs::parse"
+note = "Hermes prices DeepSeek at off-peak rates in every hour, so cost_usd is null, its figure is harness_reported_cost_usd, and --max-cost is refused for hermes."
+
+[[gap]]
+kind = "gap"
+title = "Hermes execute_code shell commands are unseen"
+anchor = "src/eval/hermes.rs::parse"
+note = "Commands an execute_code script runs through terminal() are not in shell_commands, files opened, or ritual steps."
+
+[[gap]]
+kind = "gap"
+title = "Hermes files_opened does not follow a cd across terminal calls"
+anchor = "src/eval/hermes.rs::files_opened"
+note = "simplified: only a call's workdir and a leading cd are followed; upgrade if files_opened disagrees with the transcripts."
+
 [doc]
-overview = "The eval unit is the runner behind `stewards eval`. It measures whether coding agents do better with stewards than without: it drives a harness (Pi or Claude Code) over a suite of tasks in several arms, parses every session transcript into a run record, checks that the full arm followed the ritual, and reports cost and token overhead. The graders never branch on the harness. It also holds the material it runs on under evals/: the small three-language fixture, the task prompts, the suite manifests, arms.sh, and one reproduction per seeded bug."
-how_it_works = "run (src/eval/mod.rs) accepts the pi and claude-code harnesses, picks the arms, loads the suite (suite.rs) and checks task numbers. pi.rs writes an isolated Pi agent dir; claude.rs an isolated CLAUDE_CONFIG_DIR with only the user's model and linked credentials. Claude Code runs at thinking off (MAX_THINKING_TOKENS removed) and refuses --max-cost, as its cost is not trusted. execute first reads every task prompt and refuses one containing `think`. It prepares the full arm once (arms.sh full plus an adoption session, --setup-dir, or a pre-adopted repo), then runs each task per run in every arm in a fresh copy; a driver's context_file (Claude Code's CLAUDE.md importing AGENTS.md) is folded into the last commit, and every commit has a neutral subject and author. Each Driver starts a session (run_session, killing its group on timeout) and parses its transcript into a Run: tokens (null when unmeasurable or timed out), cost, files opened per record cwd, stewards commands, subagent launches, reviewer submits, models and thinking. After each session the runner runs `stewards next --no-brief` and kills leftovers. grade.rs grades each task on gate misses only; overhead ratios are report-only; spent_usd is null when no run has a cost. Results go to evals/results/<timestamp>/."
-how_to_change = "Start in src/eval/mod.rs for the command, the plan, shared session helpers and the per-session loop; pi.rs or claude.rs for a harness and its transcripts; grade.rs for verdicts and the report; suite.rs for manifest fields. Tests live in tests/eval.rs, with recorded transcripts under tests/fixtures/transcripts/ (claude-code/ holds session files plus stdout.log); add one when a parser must read a new shape. Keep true: never write the user's Pi or Claude Code config; bare and block-only arms never see stewards on PATH; unfinished adoption is an error; overhead ratios stay report-only; graders never branch on the harness; no task prompt contains `think`; commit subjects name nothing; the first session always runs under --max-cost; is_handoff accepts exactly what brief::handoff prints. A new harness needs a Driver, a branch in run, and its entry in src/harness.rs."
+overview = "The eval unit is the runner behind `stewards eval`. It measures whether coding agents do better with stewards than without: it drives a harness (Pi, Claude Code or Hermes Agent) over a suite of tasks in several arms, parses every session transcript into a run record, checks that the full arm followed the ritual, and reports cost and token overhead. The graders never branch on the harness. It also holds the material it runs on under evals/: the fixture, task prompts, suite manifests, arms.sh, and one reproduction per seeded bug."
+how_it_works = "run (src/eval/mod.rs) accepts pi, claude-code and hermes, picks the arms, loads the suite (suite.rs) and checks task numbers. pi.rs writes an isolated Pi agent dir; claude.rs an isolated CLAUDE_CONFIG_DIR; hermes.rs a template home (config lifting the one-shot cap of two subagents, .env linked, installs/ built) from which each session gets a fresh HERMES_HOME, and kills its gateway daemon after every session. Only pi takes --max-cost. execute reads every task prompt first, prepares the full arm once, then runs each task per run in every arm in a fresh copy. Each Driver starts a session (run_session, killing its group on timeout or on the runner's one SIGINT/SIGTERM handler) and parses its transcript into a Run: tokens (null when unmeasurable, timed out or interrupted), cost, files opened (content read or searched; a listing never), stewards commands, subagent launches (a refused Hermes delegate is none), reviewer submits, models and thinking. After each session the runner runs `stewards next --no-brief` and kills leftovers by cwd or HERMES_HOME. Hermes kept files have .env secrets [redacted]. grade.rs grades each task on gate misses only; overhead ratios are report-only."
+how_to_change = "Start in src/eval/mod.rs for the command, the plan, shared session helpers, the interrupt handler and the per-session loop; pi.rs, claude.rs or hermes.rs for a harness and its transcripts; grade.rs for verdicts and the report; suite.rs for manifest fields. Tests live in tests/eval.rs (the interrupt test in tests/eval_interrupt.rs, its own binary), with recorded transcripts under tests/fixtures/transcripts/<driver>/. Keep true: never write the user's harness config; bare and block-only arms never see stewards on PATH; overhead ratios stay report-only; graders never branch on the harness; one files-opened rule on every driver; no task prompt contains `think`; the first session always runs under --max-cost; no fixture holds key material. A new harness needs a Driver, a branch in run, and its entry in src/harness.rs."

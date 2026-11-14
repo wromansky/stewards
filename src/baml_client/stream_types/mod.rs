@@ -31,6 +31,8 @@ pub enum StreamTypes {
 
     CheckRun(CheckRun),
 
+    ContestedFinding(ContestedFinding),
+
     Decision(Decision),
 
     DeveloperAnswer(DeveloperAnswer),
@@ -88,6 +90,8 @@ impl baml::KnownTypes for StreamTypes {
             StreamTypes::CardPatch(_) => "CardPatch",
 
             StreamTypes::CheckRun(_) => "CheckRun",
+
+            StreamTypes::ContestedFinding(_) => "ContestedFinding",
 
             StreamTypes::Decision(_) => "Decision",
 

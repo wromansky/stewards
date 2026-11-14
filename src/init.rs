@@ -547,11 +547,9 @@ fn append_gitignore(repo: &Repo) -> Result<bool> {
     Ok(true)
 }
 
-pub fn run(g: &Global, draft: bool, hooks: bool, ci: bool) -> Result<ExitCode> {
-    for (set, flag) in [(hooks, "--hooks"), (ci, "--ci")] {
-        if set {
-            return not_implemented(&format!("init {flag}"));
-        }
+pub fn run(g: &Global, draft: bool, ci: bool) -> Result<ExitCode> {
+    if ci {
+        return not_implemented("init --ci");
     }
     let (cwd, ws) = workspace::here(g)?;
     let repo = ws.current_repo(&cwd)?;
@@ -826,6 +824,7 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         task: ARCHITECT_TASK.into(),
         snapshot,
         reasons: vec!["init --draft".into()],
+        units: vec![],
         changed: vec![],
         brief_path: None,
         handoff: None,

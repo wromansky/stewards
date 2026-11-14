@@ -1,11 +1,11 @@
 unit = "cli"
 
 [reviewed]
-commit = "8f1830aabdf439b0e9581b490c46180bb773c51f"
-fingerprint = "sha256:c5011427056f93f1feda30fb89abda7e0ec1459d019d8e5c41c6bbe0b3e0f8de"
-tree = "8cd5fedf47888e990011f128287639f2b25a0567"
-tester = "8cd5fedf47888e990011f128287639f2b25a0567"
-documenter = "8cd5fedf47888e990011f128287639f2b25a0567"
+commit = "8b41f486851a23b5cb84c49253be3626e3082a83"
+fingerprint = "sha256:157994be627098b96e6ef4ea4f2eaa98e41e5a3468a12ccd3ce94bc55a82ea39"
+tree = "cc7099b34b2b356df62405b33445ca8d65d72c9d"
+tester = "cc7099b34b2b356df62405b33445ca8d65d72c9d"
+documenter = "cc7099b34b2b356df62405b33445ca8d65d72c9d"
 
 [[interface]]
 id = "json-envelope"
@@ -30,12 +30,12 @@ contract = "--human, --repo <name>, -C <dir> and --direct are accepted before or
 [[interface]]
 id = "not-implemented"
 anchor = "src/output.rs::not_implemented"
-contract = "Unbuilt commands (completions, render, validate) and flags (review --pr, next --pr) parse and then fail with CliError code `not_implemented`, exit 2."
+contract = "Unbuilt commands (completions, validate) and flags (review --pr, next --pr) parse and then fail with CliError code `not_implemented`, exit 2; render and the init --hooks flag no longer exist and are usage errors."
 
 [[interface]]
 id = "review-command"
 anchor = "src/review.rs::run"
-contract = "`review [--task] [--roles]` shows up to 20 untracked result files per call as reported (not verified), removing them once written; lists next's jobs unless findings, files or unowned changed files remain; --task kept until done; exit 0 only when done."
+contract = "`review [--task] [--roles] [--answer ...]` records answers, shows up to 20 result files per call as reported (blocking findings, non-blocking notes), lists every due job unless findings, files or unowned changes remain; exit 0 only when done."
 
 [[anchor]]
 path = "src/main.rs"
@@ -89,12 +89,6 @@ note = "`stewards completions <shell>` returns not_implemented; it already recei
 
 [[gap]]
 kind = "future"
-title = "render is a stub"
-anchor = "src/render.rs::run"
-note = "`stewards render --harness` returns not_implemented."
-
-[[gap]]
-kind = "future"
 title = "validate is a stub"
 anchor = "src/validate.rs::run"
 note = "`stewards validate` returns not_implemented."
@@ -107,5 +101,5 @@ note = "`stewards review --pr <n>` returns not_implemented; plain `review` and `
 
 [doc]
 overview = "The cli unit is the stewards binary itself: the part a person or an agent actually runs. It parses the command line with clap, hands each subcommand to the unit that implements it, and makes every command answer in one predictable shape. By default a command prints a single JSON object on stdout, wrapped in an envelope that carries the stewards version and a schema number of 1 beside the command's own fields. With --human it prints the markdown rendering instead. When a command fails it prints the same envelope with an error holding a code, a message and a fix, and the process exits 2. The unit also owns the global flags (--human, --repo <name>, -C <dir>, --direct), the stub commands that are parsed but not built yet, and the shared helpers the integration tests use."
-how_it_works = "Everything starts in src/main.rs. The Cli struct declares the four global flags, accepted before or after any subcommand, and a Command enum with one variant per subcommand. --help or --version prints clap's text and exits normally; any other parse failure becomes a CliError with code usage, JSON unless --human is in argv, exit 2. After a good parse main builds a Global (human, repo, direct; direct also from STEWARDS_DIRECT=1), changes directory for -C (a directory it cannot enter is a usage error), and dispatch calls the owning module's run. completions, render and validate are stubs returning not_implemented; review --pr, init's unbuilt flags and next --pr reuse that helper. src/review.rs runs stewards review: it keeps --task in .stewards/briefs/review-task.txt until review is done, reads up to 20 untracked result files submit wrote, shows each as reported, not verified, and lists next's jobs with their handoffs unless a result reports findings or files are left. It removes the files only once its output is written, and exits 0 only when no job or check failure is left. src/output.rs holds the shared pieces. emit prints a payload as enveloped JSON or, with --human, through Human::render, and returns whether it was all written; a closed pipe is dropped quietly, other write errors go to stderr. CliError carries code, message, fix and, for a failed submit, field errors serialised only when non-empty. with_note appends a note to a CliError's message or adds context to any other error. A CliError from dispatch is emitted as is, any other error as code internal with fix 'report a bug'; both exit 2. Tests live in tests/skeleton.rs and tests/review.rs, with helpers in tests/common/mod.rs such as fixture, run and stewards."
+how_it_works = "Everything starts in src/main.rs. The Cli struct declares the four global flags, accepted before or after any subcommand, and a Command enum with one variant per subcommand. --help or --version prints clap's text and exits normally; any other parse failure becomes a CliError with code usage, JSON unless --human is in argv, exit 2. After a good parse main builds a Global (human, repo, direct; direct also from STEWARDS_DIRECT=1), changes directory for -C (a directory it cannot enter is a usage error), and dispatch calls the owning module's run. completions and validate are stubs returning not_implemented; review --pr, init's unbuilt flags and next --pr reuse that helper. src/review.rs runs stewards review: it first records each --answer '<unit>: <file>:<line>: <reason>' in the unit's stored findings (all checked before any is written), keeps --task in .stewards/briefs/review-task.txt until review is done, reads up to 20 untracked result files submit wrote, shows each as reported, not verified (blocking findings with their answer prefix, non-blocking ones as notes), and lists every due unit's job with its handoff unless a result reports findings or files are left. It removes the files only once its output is written, and exits 0 only when no job or check failure is left. src/output.rs holds the shared pieces. emit prints a payload as enveloped JSON or, with --human, through Human::render, and returns whether it was all written; a closed pipe is dropped quietly. CliError carries code, message, fix and, for a failed submit, field errors serialised only when non-empty. A CliError from dispatch is emitted as is, any other error as code internal with fix 'report a bug'; both exit 2. Tests live in tests/skeleton.rs and tests/review.rs, with helpers in tests/common/mod.rs."
 how_to_change = "To add or change a command, start in src/main.rs: add the variant and its flags to the Command enum, add its arm to dispatch, and put the work in a module declared in src/lib.rs whose run takes &Global and returns anyhow::Result<ExitCode>. Give the payload type Serialize and Human implementations and print it with emit, so that JSON and --human stay in step; do not write to stdout yourself, because emit is what keeps a closed pipe from panicking. Report failures by returning a CliError with a stable code and a concrete fix; the main loop turns it into the envelope and exit 2, so do not print errors or exit yourself. To build one of the stubs, replace its not_implemented call with a real run and add its tests; the interface promises those commands fail with not_implemented until then. Keep true the things callers depend on: one JSON object on stdout with the stewards version and schema 1 fields flattened with the payload; errors with code, message and fix, exit 2, and JSON unless --human is in argv even for parse failures; --help and --version exiting normally; global flags accepted anywhere on the line; -C applied before dispatch; and STEWARDS_DIRECT=1 equal to --direct. If the envelope shape changes in a way readers would notice, bump the schema number in output.rs. Check changes against tests/skeleton.rs and the other integration tests, which use the helpers in tests/common."

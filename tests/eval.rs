@@ -314,6 +314,19 @@ fn the_handoff_brief_prints_is_one_the_eval_reads_as_exact() {
     assert!(stewards::eval::holds_handoff(&format!(
         "please: {h} thanks"
     )));
+    // a round's numbered review briefs are handoffs too
+    let numbered = h.replace("review-0123abcd.md", "review-2-0123abcd.md");
+    assert!(stewards::eval::is_handoff(&numbered), "{numbered}");
+}
+
+#[test]
+fn answers_given_counts_each_answer_of_a_review_command() {
+    let commands = [
+        "stewards review --answer 'api: a.py:1: r' --answer=\"api: a.py:2: r\"".to_string(),
+        "stewards -C /r review --task t".to_string(),
+        "echo --answer".to_string(),
+    ];
+    assert_eq!(stewards::eval::answers_given(&commands), 2);
 }
 
 /// The recorded sample `name` with each `(from, to)` replaced: the real pi-subagents argument
@@ -531,15 +544,20 @@ fn git_history_reads_are_recognised_by_subcommand() {
 
 #[test]
 fn reviewed_units_reads_a_reviewer_submits_json_output() {
-    let out = r#"{"stewards":{"version":"0.1.0","schema":1},"summary":"reviewer: api changes (2 findings; card: gap +a, anchor -b; not stamped), store approve (card unchanged; stamped abc1234)","findings":[{"unit":"api","file":"a.py","line":1,"cut":"x"},{"unit":"api","file":"a.py","line":2,"cut":"y"}]}"#;
-    let unit = |u: &str, v: &str, f| ReviewedUnit {
+    let out = r#"{"stewards":{"version":"0.1.0","schema":1},"summary":"reviewer: api changes (2 findings; card: gap +a, anchor -b; not stamped), store approve (card unchanged; stamped abc1234)","findings":[{"unit":"api","file":"a.py","line":1,"cut":"x"},{"unit":"api","file":"a.py","line":2,"cut":"y","contested":"why"}],"notes":[{"unit":"store","file":"s.py","line":3,"cut":"z"}]}"#;
+    let unit = |u: &str, v: &str, findings, notes, contested| ReviewedUnit {
         unit: u.into(),
         verdict: v.into(),
-        findings: f,
+        findings,
+        notes,
+        contested,
     };
     assert_eq!(
         reviewed_units(&format!("warning: x\n{out}\n")).unwrap(),
-        [unit("api", "changes", 2), unit("store", "approve", 0)]
+        [
+            unit("api", "changes", 2, 0, 1),
+            unit("store", "approve", 0, 1, 0)
+        ]
     );
     assert_eq!(
         reviewed_units(r#"{"summary":"architect: 3 purposes set"}"#),
@@ -610,6 +628,7 @@ fn record(task: u32, arm: Arm, role: RunRole, run: u32, result: Run) -> RunRecor
         next_check: None,
         changed: true,
         reviews: vec![],
+        answers: 0,
         result: Some(result),
         error: None,
     }
@@ -771,9 +790,12 @@ fn summary_md_shows_the_gate_the_overhead_the_flags_and_the_review_outcomes() {
         unit: "api".into(),
         verdict: "changes".into(),
         findings: 2,
+        notes: 1,
+        contested: 0,
         bugs: vec!["pagination skips the last item".into()],
         tests_ran: true,
     }];
+    recs[1].answers = 1;
     let mut adoption = record(
         1,
         Arm::Full,
@@ -801,7 +823,7 @@ fn summary_md_shows_the_gate_the_overhead_the_flags_and_the_review_outcomes() {
         "{md}"
     );
     assert!(
-        md.contains("- full-t1-r1: round 1 api changes (2 findings, bugs: pagination skips the last item, tests ran)"),
+        md.contains("- full-t1-r1: round 1 api changes (2 findings, 1 notes, 0 contested, bugs: pagination skips the last item, tests ran); 1 answered"),
         "{md}"
     );
     assert!(md.contains("- full-t1-r2: no reviewer submit"), "{md}");
@@ -1906,8 +1928,8 @@ fn a_full_runs_review_outcome_comes_from_the_reviewer_submit_and_the_cards() {
     assert_eq!(
         review("full"),
         serde_json::json!([
-            {"round": 1, "unit": "api", "verdict": "changes", "findings": 1, "bugs": [], "tests_ran": true},
-            {"round": 1, "unit": "store", "verdict": "approve", "findings": 0, "bugs": ["loses writes"], "tests_ran": false},
+            {"round": 1, "unit": "api", "verdict": "changes", "findings": 1, "notes": 0, "contested": 0, "bugs": [], "tests_ran": true},
+            {"round": 1, "unit": "store", "verdict": "approve", "findings": 0, "notes": 0, "contested": 0, "bugs": ["loses writes"], "tests_ran": false},
         ])
     );
 }
@@ -1933,7 +1955,7 @@ fn after_an_edit_in_a_repo_suites_full_copy_the_review_pack_shows_hunks() {
     let dir = PathBuf::from(full["workdir"].as_str().unwrap());
     let (code, v) = common::run(&dir, &["next"]);
     assert_eq!(code, 1, "{v}");
-    let brief = std::fs::read_to_string(dir.join(common::brief(&dir, "review"))).unwrap();
+    let brief = std::fs::read_to_string(dir.join(common::brief(&dir, "review-1"))).unwrap();
     assert!(
         brief.contains("## Hunks") && brief.contains("```diff"),
         "{brief}"

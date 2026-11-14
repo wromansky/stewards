@@ -30,6 +30,8 @@ Answer in JSON using this schema:
           cut: string,
           // max 2000 chars
           replace_with: string,
+          // false for a remark that should not hold up approval, such as wording, a redundant local, formatting; anything about correctness, missing tests for changed behaviour, scope or security is true
+          blocking: bool,
         }
       ],
       card_patch: {
@@ -121,6 +123,16 @@ Answer in JSON using this schema:
         // max 2000 chars
         how_to_change: string,
       } or null,
+      // answered findings of this unit whose reason does not hold, by file and line; each returns to the agent as a blocking finding; max 200 items
+      contested: [
+        {
+          // max 300 chars
+          file: string,
+          line: int,
+          // why the agent's reason does not hold; max 2000 chars
+          why: string,
+        }
+      ] or null,
     }
   ],
   // max 200 items, each max 300 chars

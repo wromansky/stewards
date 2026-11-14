@@ -8,7 +8,7 @@ The setup unit is how a repository gets onto stewards and how the generated file
 
 ## How it works
 
-Plain init (src/init.rs, propose) refuses with already_initialized if units.toml or repo.toml exists. Otherwise it proposes units from manifest roots, source directories and co-change history, naming the repo after its origin URL's last segment, else its directory. Test commands come from what each directory directly holds (dir_tests): the repo-wide commands only from the repo root, and a unit's own command (unit_test) from its dir/** paths, skipped when the root covers its toolchain or its directories disagree, written to the unit's test card. It writes both files and those cards, appends missing .gitignore lines, upserts the AGENTS.md block, and reports, ending with the AGENTS.md-only note. init --draft (draft_jobs) runs only step 1 on an uninitialized repo, then briefs an architect job plus a first review per never-reviewed unit with handoffs, and says to run review --roles until it exits 0; --direct checks every model guard first, then submits each job, a failure reporting how many were submitted. --hooks and --ci return not_implemented. src/guide.rs holds the block: upsert_block writes it at the top of AGENTS.md or replaces the text between the markers, returning whether the file changed. guide prints the block's paragraphs, roles, adoption and AGENTS.md-only text, and one delegation text for every harness; --all, --errors and --glossary add every harness, the error table and the glossary. src/harness.rs: detect returns the first harness whose verified env prefix matches; by_name looks one up case-insensitively, else harness_unknown. src/docs.rs (pages) renders docs_path/&lt;unit>.md plus README.md from cards, escaping text, linking live anchors, rejecting a bad docs_path or unknown unit, writing only changed files.
+Plain init (src/init.rs, propose) refuses with already_initialized if units.toml or repo.toml exists. Otherwise it proposes units from manifest roots, source directories and co-change history, naming the repo after its origin URL's last segment, else its directory. Test commands come from what each directory directly holds (dir_tests): the repo-wide commands only from the repo root, and a unit's own command (unit_test) from its dir/** paths, skipped when the root covers its toolchain or its directories disagree, written to the unit's test card. It writes both files and those cards, appends missing .gitignore lines, upserts the AGENTS.md block, and reports, ending with the AGENTS.md-only note. init --draft (draft_jobs) runs only step 1 on an uninitialized repo, then briefs an architect job plus a first review per never-reviewed unit with handoffs, and says to run review --roles until it exits 0; --direct checks every model guard first, then submits each job, a failure reporting how many were submitted. --ci returns not_implemented; --hooks and render are cut from 0.1.0. src/guide.rs holds the block: upsert_block writes it at the top of AGENTS.md or replaces the text between the markers, returning whether the file changed. guide prints the block's paragraphs, roles, adoption and AGENTS.md-only text, and one delegation text for every harness; --all, --errors and --glossary add every harness, the error table and the glossary. src/harness.rs: detect returns the first harness whose verified env prefix matches; by_name looks one up case-insensitively, else harness_unknown. src/docs.rs (pages) renders docs_path/&lt;unit>.md plus README.md from cards, escaping text, linking live anchors, rejecting a bad docs_path or unknown unit, writing only changed files.
 
 ## How to change it
 
@@ -19,13 +19,13 @@ Start from the file for the command: src/init.rs for proposing units, test comma
 | id | contract | anchor |
 |---|---|---|
 | init | Plain \`init\` refuses (already\_initialized) if units.toml or repo.toml exists; else proposes units, writes both files (root-only repo test commands), a test card per unit whose own dirs give one command (else says why), appends missing .gitignore lines, upserts the AGENTS.md block, reports. | [src/init.rs\:\:propose](../../src/init.rs#L1) |
-| init-draft | \`init --draft\` runs step 1 only on an uninitialized repo, briefs the architect and a first review per never-reviewed unit (problems recorded as gaps, existing code unchanged), each with a handoff, then says to run \`review --roles\`; with --direct it checks model guards, then submits each job. | [src/init.rs\:\:draft\_jobs](../../src/init.rs#L569) |
-| init-hooks-ci | \`init --hooks\` and \`init --ci\` return not\_implemented. | [src/init.rs\:\:not\_implemented](../../src/init.rs#L14) |
+| init-draft | \`init --draft\` runs step 1 only on an uninitialized repo, briefs the architect and a first review per never-reviewed unit (problems recorded as gaps, existing code unchanged), each with a handoff, then says to run \`review --roles\`; with --direct it checks model guards, then submits each job. | [src/init.rs\:\:draft\_jobs](../../src/init.rs#L567) |
 | agents-block | Writes the stewards block at the top of AGENTS.md (creating the file), or replaces the text between existing start/end markers; returns whether the file changed, so a rerun is a no-op. | [src/guide.rs\:\:upsert\_block](../../src/guide.rs#L50) |
 | guide | \`guide\` prints the block's ritual, handoff, editing and hygiene paragraphs, roles (saying a stamp is one reviewer's no-finding report), adoption, the AGENTS.md-only note, one delegation text for every harness; --all, --errors, --glossary add every harness, the error table, the glossary. | [src/guide.rs\:\:run](../../src/guide.rs#L20) |
-| harness-detect | Returns the first harness whose env var prefix matches the current environment; harnesses with an unverified env rule are never detected. | [src/harness.rs\:\:detect](../../src/harness.rs#L144) |
-| harness-by-name | Looks up a harness case-insensitively; an unknown name is harness\_unknown listing the valid names. | [src/harness.rs\:\:by\_name](../../src/harness.rs#L154) |
+| harness-detect | Returns the first harness whose env var prefix matches the current environment; harnesses with an unverified env rule are never detected. | [src/harness.rs\:\:detect](../../src/harness.rs#L145) |
+| harness-by-name | Looks up a harness case-insensitively; an unknown name is harness\_unknown listing the valid names. | [src/harness.rs\:\:by\_name](../../src/harness.rs#L155) |
 | docs | \`docs \[unit\]\` renders docs\_path/\<unit\>.md for one or every unit plus README.md from cards, tests and repo.toml, escaping card text and linking live anchors; rejects a docs\_path that is empty or escapes the repo and an unknown unit; writes only changed files. | [src/docs.rs\:\:pages](../../src/docs.rs#L41) |
+| init-ci | \`init --ci\` returns not\_implemented; \`init --hooks\` and \`render\` are cut from 0.1.0, so they are usage errors. | [src/init.rs\:\:not\_implemented](../../src/init.rs#L14) |
 
 ## Scenarios
 
@@ -53,11 +53,11 @@ Start from the file for the command: src/init.rs for proposing units, test comma
 
 | kind | title | note |
 |---|---|---|
-| future | init --hooks and --ci are not implemented | Both flags are parsed but return not\_implemented. |
 | gap | guide paragraphs are picked by index from BLOCK | guide run splits BLOCK on blank lines and takes parts\[2..=5\]; adding or removing a paragraph in the block silently shifts which text each guide field shows. |
 | gap | six harnesses are never detected from env | Harnesses with an unverified env rule are only reachable through guide --harness; detect and telemetry fall back to generic for them. |
 | gap | Last reviewed commit is written at line start | esc assumes a tool-written prefix, but unit\_page writes reviewed.commit alone on its line and the commit is not validated; a hand-edited commit like \`1. x\` or \`---\` renders as a list or rule. Cosmetic only\: no HTML or link can form. |
+| future | init --ci is not implemented | The flag is parsed but returns not\_implemented. |
 
 ## Last reviewed
 
-8f1830aabdf439b0e9581b490c46180bb773c51f
+8b41f486851a23b5cb84c49253be3626e3082a83

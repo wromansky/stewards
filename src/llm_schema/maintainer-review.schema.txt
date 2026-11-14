@@ -23,6 +23,8 @@ Answer in JSON using this schema:
       cut: string,
       // max 2000 chars
       replace_with: string,
+      // false for a remark that should not hold up approval, such as wording, a redundant local, formatting; anything about correctness, missing tests for changed behaviour, scope or security is true
+      blocking: bool,
     }
   ],
   card_patch: {

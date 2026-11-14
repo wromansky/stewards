@@ -123,10 +123,10 @@ command = "cargo test --test review review_brief_carries_each_units_hunks_card_s
 [[scenario]]
 id = "review-budget-next-round"
 interface = "review-brief"
-given = "due units past the review budget"
-expect = "the units that fit are covered, the rest named as next round and still due"
+given = "due units whose packs together pass the review budget"
+expect = "every due unit is in exactly one numbered brief, each within the budget, none named as next round"
 level = "integration"
-command = "cargo test --test review units_past_the_review_budget_are_next_round_and_stay_due"
+command = "cargo test --test review every_due_unit_is_listed_in_one_round_in_as_many_briefs_as_the_budget_needs"
 
 [[scenario]]
 id = "review-approve-stamps"
@@ -263,3 +263,43 @@ given = "a reviewer bug with a new title on the anchor of a bug the card has"
 expect = "the bug is not added and the summary names it as a possible duplicate of the known one"
 level = "integration"
 command = "cargo test --test review a_reviewers_bug_with_a_new_title_on_a_known_bugs_anchor_is_reported_and_not_added"
+
+[[scenario]]
+id = "review-round-briefs-independent"
+interface = "review-submit"
+given = "a round of two briefs, answered in either order"
+expect = "each submit stamps its own units, and one brief's findings do not hide the other's result"
+level = "integration"
+command = "cargo test --test review the_briefs_of_one_round_submit_in_either_order_and_each_stamps"
+
+[[scenario]]
+id = "finding-answer-recorded"
+interface = "finding-answer"
+given = "a changes review with one blocking finding, then --answer naming it"
+expect = "the reason is recorded once and shown to the next reviewer; a bad location, blank reason or second answer is usage"
+level = "integration"
+command = "cargo test --test review an_answer_is_recorded_only_for_a_finding_of_the_last_round_and_shown_to_the_next_reviewer"
+
+[[scenario]]
+id = "finding-answer-accepted"
+interface = "review-submit"
+given = "an answered finding the next reviewer does not contest, then an approve"
+expect = "the answer is accepted, the unit stamps and its findings file is gone"
+level = "integration"
+command = "cargo test --test review an_accepted_answer_is_not_raised_again_and_the_unit_stamps"
+
+[[scenario]]
+id = "finding-answer-contested"
+interface = "finding-answer"
+given = "an answered finding the next reviewer contests"
+expect = "it returns blocking in the fix task, cannot be approved over, and cannot be answered again"
+level = "integration"
+command = "cargo test --test review a_contested_answer_comes_back_blocking_and_cannot_be_answered_again"
+
+[[scenario]]
+id = "review-notes-do-not-block"
+interface = "review-submit"
+given = "an approve whose findings all have blocking false"
+expect = "the unit stamps, the notes are printed and reported, and no fix task is written"
+level = "integration"
+command = "cargo test --test review an_approval_with_only_notes_stamps_and_writes_no_fix_task"

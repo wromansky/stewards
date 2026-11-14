@@ -108,6 +108,22 @@ impl ::std::convert::AsRef<CheckRun> for CheckRun {
 
 #[derive(Debug, Clone, Default, BamlDecode, Serialize)]
 #[serde(crate = "::baml::__internal::serde")]
+pub struct ContestedFinding {
+    pub file: Option<String>,
+
+    pub line: Option<i64>,
+
+    pub why: Option<String>,
+}
+
+impl ::std::convert::AsRef<ContestedFinding> for ContestedFinding {
+    fn as_ref(&self) -> &ContestedFinding {
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default, BamlDecode, Serialize)]
+#[serde(crate = "::baml::__internal::serde")]
 pub struct Decision {
     pub title: Option<String>,
 
@@ -184,6 +200,8 @@ pub struct Finding {
     pub cut: Option<String>,
 
     pub replace_with: Option<String>,
+
+    pub blocking: Option<bool>,
 }
 
 impl ::std::convert::AsRef<Finding> for Finding {
@@ -450,6 +468,8 @@ pub struct UnitReview {
     pub bugs: Option<Vec<Bug>>,
 
     pub doc: Option<Doc>,
+
+    pub contested: Option<Vec<ContestedFinding>>,
 }
 
 impl ::std::convert::AsRef<UnitReview> for UnitReview {

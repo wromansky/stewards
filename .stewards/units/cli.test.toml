@@ -31,3 +31,19 @@ given = "result files and a stdout closed before the output is written"
 expect = "the result files stay for the next call"
 level = "integration"
 command = "cargo test --test review results_are_removed_only_after_the_output_is_written"
+
+[[scenario]]
+id = "review-answer-contested"
+interface = "review-command"
+given = "a finding answered with `review --answer`, which the next reviewer contests"
+expect = "the finding comes back blocking with the contest, a second --answer for it is a usage error; an accepted answer lets the unit stamp"
+level = "integration"
+command = "cargo test --test review a_contested_answer_comes_back_blocking_and_cannot_be_answered_again"
+
+[[scenario]]
+id = "review-notes-do-not-block"
+interface = "review-command"
+given = "a review approving a unit with only non-blocking findings"
+expect = "the notes are printed and recorded, the unit stamps, no fix task is written"
+level = "integration"
+command = "cargo test --test review an_approval_with_only_notes_stamps_and_writes_no_fix_task"

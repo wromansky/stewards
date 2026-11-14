@@ -211,7 +211,12 @@ pub struct ReviewedUnit {
     pub unit: String,
     /// `approve` or `changes`.
     pub verdict: String,
+    /// Blocking findings, contested ones included.
     pub findings: usize,
+    /// Non-blocking findings.
+    pub notes: usize,
+    /// Findings a reviewer contested the agent's answer to.
+    pub contested: usize,
 }
 
 /// The units of a reviewer `submit`'s JSON output: `summary` is `reviewer: <unit> <verdict>
@@ -224,7 +229,8 @@ pub fn reviewed_units(output: &str) -> Option<Vec<ReviewedUnit>> {
         .next()?
         .ok()?;
     let summary = v["summary"].as_str()?.strip_prefix("reviewer: ")?;
-    let findings = v["findings"].as_array().map_or(&[][..], Vec::as_slice);
+    let list = |key: &str| v[key].as_array().map_or(&[][..], Vec::as_slice);
+    let (findings, notes) = (list("findings"), list("notes"));
     Some(
         summary
             .split("), ")
@@ -235,6 +241,11 @@ pub fn reviewed_units(output: &str) -> Option<Vec<ReviewedUnit>> {
                     unit: unit.to_string(),
                     verdict: verdict.to_string(),
                     findings: findings.iter().filter(|f| f["unit"] == unit).count(),
+                    notes: notes.iter().filter(|f| f["unit"] == unit).count(),
+                    contested: findings
+                        .iter()
+                        .filter(|f| f["unit"] == unit && f.get("contested").is_some())
+                        .count(),
                 })
             })
             .collect(),
@@ -272,6 +283,20 @@ pub fn holds_handoff(text: &str) -> bool {
             .find(END)
             .is_some_and(|j| is_handoff(&text[i..i + j + END.len()]))
     })
+}
+
+/// How many findings `shell_commands` answered: each `--answer` of a `stewards review`.
+pub fn answers_given(shell_commands: &[String]) -> usize {
+    shell_commands
+        .iter()
+        .flat_map(|c| stewards_commands(c))
+        .filter(|cmd| cmd[0] == "review")
+        .map(|cmd| {
+            cmd.iter()
+                .filter(|w| **w == "--answer" || w.starts_with("--answer="))
+                .count()
+        })
+        .sum()
 }
 
 /// Whether a `stewards` command (see `stewards_commands`) is `submit --role reviewer`.
@@ -925,6 +950,8 @@ pub struct RunRecord {
     pub changed: bool,
     /// `full` arms: each unit of each reviewer `submit`, in order (report-only).
     pub reviews: Vec<UnitReview>,
+    /// `full` arms: findings answered with `stewards review --answer` (report-only).
+    pub answers: usize,
     pub result: Option<Run>,
     /// Why `result` is missing when the transcript could not be parsed.
     pub error: Option<String>,
@@ -938,6 +965,8 @@ pub struct UnitReview {
     pub unit: String,
     pub verdict: String,
     pub findings: usize,
+    pub notes: usize,
+    pub contested: usize,
     /// Bug gaps on the unit's card after the run that were not there before it.
     pub bugs: Vec<String>,
     /// Whether the submitting child ran the unit's test command (its test card's, else one of
@@ -1140,6 +1169,9 @@ impl Runner<'_> {
             next_check,
             changed,
             reviews,
+            answers: result
+                .as_ref()
+                .map_or(0, |r| answers_given(&r.shell_commands)),
             result,
             error,
         };
@@ -1700,6 +1732,8 @@ fn review_outcomes(
                 unit: u.unit.clone(),
                 verdict: u.verdict.clone(),
                 findings: u.findings,
+                notes: u.notes,
+                contested: u.contested,
                 bugs: gaps_after
                     .iter()
                     .filter(|g| !gaps_before.contains(g))

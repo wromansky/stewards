@@ -35,6 +35,8 @@ pub enum Types {
 
     CheckRun(CheckRun),
 
+    ContestedFinding(ContestedFinding),
+
     Decision(Decision),
 
     DeveloperAnswer(DeveloperAnswer),
@@ -100,6 +102,8 @@ impl ::baml::KnownTypes for Types {
             Self::CardPatch(_) => "CardPatch",
 
             Self::CheckRun(_) => "CheckRun",
+
+            Self::ContestedFinding(_) => "ContestedFinding",
 
             Self::Decision(_) => "Decision",
 

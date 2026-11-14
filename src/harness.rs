@@ -3,7 +3,8 @@ use crate::output::CliError;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// The harness has a role-file format: `render` writes one file per role.
+    /// The harness has a role-file format (for one file per role; `render`, which would write
+    /// them, is cut from 0.1.0).
     Rendered,
     /// No role-file format: the brief also carries the role text.
     Briefed,

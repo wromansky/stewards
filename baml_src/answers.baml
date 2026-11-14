@@ -32,6 +32,13 @@ class Finding {
   rung Rung
   cut string @description("max 2000 chars")
   replace_with string @description("max 2000 chars")
+  blocking bool @description("false for a remark that should not hold up approval, such as wording, a redundant local, formatting; anything about correctness, missing tests for changed behaviour, scope or security is true")
+}
+
+class ContestedFinding {
+  file string @description("max 300 chars")
+  line int
+  why string @description("why the agent's reason does not hold; max 2000 chars")
 }
 
 class Interface {
@@ -203,6 +210,7 @@ class UnitReview {
   scenario_patch Scenario[]? @description("only when the contract changed; upserts by id; max 200 items")
   bugs Bug[]? @description("defects found and not fixed here; max 200 items")
   doc Doc? @description("all three sections as they should read; required when the unit has no docs; otherwise only when what a section says is no longer true")
+  contested ContestedFinding[]? @description("answered findings of this unit whose reason does not hold, by file and line; each returns to the agent as a blocking finding; max 200 items")
 }
 
 class ReviewAnswer {

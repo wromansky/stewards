@@ -16,12 +16,12 @@ use stewards::workspace::Repo;
 
 /// The review brief on disk.
 fn brief(d: &Path) -> String {
-    common::brief(d, "review")
+    common::brief(d, "review-1")
 }
 
 /// The answer file the review brief names.
 fn answer_file(d: &Path) -> String {
-    common::answer(d, "review")
+    common::answer(d, "review-1")
 }
 
 /// The single fixture with both units stamped, then `create_item` (api) and `count_items`
@@ -86,7 +86,7 @@ fn review_job(d: &Path) -> Value {
 /// Writes `answer` with the brief's snapshot, as a reviewer copies it, unless it has one.
 fn submit(d: &Path, answer: &Value) -> (i32, Value) {
     let mut answer = answer.clone();
-    let briefs = common::job_files(d, "review", ".md");
+    let briefs = common::job_files(d, "review-1", ".md");
     if let (None, [brief]) = (answer.get("snapshot"), briefs.as_slice()) {
         answer["snapshot"] = json!(read_header(&d.join(brief)).unwrap().snapshot);
     }
@@ -102,7 +102,7 @@ fn a_new_review_brief_removes_the_superseded_one_so_an_old_handoff_names_no_file
     let first = review_job(d);
     let old_brief = d.join(brief(d));
     let old_answer = d.join(answer_file(d));
-    let old_result = d.join(common::result(d, "review"));
+    let old_result = d.join(common::result(d, "review-1"));
     fs::write(&old_answer, "half written").unwrap();
     fs::write(&old_result, "{}").unwrap();
     append(&d.join("src/api/items.py"), "# more\n");
@@ -111,7 +111,7 @@ fn a_new_review_brief_removes_the_superseded_one_so_an_old_handoff_names_no_file
     assert_ne!(first["handoff"], second["handoff"]);
     assert_ne!(old_brief, new_brief);
     let snapshot = read_header(&new_brief).unwrap().snapshot;
-    assert!(new_brief.ends_with(format!("review-{}.md", &snapshot[..8])));
+    assert!(new_brief.ends_with(format!("review-1-{}.md", &snapshot[..8])));
     assert!(!old_brief.exists() && !old_answer.exists());
     // what a subagent reported is still there for `review` to read
     assert!(old_result.is_file());
@@ -339,53 +339,26 @@ fn grow(path: &Path, n: usize) {
 }
 
 #[test]
-fn units_past_the_review_budget_are_next_round_and_stay_due() {
-    let dir = fixture("single");
-    let d = dir.path();
-    stamp_units(d, &["api", "store"]);
-    grow(&d.join("src/api/items.py"), 30_000);
-    grow(&d.join("src/store/db.py"), 30_000);
-    let job = review_job(d);
-    let h = read_header(&d.join(brief(d))).unwrap();
-    assert_eq!(h.units, Some(vec!["api".to_string()]));
-    assert!(h.bytes <= REVIEW_BUDGET, "{}", h.bytes);
-    let text = fs::read_to_string(d.join(brief(d))).unwrap();
-    assert!(text.contains("# Next round"));
-    assert!(!text.contains("# Pack: store"));
-    // api fits whole: not shrunk
-    assert!(!text.contains("hunks truncated"));
-    let reasons = job["reasons"].as_array().unwrap();
-    assert!(
-        reasons.contains(&json!("next round, over the review budget: store")),
-        "{reasons:?}"
-    );
-    assert!(
-        !reasons
-            .iter()
-            .any(|r| r.as_str().unwrap().starts_with("store:"))
-    );
-    let (code, v) = submit(d, &answer(json!([approve("api")])));
-    assert_eq!(code, 0, "{v}");
-    review_job(d);
-    let h = read_header(&d.join(brief(d))).unwrap();
-    assert_eq!(h.units, Some(vec!["store".to_string()]));
-}
-
-#[test]
 fn a_unit_alone_over_the_review_budget_is_shrunk_and_reviewed_alone() {
     let dir = fixture("single");
     let d = dir.path();
     stamp_units(d, &["api", "store"]);
     grow(&d.join("src/api/items.py"), 60_000);
     append(&d.join("src/store/db.py"), "\n# more\n");
-    review_job(d);
+    let (code, v) = run(d, &["next", "--task", "t"]);
+    assert_eq!(code, 1, "{v}");
+    let units: Vec<&Value> = v["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| &j["units"])
+        .collect();
+    assert_eq!(units, [&json!(["api"]), &json!(["store"])]);
     let h = read_header(&d.join(brief(d))).unwrap();
     assert_eq!(h.units, Some(vec!["api".to_string()]));
     assert!(h.bytes <= REVIEW_BUDGET, "{}", h.bytes);
-    let text = fs::read_to_string(d.join(brief(d))).unwrap();
-    assert!(text.contains("not in this review: store"));
     let (_, v) = run(d, &["pack", "--role", "reviewer", "--task", "t"]);
-    let dropped = &v["units"][0]["dropped"];
+    let dropped = &v["groups"][0]["units"][0]["dropped"];
     assert!(
         dropped
             .as_array()
@@ -393,7 +366,7 @@ fn a_unit_alone_over_the_review_budget_is_shrunk_and_reviewed_alone() {
             .contains(&json!("hunks truncated to 40 lines")),
         "{dropped}"
     );
-    assert_eq!(v["next_round"], json!(["store"]));
+    assert_eq!(v["groups"][1]["units"][0]["unit"], json!("store"));
 }
 
 #[test]
@@ -439,8 +412,8 @@ fn approving_every_unit_stamps_it_and_sets_both_marks_so_neither_next_lists_anyt
     let page = fs::read_to_string(d.join("docs/units/store.md")).unwrap();
     assert!(page.contains("Keeps items in memory."), "{page}");
     assert!(d.join("docs/units/README.md").is_file());
-    assert!(common::job_files(d, "review", ".md").is_empty());
-    assert!(common::job_files(d, "review", ".answer.json").is_empty());
+    assert!(common::job_files(d, "review-1", ".md").is_empty());
+    assert!(common::job_files(d, "review-1", ".answer.json").is_empty());
     for args in [
         &["next", "--no-brief"][..],
         &["next", "--roles", "--no-brief"],
@@ -467,7 +440,7 @@ fn changes_on_one_unit_stamps_the_other_and_writes_its_fix_task() {
     let d = dir.path();
     review_job(d);
     let api = json!({"unit": "api", "verdict": "changes", "card_patch": null, "check": check(true),
-        "findings": [{"file": "src/api/items.py", "line": 8, "rung": "untraced",
+        "findings": [{"file": "src/api/items.py", "line": 8, "rung": "untraced", "blocking": true,
                       "cut": "the status change to 400", "replace_with": "keep 422"}]});
     let mut store = approve("store");
     store["doc"] = json!({"overview": "o", "how_it_works": "h", "how_to_change": "c"});
@@ -483,7 +456,8 @@ fn changes_on_one_unit_stamps_the_other_and_writes_its_fix_task() {
     assert_eq!(
         v["findings"],
         json!([{"unit": "api", "file": "src/api/items.py", "line": 8,
-                "cut": "the status change to 400", "replace_with": "keep 422"}])
+                "cut": "the status change to 400", "replace_with": "keep 422",
+                "answer": "api: src/api/items.py:8: "}])
     );
     assert_ne!(
         card(d, "api").reviewed.unwrap().tree,
@@ -615,7 +589,7 @@ fn an_over_cap_field_is_rejected() {
 fn a_finding_in_another_units_file_is_rejected() {
     let dir = changed_both();
     let api = json!({"unit": "api", "verdict": "changes", "card_patch": null, "check": check(true),
-        "findings": [{"file": "src/store/db.py", "line": 1, "rung": "untraced",
+        "findings": [{"file": "src/store/db.py", "line": 1, "rung": "untraced", "blocking": true,
                       "cut": "x", "replace_with": "y"}]});
     let a = answer(json!([api, approve("store")]));
     rejected(
@@ -699,14 +673,14 @@ fn reviewer_takes_no_unit_in_brief_pack_and_submit() {
     }
     let (code, v) = run(d, &["pack", "--role", "reviewer"]);
     assert_eq!(code, 0, "{v}");
-    let units: Vec<&Value> = v["units"]
+    assert_eq!(v["groups"].as_array().unwrap().len(), 1, "{v}");
+    let units: Vec<&Value> = v["groups"][0]["units"]
         .as_array()
         .unwrap()
         .iter()
         .map(|p| &p["unit"])
         .collect();
     assert_eq!(units, [&json!("api"), &json!("store")]);
-    assert_eq!(v["next_round"], json!([]));
 }
 
 #[test]
@@ -907,7 +881,7 @@ fn a_unit_alone_over_the_budget_drops_its_doc_and_scenarios_to_fit() {
     assert!(text.contains("Left out to fit: "), "{text}");
     assert!(text.contains("doc; scenarios"));
     assert!(!text.contains("## Scenarios") && !text.contains("### Overview"));
-    assert!(text.contains("not in this review: store"));
+    assert!(!text.contains("# Pack: store"));
 }
 
 #[test]
@@ -942,7 +916,7 @@ fn a_unit_still_over_the_budget_has_its_fenced_bodies_cut_and_says_so_once() {
     );
 }
 
-const START: &str = "Start one subagent per handoff below, giving it exactly that sentence as its whole task; when they have finished, run stewards review again.";
+const START: &str = "Start one subagent per handoff below, giving it exactly that sentence as its whole task (you can start them together); when they have finished, run stewards review again.";
 
 /// `stewards review` with `args`, its exit code, and its output.
 fn review(d: &Path, args: &[&str]) -> (i32, Value) {
@@ -1053,7 +1027,7 @@ fn review_lists_a_due_job_with_its_handoff_then_reports_the_submit_and_is_done()
     assert_eq!(job["role"], "reviewer");
     assert!(job.get("waiting").is_none(), "{v}");
     let brief = fs::read(d.join(self::brief(d))).unwrap();
-    let result_file = d.join(common::result(d, "review"));
+    let result_file = d.join(common::result(d, "review-1"));
 
     // called again before a submit: the brief is waiting, left as it is with its answer
     fs::write(d.join(answer_file(d)), "half written").unwrap();
@@ -1120,7 +1094,7 @@ fn review_reports_findings_until_they_are_fixed_then_lists_the_unit_again() {
     review(d, &["--task", "t"]);
     let long = "x".repeat(400);
     let api = json!({"unit": "api", "verdict": "changes", "card_patch": null, "check": check(true),
-        "findings": [{"file": "src/api/items.py", "line": 8, "rung": "untraced",
+        "findings": [{"file": "src/api/items.py", "line": 8, "rung": "untraced", "blocking": true,
                       "cut": format!("the status change\nto 400 {long}"), "replace_with": "keep 422"}]});
     let (code, v) = submit(d, &answer(json!([api, documented("store")])));
     assert_eq!(code, 0, "{v}");
@@ -1129,11 +1103,12 @@ fn review_reports_findings_until_they_are_fixed_then_lists_the_unit_again() {
     assert_eq!(code, 1, "{v}");
     assert_eq!(
         v["then"],
-        "Fix the findings, then run stewards review again."
+        "Fix the findings, then run stewards review again. A finding you will not apply: run stewards review --answer \"<its answer prefix><your reason>\" instead; a reviewer sees the reason and accepts or contests it."
     );
     assert_eq!(v["next"], Value::Null);
     let c = &v["reported"][0];
     let f = &c["findings"][0];
+    assert_eq!(f["answer"], "api: src/api/items.py:8: ");
     assert_eq!(
         (&f["unit"], &f["file"], &f["line"], &f["replace_with"]),
         (
@@ -1149,7 +1124,7 @@ fn review_reports_findings_until_they_are_fixed_then_lists_the_unit_again() {
     assert_eq!(cut.chars().count(), 300);
     assert_eq!(c["units"][0]["verdict"], "changes");
     assert_eq!(c["units"][0]["stamped"], false);
-    assert!(common::job_files(d, "review", ".result.json").is_empty());
+    assert!(common::job_files(d, "review-1", ".result.json").is_empty());
 
     // the fix: api alone is due again, with a fresh brief
     edit(
@@ -1284,7 +1259,7 @@ fn the_task_survives_the_rounds_until_review_is_done() {
         "the real request"
     );
     let api = json!({"unit": "api", "verdict": "changes", "card_patch": null, "check": check(true),
-        "findings": [{"file": "src/api/items.py", "line": 8, "rung": "untraced",
+        "findings": [{"file": "src/api/items.py", "line": 8, "rung": "untraced", "blocking": true,
                       "cut": "the status change", "replace_with": "keep 422"}]});
     submit(d, &answer(json!([api, documented("store")])));
     let (code, v) = review(d, &[]);
@@ -1630,7 +1605,7 @@ fn results_are_removed_only_after_the_output_is_written() {
 }
 
 #[test]
-fn units_past_the_review_budget_are_reviewed_in_a_second_review_round() {
+fn units_past_the_review_budget_are_reviewed_in_separate_briefs_of_one_round() {
     let dir = fixture("single");
     let d = dir.path();
     stamp_units(d, &["api", "store"]);
@@ -1655,4 +1630,386 @@ fn units_past_the_review_budget_are_reviewed_in_a_second_review_round() {
     let (code, v) = review(d, &[]);
     assert_eq!((code, &v["then"]), (0, &json!("done")), "{v}");
     assert_eq!(v["reported"][0]["units"][0]["unit"], "store");
+}
+
+/// The brief path, header units, and handoff of each reviewer job `v` (a `next` or `review`
+/// output's jobs) lists, checking each handoff is exactly the sentence for its brief.
+fn reviewer_briefs(d: &Path, jobs: &Value) -> Vec<(String, Vec<String>)> {
+    let snapshot = jobs[0]["snapshot"].as_str().unwrap();
+    jobs.as_array()
+        .unwrap()
+        .iter()
+        .filter(|j| j["role"] == "reviewer")
+        .enumerate()
+        .map(|(i, j)| {
+            let rel = format!(".stewards/briefs/review-{}-{}.md", i + 1, &snapshot[..8]);
+            let path = d.join(&rel);
+            assert_eq!(j["brief_path"], json!(path));
+            assert_eq!(
+                j["handoff"],
+                json!(format!("Read `{}` and follow it.", path.display()))
+            );
+            let units = read_header(&path).unwrap().units.unwrap();
+            assert_eq!(j["units"], json!(units));
+            (rel, units)
+        })
+        .collect()
+}
+
+/// Writes `answer`, with the brief's snapshot, to the answer path of the brief `rel` and submits it.
+fn submit_to(d: &Path, rel: &str, answer: &Value) -> (i32, Value) {
+    let mut answer = answer.clone();
+    answer["snapshot"] = json!(read_header(&d.join(rel)).unwrap().snapshot);
+    let file = rel.replace(".md", ".answer.json");
+    fs::write(d.join(&file), answer.to_string()).unwrap();
+    run(d, &["submit", "--role", "reviewer", "--file", &file])
+}
+
+/// The single fixture plus a third unit, `tools`, all three stamped, then each grown past half
+/// the review budget, so each needs a review brief of its own.
+fn three_over_budget() -> tempfile::TempDir {
+    let dir = fixture("single");
+    let d = dir.path();
+    append(
+        &d.join(".stewards/units.toml"),
+        "\n[[unit]]\nname = \"tools\"\npurpose = \"scripts\"\npaths = [\"tools/**\"]\n",
+    );
+    fs::create_dir_all(d.join("tools")).unwrap();
+    fs::write(d.join("tools/run.py"), "print('run')\n").unwrap();
+    // as `init` leaves it: briefs are not part of the snapshot
+    fs::write(d.join(".gitignore"), ".stewards/briefs/\n").unwrap();
+    edit(
+        &d.join(".stewards/repo.toml"),
+        "schema = 1\n",
+        "schema = 1\nunowned_ok = [\".gitignore\"]\n",
+    );
+    stamp_units(d, &["api", "store", "tools"]);
+    for file in ["src/api/items.py", "src/store/db.py", "tools/run.py"] {
+        grow(&d.join(file), 30_000);
+    }
+    dir
+}
+
+#[test]
+fn every_due_unit_is_listed_in_one_round_in_as_many_briefs_as_the_budget_needs() {
+    let dir = three_over_budget();
+    let d = dir.path();
+    let (code, v) = review(d, &["--task", "t"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["then"], START);
+    let jobs = &v["next"]["jobs"];
+    let briefs = reviewer_briefs(d, jobs);
+    assert_eq!(briefs.len(), 3, "{v}");
+    // every due unit exactly once, in units.toml order
+    let units: Vec<String> = briefs.iter().flat_map(|(_, u)| u.clone()).collect();
+    assert_eq!(units, ["api", "store", "tools"]);
+    for (rel, _) in &briefs {
+        let text = fs::read_to_string(d.join(rel)).unwrap();
+        let h = read_header(&d.join(rel)).unwrap();
+        assert!(h.bytes <= REVIEW_BUDGET, "{}", h.bytes);
+        assert!(!text.to_lowercase().contains("next round"));
+    }
+    for j in jobs.as_array().unwrap() {
+        for r in j["reasons"].as_array().unwrap() {
+            assert!(!r.as_str().unwrap().contains("next round"), "{r}");
+        }
+    }
+    // the same round again: nothing rewritten, every job waiting
+    let (_, again) = review(d, &[]);
+    assert!(
+        again["next"]["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|j| j["waiting"] == true)
+    );
+    assert_eq!(reviewer_briefs(d, &again["next"]["jobs"]), briefs);
+}
+
+/// A round of two briefs, api's and store's, each over half the budget.
+fn two_briefs() -> (tempfile::TempDir, Vec<(String, Vec<String>)>) {
+    let dir = fixture("single");
+    let d = dir.path();
+    stamp_units(d, &["api", "store"]);
+    grow(&d.join("src/api/items.py"), 30_000);
+    grow(&d.join("src/store/db.py"), 30_000);
+    let (code, v) = run(d, &["next", "--task", "t"]);
+    assert_eq!(code, 1, "{v}");
+    let briefs = reviewer_briefs(d, &v["jobs"]);
+    assert_eq!(
+        briefs.iter().map(|(_, u)| u.clone()).collect::<Vec<_>>(),
+        [vec!["api".to_string()], vec!["store".to_string()]]
+    );
+    (dir, briefs)
+}
+
+#[test]
+fn the_briefs_of_one_round_submit_in_either_order_and_each_stamps() {
+    for order in [[0, 1], [1, 0]] {
+        let (dir, briefs) = two_briefs();
+        let d = dir.path();
+        let answers = [
+            answer(json!([approve("api")])),
+            answer(json!([documented("store")])),
+        ];
+        for i in order {
+            let (code, v) = submit_to(d, &briefs[i].0, &answers[i]);
+            assert_eq!(code, 0, "{order:?} {i}: {v}");
+            assert!(!d.join(&briefs[i].0).exists());
+        }
+        assert!(card(d, "api").reviewed.is_some() && card(d, "store").reviewed.is_some());
+        let (code, v) = run(d, &["next", "--no-brief"]);
+        assert_eq!(code, 0, "{order:?}: {v}");
+    }
+}
+
+#[test]
+fn findings_in_one_brief_do_not_hide_the_other_briefs_result() {
+    let (dir, briefs) = two_briefs();
+    let d = dir.path();
+    let api = json!({"unit": "api", "verdict": "changes", "card_patch": null, "check": check(true),
+        "findings": [{"file": "src/api/items.py", "line": 8, "rung": "untraced", "blocking": true,
+                      "cut": "the padding", "replace_with": "nothing"}]});
+    assert_eq!(submit_to(d, &briefs[0].0, &answer(json!([api]))).0, 0);
+    assert_eq!(
+        submit_to(d, &briefs[1].0, &answer(json!([documented("store")]))).0,
+        0
+    );
+    let (code, v) = review(d, &[]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["next"], Value::Null);
+    let reported = v["reported"].as_array().unwrap();
+    assert_eq!(reported.len(), 2, "{v}");
+    assert_eq!(reported[0]["findings"][0]["file"], "src/api/items.py");
+    assert_eq!(
+        reported[1]["units"][0],
+        json!({"unit": "store", "verdict": "approve",
+        "stamped": true, "check_reported": true})
+    );
+}
+
+/// `changed_both` after a round where the reviewer asked for changes on api at `findings` and
+/// approved store; returns the round's review output.
+fn api_findings(findings: Value) -> (tempfile::TempDir, Value) {
+    let dir = changed_both();
+    let d = dir.path();
+    review(d, &["--task", "t"]);
+    let api = json!({"unit": "api", "verdict": "changes", "card_patch": null, "check": check(true),
+        "findings": findings});
+    let (code, v) = submit(d, &answer(json!([api, documented("store")])));
+    assert_eq!(code, 0, "{v}");
+    let (_, v) = review(d, &[]);
+    (dir, v)
+}
+
+fn finding(line: u32, blocking: bool) -> Value {
+    json!({"file": "src/api/items.py", "line": line, "rung": "untraced", "blocking": blocking,
+           "cut": format!("the change on line {line}"), "replace_with": "the old line"})
+}
+
+#[test]
+fn an_answer_is_recorded_only_for_a_finding_of_the_last_round_and_shown_to_the_next_reviewer() {
+    let (dir, v) = api_findings(json!([finding(8, true)]));
+    let d = dir.path();
+    let f = &v["reported"][0]["findings"][0];
+    assert_eq!(f["answer"], "api: src/api/items.py:8: ");
+    for bad in [
+        "api: src/api/items.py:9: no such line",
+        "store: src/api/items.py:8: wrong unit",
+        "api: src/api/items.py:8",
+        "api: src/api/items.py:8:   ",
+    ] {
+        let (code, v) = review(d, &["--answer", bad]);
+        assert_eq!(
+            (code, &v["error"]["code"]),
+            (2, &json!("usage")),
+            "{bad}: {v}"
+        );
+    }
+    let (code, v) = review(d, &["--answer", "nosuch: src/x.py:1: r"]);
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (2, &json!("unknown_unit")),
+        "{v}"
+    );
+    let reason = "400 is what the API contract now says";
+    let (code, v) = review(
+        d,
+        &["--answer", &format!("api: src/api/items.py:8: {reason}")],
+    );
+    assert_eq!(code, 1, "{v}");
+    let text = fs::read_to_string(d.join(brief(d))).unwrap();
+    assert!(text.contains("## Answered findings"), "{text}");
+    assert!(text.contains(reason) && text.contains("answered: accept or contest"));
+    // a finding is answered once
+    let (code, v) = review(d, &["--answer", "api: src/api/items.py:8: again"]);
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("usage")), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("answered already")
+    );
+}
+
+#[test]
+fn an_accepted_answer_is_not_raised_again_and_the_unit_stamps() {
+    let (dir, _) = api_findings(json!([finding(8, true)]));
+    let d = dir.path();
+    review(d, &["--answer", "api: src/api/items.py:8: deliberate"]);
+    let (code, v) = submit(d, &answer(json!([approve("api")])));
+    assert_eq!(code, 0, "{v}");
+    let summary = v["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("accepted answers: src/api/items.py:8"),
+        "{summary}"
+    );
+    assert!(card(d, "api").reviewed.is_some());
+    assert!(!d.join(".stewards/briefs/api-findings.json").exists());
+    assert!(!d.join(".stewards/briefs/api-tasks.json").exists());
+    let (code, v) = review(d, &[]);
+    assert_eq!(code, 0, "{v}");
+}
+
+#[test]
+fn a_contested_answer_comes_back_blocking_and_cannot_be_answered_again() {
+    let (dir, _) = api_findings(json!([finding(8, true)]));
+    let d = dir.path();
+    review(d, &["--answer", "api: src/api/items.py:8: deliberate"]);
+    let why = "the request did not ask for a new status code";
+    let contested = json!([{"file": "src/api/items.py", "line": 8, "why": why}]);
+    // a contested finding blocks approval
+    let mut a = approve("api");
+    a["contested"] = contested.clone();
+    let (code, v) = submit(d, &answer(json!([a])));
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (2, &json!("answer_parse_failed")),
+        "{v}"
+    );
+    // only an answered finding can be contested
+    let mut a = json!({"unit": "api", "verdict": "changes", "card_patch": null,
+        "check": check(true), "findings": [],
+        "contested": [{"file": "src/api/items.py", "line": 3, "why": why}]});
+    let (code, v) = submit(d, &answer(json!([a.clone()])));
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (2, &json!("answer_parse_failed")),
+        "{v}"
+    );
+    a["contested"] = contested;
+    let (code, v) = submit(d, &answer(json!([a])));
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["findings"][0]["contested"], why);
+    assert!(v["findings"][0].get("answer").is_none());
+    let tasks = fs::read_to_string(d.join(".stewards/briefs/api-tasks.json")).unwrap();
+    assert!(tasks.contains("src/api/items.py:8 contested"), "{tasks}");
+    let (code, v) = review(d, &[]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["reported"][0]["findings"][0]["contested"], why);
+    assert!(
+        v["then"]
+            .as_str()
+            .unwrap()
+            .contains("A contested finding cannot be answered again")
+    );
+    let (code, v) = review(
+        d,
+        &["--answer", "api: src/api/items.py:8: still deliberate"],
+    );
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("usage")), "{v}");
+    assert!(
+        v["error"]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("apply the finding"),
+        "{v}"
+    );
+}
+
+#[test]
+fn an_unusable_findings_file_is_a_usage_error_and_nothing_is_written() {
+    let (dir, _) = api_findings(json!([finding(8, true)]));
+    let d = dir.path();
+    review(d, &["--answer", "api: src/api/items.py:8: deliberate"]);
+    let path = d.join(".stewards/briefs/api-findings.json");
+    fs::write(&path, "junk").unwrap();
+    let (code, v) = submit(d, &answer(json!([approve("api")])));
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("usage")), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not a usable findings list"),
+        "{v}"
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "junk");
+}
+
+#[test]
+fn two_findings_on_one_line_are_answered_by_index() {
+    let (dir, v) = api_findings(json!([finding(8, true), finding(8, true)]));
+    let d = dir.path();
+    let prefixes: Vec<&Value> = v["reported"][0]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| &f["answer"])
+        .collect();
+    assert_eq!(
+        prefixes,
+        [
+            &json!("api: src/api/items.py:8#1: "),
+            &json!("api: src/api/items.py:8#2: ")
+        ]
+    );
+    let (code, v) = review(d, &["--answer", "api: src/api/items.py:8: which one"]);
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("usage")), "{v}");
+    let (code, v) = review(d, &["--answer", "api: src/api/items.py:8#2: the second"]);
+    assert_eq!(code, 1, "{v}");
+    let stored = fs::read_to_string(d.join(".stewards/briefs/api-findings.json")).unwrap();
+    let stored: Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(
+        (&stored[0]["answer"], &stored[1]["answer"]),
+        (&Value::Null, &json!("the second"))
+    );
+}
+
+#[test]
+fn an_approval_with_only_notes_stamps_and_writes_no_fix_task() {
+    let dir = changed_both();
+    let d = dir.path();
+    review(d, &["--task", "t"]);
+    let mut a = approve("api");
+    a["findings"] = json!([finding(8, false)]);
+    let (code, v) = submit(d, &answer(json!([a, documented("store")])));
+    assert_eq!(code, 0, "{v}");
+    assert!(v.get("findings").is_none(), "{v}");
+    assert_eq!(v["notes"][0]["line"], 8);
+    assert!(v["summary"].as_str().unwrap().contains("1 note"));
+    assert!(card(d, "api").reviewed.is_some());
+    assert!(!d.join(".stewards/briefs/api-tasks.json").exists());
+    let (code, v) = review(d, &[]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["reported"][0]["notes"][0]["file"], "src/api/items.py");
+    // a blocking finding cannot approve, nor a changes verdict carry only notes
+    let dir = changed_both();
+    let d = dir.path();
+    review(d, &["--task", "t"]);
+    let mut a = approve("api");
+    a["findings"] = json!([finding(8, true)]);
+    let (code, v) = submit(d, &answer(json!([a, documented("store")])));
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (2, &json!("answer_parse_failed")),
+        "{v}"
+    );
+    let a = json!({"unit": "api", "verdict": "changes", "card_patch": null, "check": check(true),
+        "findings": [finding(8, false)]});
+    let (code, v) = submit(d, &answer(json!([a, documented("store")])));
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (2, &json!("answer_parse_failed")),
+        "{v}"
+    );
 }

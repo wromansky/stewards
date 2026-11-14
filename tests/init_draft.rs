@@ -477,7 +477,7 @@ fn adoption_records_problems_as_gaps_and_review_roles_exits_0_with_no_source_cha
     let card_before = fs::read(&card).ok();
     let mut changes = approve(Some("src/a/f0.py::thing0"));
     changes["verdict"] = json!("changes");
-    changes["findings"] = json!([{"file": "src/a/f1.py", "line": 2, "rung": "not_needed",
+    changes["findings"] = json!([{"file": "src/a/f1.py", "line": 2, "rung": "not_needed", "blocking": true,
                                   "cut": "pass", "replace_with": "nothing"}]);
     let file = dir.join(common::answer(&dir, "a-maintainer"));
     fs::write(&file, changes.to_string()).unwrap();
@@ -544,7 +544,7 @@ fn adoption_records_problems_as_gaps_and_review_roles_exits_0_with_no_source_cha
     assert!(!brief.contains(stewards::brief::FIRST_REVIEW), "{brief}");
     let mut second = approve(None);
     second["verdict"] = json!("changes");
-    second["findings"] = json!([{"file": "src/a/f1.py", "line": 3, "rung": "untraced",
+    second["findings"] = json!([{"file": "src/a/f1.py", "line": 3, "rung": "untraced", "blocking": true,
                                  "cut": "x = 1", "replace_with": "nothing"}]);
     let v = submit(&dir, Some("a"), "maintainer", &second);
     assert!(

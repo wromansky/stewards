@@ -1,11 +1,11 @@
 unit = "jobs"
 
 [reviewed]
-commit = "0f569c2c9170d04e4f55bd3c68183e25778cdd1d"
-fingerprint = "sha256:51aa0b542fdfdcd7a824930d7a973f0efb12727efa726879e330e54765bacf75"
-tree = "4d596136cb664c816297691ed1f66376a7ec9e12"
-tester = "4d596136cb664c816297691ed1f66376a7ec9e12"
-documenter = "4d596136cb664c816297691ed1f66376a7ec9e12"
+commit = "8f1830aabdf439b0e9581b490c46180bb773c51f"
+fingerprint = "sha256:8392325a0bd737e07fbe544b14cbe08c1c19827c2f06d5de13f8192880a91669"
+tree = "6ebee326c01ba18c58cad18ca2cb88b6dc752702"
+tester = "6ebee326c01ba18c58cad18ca2cb88b6dc752702"
+documenter = "6ebee326c01ba18c58cad18ca2cb88b6dc752702"
 
 [[interface]]
 id = "brief-header"
@@ -60,7 +60,7 @@ contract = "card_patch upserts interface by id, anchors by path::name, gaps by t
 [[interface]]
 id = "tester-bug"
 anchor = "src/submit.rs::apply_bugs"
-contract = "A tester bug upserts a bug gap by title with its repro and evidence, keeping severity and issue; its anchor is the named interface's anchor, else the gap's existing anchor."
+contract = "A tester bug upserts a bug gap by title with its repro and evidence, keeping severity and issue; its anchor is the named interface's anchor, else the gap's. A new title on a known bug's anchor is not added; the summary names it a possible duplicate."
 
 [[interface]]
 id = "documenter-index"
@@ -95,7 +95,12 @@ contract = "A scenario command, repro or task check must start with a commands.t
 [[interface]]
 id = "answer-too-long"
 anchor = "src/submit.rs::check_text"
-contract = "A field over its cap is answer_too_long giving its length, the cap and a target at 80% of the cap; the fix says a length-only rejection does not count toward the three tries."
+contract = "A field over its cap is answer_too_long giving its length, how far over the cap it is, the cap and a target at 80% of the cap; the fix says a length-only rejection does not count toward the three tries."
+
+[[interface]]
+id = "first-review"
+anchor = "src/submit.rs::check_first_review"
+contract = "A maintainer review of a never-stamped unit (no reviewed block) is rejected as answer_parse_failed on `verdict` for `changes` and on `findings[i]` for any finding; problems go in card_patch.gaps and the verdict is approve. The brief for it leads with brief::FIRST_REVIEW."
 
 [[anchor]]
 path = "src/brief.rs"
@@ -172,6 +177,10 @@ name = "answered_job"
 [[anchor]]
 path = "src/submit.rs"
 name = "target"
+
+[[anchor]]
+path = "src/submit.rs"
+name = "check_first_review"
 
 [[gap]]
 kind = "future"

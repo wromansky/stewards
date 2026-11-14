@@ -87,3 +87,11 @@ given = "stewards eval --harness hermes with --max-cost, or a --model without a 
 expect = "a usage error"
 level = "integration"
 command = "cargo test --test eval hermes_refuses_max_cost_and_a_model_without_a_provider"
+
+[[scenario]]
+id = "eval-credentials-redacted-every-driver"
+interface = "eval_redact_secrets"
+given = "Pi, Claude Code and Hermes credential files with long and short secret and non-secret values, and fake transcripts and nested child logs"
+expect = "every long secret value is [redacted] in every kept file, short and non-secret values stay"
+level = "integration"
+command = "cargo test --test eval every_drivers_credential_secrets_are_redacted_in_its_kept_session_files"

@@ -654,7 +654,7 @@ pub trait Driver {
 /// Words that mark a credential entry's value as a secret, matched in its name in any case.
 const SECRET_NAMES: [&str; 6] = ["key", "token", "secret", "password", "access", "refresh"];
 /// The shortest value taken as a secret: shorter ones (a region, a flag) are left in the results.
-const SECRET_MIN: usize = 16;
+const SECRET_MIN: usize = 8;
 
 /// Every value in the credential `files` that looks like a secret: in a JSON file each string,
 /// at any depth, under a name holding one of `SECRET_NAMES`; in any other (a dotenv file) each

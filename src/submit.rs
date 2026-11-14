@@ -444,18 +444,13 @@ fn maintainer(
     let first_review = old.reviewed.is_none();
     // `tasks` is the developers' task list to write; None removes it.
     let (patch, pulled, notes, tester_needed, tasks) = match &answer {
-        Answer::MaintainerReview(a) if first_review => {
-            check_first_review(&mut problems, &a.verdict, &a.findings);
-            (
-                &a.card_patch,
-                &a.pulled_anchors,
-                &a.notes,
-                a.tester_needed,
-                None,
-            )
-        }
         Answer::MaintainerReview(a) => {
-            let fix = check_review(&mut problems, &a.verdict, &a.findings, root, unit, &router);
+            let fix = if first_review {
+                check_first_review(&mut problems, &a.verdict, &a.findings);
+                None
+            } else {
+                check_review(&mut problems, &a.verdict, &a.findings, root, unit, &router)
+            };
             (
                 &a.card_patch,
                 &a.pulled_anchors,
@@ -478,14 +473,7 @@ fn maintainer(
     check_patch(&mut problems, patch.as_ref(), &old, alive);
     check_common(&mut problems, pulled, notes);
     if !problems.is_empty() {
-        let asked_changes = problems
-            .iter()
-            .any(|(_, e)| e.problem.starts_with(FIRST_REVIEW));
-        let mut err = rejected(problems);
-        if asked_changes && let Some(e) = err.downcast_mut::<CliError>() {
-            e.fix = FIRST_REVIEW_FIX.into();
-        }
-        return Err(err);
+        return Err(rejected(problems));
     }
 
     let (mut card, patched) = apply_patch(&old, patch.as_ref());
@@ -604,11 +592,8 @@ fn maintainer(
     Ok(out)
 }
 
-/// How each first-review problem starts; it also picks `FIRST_REVIEW_FIX` as the error's fix.
-const FIRST_REVIEW: &str = "a first review of existing code";
-const FIRST_REVIEW_FIX: &str = "move each finding into `card_patch.gaps` (kind `bug` with a repro \
-when you can show one, otherwise `gap`), set the verdict to `approve` with no findings, and rerun \
-submit; a first review records problems and never asks for existing code to change";
+/// How each first-review problem starts.
+const FIRST_REVIEW_PREFIX: &str = "a first review of existing code";
 
 /// A never-stamped unit's review: `approve` and no findings, each problem a gap instead.
 fn check_first_review(problems: &mut Problems, verdict: &Verdict, findings: &[types::Finding]) {
@@ -618,7 +603,7 @@ fn check_first_review(problems: &mut Problems, verdict: &Verdict, findings: &[ty
             FieldError {
                 field: "verdict".into(),
                 problem: format!(
-                    "{FIRST_REVIEW} is `approve`; it records problems as gaps, not `changes`"
+                    "{FIRST_REVIEW_PREFIX} is `approve`; it records problems as gaps, not `changes`"
                 ),
                 example: "\"approve\"".into(),
             },
@@ -630,7 +615,7 @@ fn check_first_review(problems: &mut Problems, verdict: &Verdict, findings: &[ty
             FieldError {
                 field: format!("findings[{i}]"),
                 problem: format!(
-                    "{FIRST_REVIEW} has no findings; record {}:{} as a gap in card_patch.gaps",
+                    "{FIRST_REVIEW_PREFIX} has no findings; record {}:{} as a gap in card_patch.gaps",
                     f.file, f.line
                 ),
                 example: "{\"kind\": \"gap\", \"title\": \"list returns every item\", \
@@ -1100,12 +1085,6 @@ fn apply_scenarios(tests: &mut TestCard, scenarios: &[types::Scenario]) {
 /// of a bug the card already has is a probable duplicate: it is not added, and the summary line
 /// saying so is returned, one per such bug.
 fn apply_bugs(card: &mut UnitCard, bugs: &[types::Bug]) -> Vec<String> {
-    let known: Vec<model::Gap> = card
-        .gaps
-        .iter()
-        .filter(|g| g.kind == GapKind::Bug)
-        .cloned()
-        .collect();
     let mut duplicates = vec![];
     for b in bugs {
         // the named interface's anchor shows the validator where the bug is; a known bug keeps
@@ -1119,9 +1098,10 @@ fn apply_bugs(card: &mut UnitCard, bugs: &[types::Bug]) -> Vec<String> {
             .map(|i| i.anchor.clone())
             .or_else(|| kept.and_then(|o| o.anchor.clone()));
         if kept.is_none()
-            && let Some(same) = known
+            && let Some(same) = card
+                .gaps
                 .iter()
-                .find(|o| o.anchor.is_some() && o.anchor == anchor)
+                .find(|o| o.kind == GapKind::Bug && o.anchor.is_some() && o.anchor == anchor)
         {
             duplicates.push(format!(
                 "bug \"{}\": possible duplicate of \"{}\"; reuse that title to update it, or give \

@@ -160,6 +160,26 @@ fn a_first_review_approving_with_a_finding_is_rejected_and_writes_nothing() {
     );
 }
 
+/// A first review answering `changes` is refused on `verdict`, writing nothing.
+#[test]
+fn a_first_review_answering_changes_is_rejected_on_verdict_and_writes_nothing() {
+    let (dir, home) = setup();
+    let d = dir.path();
+    let (code, v) = run(d, home.path(), &["next", "--roles", "--task", "adopt"]);
+    assert_eq!(code, 1, "{v}");
+    let before = fs::read(d.join(CARD)).unwrap();
+    let mut a = review("changes");
+    a["findings"] = json!([]);
+    let (code, v) = submit(d, home.path(), &a);
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (2, &json!("answer_parse_failed")),
+        "{v}"
+    );
+    assert_eq!(v["error"]["errors"][0]["field"], "verdict", "{v}");
+    assert_eq!(fs::read(d.join(CARD)).unwrap(), before);
+}
+
 #[test]
 fn approve_stamps_the_brief_snapshot_so_a_later_edit_stays_stale() {
     let (dir, home) = setup();
@@ -1163,6 +1183,14 @@ fn a_list_of_201_entries_is_answer_too_long() {
     let mut a = review("changes");
     a["pulled_anchors"] = json!(vec!["src/api/items.py::router"; 201]);
     rejected(&a, "answer_too_long", "pulled_anchors");
+    let (dir, home) = setup();
+    review_job(dir.path(), home.path());
+    let (_, v) = submit(dir.path(), home.path(), &a);
+    assert_eq!(
+        v["error"]["errors"][0]["problem"],
+        "201 entries; 1 over the cap of 200; cut to 160 or fewer",
+        "{v}"
+    );
 }
 
 #[test]

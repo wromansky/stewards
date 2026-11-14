@@ -1622,7 +1622,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   value that looks like a secret: a string value, at any depth of a JSON
   file, or a `NAME=value` line of any other, whose name holds `key`,
   `token`, `secret`, `password`, `access`, or `refresh` in any case, at
-  least 16 characters. Every exact occurrence is replaced by `[redacted]`
+  least 8 characters. Every exact occurrence is replaced by `[redacted]`
   in every text file of the session directory, nested child sessions
   included, before it is kept, and in the run record; a value is never
   logged or printed. (Hermes blocks `read_file` on `.env` and redacts

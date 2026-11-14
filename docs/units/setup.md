@@ -19,10 +19,10 @@ Start from the file for the command: src/init.rs for proposing units, test comma
 | id | contract | anchor |
 |---|---|---|
 | init | Plain \`init\` refuses (already\_initialized) if units.toml or repo.toml exists; else proposes units, writes both files (root-only repo test commands), a test card per unit whose own dirs give one command (else says why), appends missing .gitignore lines, upserts the AGENTS.md block, reports. | [src/init.rs\:\:propose](../../src/init.rs#L1) |
-| init-draft | \`init --draft\` runs step 1 only on an uninitialized repo, briefs the architect naming job and a first review per never-reviewed unit, each with its handoff, then says to run \`review --roles\`; with --direct it checks every model guard, then submits each job; a failure reports how many were submitted. | [src/init.rs\:\:draft\_jobs](../../src/init.rs#L569) |
+| init-draft | \`init --draft\` runs step 1 only on an uninitialized repo, briefs the architect and a first review per never-reviewed unit (problems recorded as gaps, existing code unchanged), each with a handoff, then says to run \`review --roles\`; with --direct it checks model guards, then submits each job. | [src/init.rs\:\:draft\_jobs](../../src/init.rs#L569) |
 | init-hooks-ci | \`init --hooks\` and \`init --ci\` return not\_implemented. | [src/init.rs\:\:not\_implemented](../../src/init.rs#L14) |
 | agents-block | Writes the stewards block at the top of AGENTS.md (creating the file), or replaces the text between existing start/end markers; returns whether the file changed, so a rerun is a no-op. | [src/guide.rs\:\:upsert\_block](../../src/guide.rs#L50) |
-| guide | \`guide\` prints the block's ritual, handoff, editing and hygiene paragraphs, roles, adoption, the AGENTS.md-only note, and one delegation text identical for every harness, named, detected, unknown or none; --all, --errors, --glossary add every harness, the error table, the glossary. | [src/guide.rs\:\:run](../../src/guide.rs#L20) |
+| guide | \`guide\` prints the block's ritual, handoff, editing and hygiene paragraphs, roles (saying a stamp is one reviewer's no-finding report), adoption, the AGENTS.md-only note, one delegation text for every harness; --all, --errors, --glossary add every harness, the error table, the glossary. | [src/guide.rs\:\:run](../../src/guide.rs#L20) |
 | harness-detect | Returns the first harness whose env var prefix matches the current environment; harnesses with an unverified env rule are never detected. | [src/harness.rs\:\:detect](../../src/harness.rs#L144) |
 | harness-by-name | Looks up a harness case-insensitively; an unknown name is harness\_unknown listing the valid names. | [src/harness.rs\:\:by\_name](../../src/harness.rs#L154) |
 | docs | \`docs \[unit\]\` renders docs\_path/\<unit\>.md for one or every unit plus README.md from cards, tests and repo.toml, escaping card text and linking live anchors; rejects a docs\_path that is empty or escapes the repo and an unknown unit; writes only changed files. | [src/docs.rs\:\:pages](../../src/docs.rs#L41) |
@@ -42,6 +42,8 @@ Start from the file for the command: src/init.rs for proposing units, test comma
 | init-root-test-layout | init | a repo with items.py and test\_items.py at the root and no manifest | repo commands.test is \[python3 -m unittest\] and the unit has no test\_command of its own | integration |
 | init-unit-test-disagreeing-dirs | init | unit\_test over paths a/\*\* (Cargo.toml) and b/\*\* (test\_x.py), with and without cargo among the repo root's toolchains | disagreeing dirs give no command and a note naming the cargo command; with root cargo the Python dir's unittest command is the unit's; a non-dir/\*\* path is ignored | unit |
 | init-unit-test-disagreeing-note | init | a repo whose unit a spans src/a (test\_x.py) and src/b (Makefile with a test target), run \`--human init\` and \`init\` | unit a has no test\_command; its test\_note names both python3 -m unittest discover -s src/a and make -C src/b test, and the human output contains that note | integration |
+| init-draft-first-review-records-gaps | init-draft | a fresh repo after init --draft and the architect submit; a first maintainer review answers changes with a finding, then approves with the problem as a card\_patch gap | the finding is refused (answer\_parse\_failed on verdict and findings\[0\]), the gap answer stamps, review --roles exits 0 with src unchanged | integration |
+| guide-roles-say-what-a-stamp-claims | guide | \`guide\` with no flags | roles say a stamp is one reviewer reporting no finding, not proof the code is right, and that review --roles is the deeper pass | integration |
 
 ## Flows
 
@@ -58,4 +60,4 @@ Start from the file for the command: src/init.rs for proposing units, test comma
 
 ## Last reviewed
 
-65d2bd1692e49079478538c4cc437390e93f9270
+8f1830aabdf439b0e9581b490c46180bb773c51f

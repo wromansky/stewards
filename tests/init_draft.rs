@@ -503,7 +503,7 @@ fn adoption_records_problems_as_gaps_and_review_roles_exits_0_with_no_source_cha
         .collect();
     assert_eq!(fields, ["verdict", "findings[0]"], "{v}");
     assert!(
-        v["error"]["fix"]
+        v["error"]["errors"][1]["problem"]
             .as_str()
             .unwrap()
             .contains("card_patch.gaps"),

@@ -3571,7 +3571,7 @@ fn every_drivers_credential_secrets_are_redacted_in_its_kept_session_files() {
         &[(
             ".env",
             &format!(
-                "DEEPSEEK_API_KEY=\"{hermes_key}\"\nexport GH_TOKEN=short-token\nREGION=eu-west-1-a-long-region\n"
+                "DEEPSEEK_API_KEY=\"{hermes_key}\"\nexport GH_TOKEN=tok-123\nREGION=eu-west-1-a-long-region\n"
             ),
         )],
     );
@@ -3606,7 +3606,7 @@ fn every_drivers_credential_secrets_are_redacted_in_its_kept_session_files() {
         (
             &hermes,
             vec![hermes_key],
-            vec!["short-token", "eu-west-1-a-long-region"],
+            vec!["tok-123", "eu-west-1-a-long-region"],
         ),
     ];
     for (i, (driver, secrets, kept)) in cases.into_iter().enumerate() {

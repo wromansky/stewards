@@ -1,11 +1,11 @@
 unit = "setup"
 
 [reviewed]
-commit = "65d2bd1692e49079478538c4cc437390e93f9270"
-fingerprint = "sha256:5caab598a5a50818e2d517a5b990133e0533013f8b90414e161fc44c37ea6e1d"
-tree = "6ffab0ee2f6f53fdad7e7dc74bf000e5f0619a89"
-tester = "6ffab0ee2f6f53fdad7e7dc74bf000e5f0619a89"
-documenter = "6ffab0ee2f6f53fdad7e7dc74bf000e5f0619a89"
+commit = "8f1830aabdf439b0e9581b490c46180bb773c51f"
+fingerprint = "sha256:f485f3358232cc42176fb17257fca5dd1e09dd1bb5aa69539de87a8a9ab83fc4"
+tree = "42ee69d2d5c2e4675aa5e7f8600562e9c3c82b09"
+tester = "42ee69d2d5c2e4675aa5e7f8600562e9c3c82b09"
+documenter = "42ee69d2d5c2e4675aa5e7f8600562e9c3c82b09"
 
 [[interface]]
 id = "init"
@@ -15,7 +15,7 @@ contract = "Plain `init` refuses (already_initialized) if units.toml or repo.tom
 [[interface]]
 id = "init-draft"
 anchor = "src/init.rs::draft_jobs"
-contract = "`init --draft` runs step 1 only on an uninitialized repo, briefs the architect naming job and a first review per never-reviewed unit, each with its handoff, then says to run `review --roles`; with --direct it checks every model guard, then submits each job; a failure reports how many were submitted."
+contract = "`init --draft` runs step 1 only on an uninitialized repo, briefs the architect and a first review per never-reviewed unit (problems recorded as gaps, existing code unchanged), each with a handoff, then says to run `review --roles`; with --direct it checks model guards, then submits each job."
 
 [[interface]]
 id = "init-hooks-ci"
@@ -30,7 +30,7 @@ contract = "Writes the stewards block at the top of AGENTS.md (creating the file
 [[interface]]
 id = "guide"
 anchor = "src/guide.rs::run"
-contract = "`guide` prints the block's ritual, handoff, editing and hygiene paragraphs, roles, adoption, the AGENTS.md-only note, and one delegation text identical for every harness, named, detected, unknown or none; --all, --errors, --glossary add every harness, the error table, the glossary."
+contract = "`guide` prints the block's ritual, handoff, editing and hygiene paragraphs, roles (saying a stamp is one reviewer's no-finding report), adoption, the AGENTS.md-only note, one delegation text for every harness; --all, --errors, --glossary add every harness, the error table, the glossary."
 
 [[interface]]
 id = "harness-detect"

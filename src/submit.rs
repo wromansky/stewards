@@ -638,10 +638,10 @@ fn maintainer(
     }
     edits.extend(task_edits(root, unit, tasks.as_ref())?);
     // a stamp settles the unit's answered findings
-    let findings_rel = findings_rel(unit);
+    let findings_path = findings_rel(unit);
     if approve {
-        checked.push(&findings_rel);
-        edits.push((findings_rel.clone(), None));
+        checked.push(&findings_path);
+        edits.push((findings_path.clone(), None));
     }
     if let Some(text) = tester_text {
         let rel = brief::rel_path(Some(unit), Role::Tester, None, &snapshot);

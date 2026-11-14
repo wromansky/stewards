@@ -1,11 +1,11 @@
 unit = "eval"
 
 [reviewed]
-commit = "8f1830aabdf439b0e9581b490c46180bb773c51f"
-fingerprint = "sha256:f85b9b8b7943f77196324bbba10edfabf27c0c5b66f2d946abf86f5c209727f2"
-tree = "b58da3170b033b73b10c8f613fa491219920c4c8"
-tester = "b58da3170b033b73b10c8f613fa491219920c4c8"
-documenter = "b58da3170b033b73b10c8f613fa491219920c4c8"
+commit = "8b41f486851a23b5cb84c49253be3626e3082a83"
+fingerprint = "sha256:6291300393b68b2245275bab7b699ff8af8fc72070716a7906bb52fc132110a1"
+tree = "cc7099b34b2b356df62405b33445ca8d65d72c9d"
+tester = "cc7099b34b2b356df62405b33445ca8d65d72c9d"
+documenter = "cc7099b34b2b356df62405b33445ca8d65d72c9d"
 
 [[interface]]
 id = "eval_run"
@@ -75,7 +75,7 @@ contract = "The regular files among opened paths, in order and distinct; a last-
 [[interface]]
 id = "reviewed_units"
 anchor = "src/eval/mod.rs::reviewed_units"
-contract = "Units, verdicts and finding counts from a reviewer submit's JSON output; None for any other output."
+contract = "Units, verdicts and counts of blocking findings (contested ones included), notes and contested findings from a reviewer submit's JSON output; None for any other output."
 
 [[interface]]
 id = "would_exceed"
@@ -136,6 +136,11 @@ contract = "Writes the eval's template Hermes home: config.yaml lifting the one-
 id = "eval_redact_secrets"
 anchor = "src/eval/mod.rs::redact_secrets"
 contract = "After each session, replaces every secret value (name holds key, token, secret, password, access or refresh; 8+ chars) of the driver's credential_files with [redacted] in every text file under the kept sessions dir at any depth and in the run record; links not followed."
+
+[[interface]]
+id = "answers_given"
+anchor = "src/eval/mod.rs::answers_given"
+contract = "How many findings a session's shell commands answered: each --answer of a stewards review command; recorded per full run, report-only."
 
 [[anchor]]
 path = "src/eval/mod.rs"
@@ -304,6 +309,10 @@ name = "files_opened"
 [[anchor]]
 path = "src/eval/mod.rs"
 name = "redact_secrets"
+
+[[anchor]]
+path = "src/eval/mod.rs"
+name = "answers_given"
 
 [[gap]]
 kind = "gap"

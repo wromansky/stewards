@@ -1605,7 +1605,7 @@ fn results_are_removed_only_after_the_output_is_written() {
 }
 
 #[test]
-fn units_past_the_review_budget_are_reviewed_in_a_second_review_round() {
+fn units_past_the_review_budget_are_reviewed_in_separate_briefs_of_one_round() {
     let dir = fixture("single");
     let d = dir.path();
     stamp_units(d, &["api", "store"]);
@@ -1925,6 +1925,25 @@ fn a_contested_answer_comes_back_blocking_and_cannot_be_answered_again() {
             .contains("apply the finding"),
         "{v}"
     );
+}
+
+#[test]
+fn an_unusable_findings_file_is_a_usage_error_and_nothing_is_written() {
+    let (dir, _) = api_findings(json!([finding(8, true)]));
+    let d = dir.path();
+    review(d, &["--answer", "api: src/api/items.py:8: deliberate"]);
+    let path = d.join(".stewards/briefs/api-findings.json");
+    fs::write(&path, "junk").unwrap();
+    let (code, v) = submit(d, &answer(json!([approve("api")])));
+    assert_eq!((code, &v["error"]["code"]), (2, &json!("usage")), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not a usable findings list"),
+        "{v}"
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "junk");
 }
 
 #[test]

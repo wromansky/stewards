@@ -91,7 +91,7 @@ struct RoleJob<'a> {
 }
 
 /// The jobs due. With `roles`, one job per unit and role as `next --roles` lists them; without,
-/// each repo's stamped units those jobs name are folded into one reviewer job, and only a
+/// each repo's stamped units those jobs name are folded into reviewer jobs, one per review brief, and only a
 /// never-stamped unit keeps its own (maintainer) job. Unless `briefs` is `None`, writes each job's
 /// brief and fills its `brief_path` and `handoff`.
 pub fn next(ws: &Workspace, task: Option<&str>, briefs: Briefs, roles: bool) -> Result<NextReport> {

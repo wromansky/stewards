@@ -136,6 +136,27 @@ fn explain_brief_for_a_never_stamped_unit() {
     assert_eq!(h.mode, Mode::Explain);
 }
 
+/// A maintainer's review brief leads with the first-review text only while the unit has never
+/// been stamped.
+#[test]
+fn a_maintainer_review_brief_leads_with_the_first_review_text_until_the_unit_is_stamped() {
+    let (dir, home) = setup();
+    let d = dir.path();
+    let read = || fs::read_to_string(d.join(common::brief(d, "api-maintainer"))).unwrap();
+    assert_eq!(
+        run(d, home.path(), &["next", "--roles", "--task", "t"]).0,
+        1
+    );
+    assert!(read().contains(stewards::brief::FIRST_REVIEW));
+    stamp(d, home.path(), "api");
+    edit(&d.join("src/api/items.py"), "router = []", "router = [1]");
+    assert_eq!(
+        run(d, home.path(), &["next", "--roles", "--task", "t"]).0,
+        1
+    );
+    assert!(!read().contains(stewards::brief::FIRST_REVIEW));
+}
+
 #[test]
 fn role_text_names_the_unit() {
     let (dir, home) = setup();

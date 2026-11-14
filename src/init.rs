@@ -35,7 +35,7 @@ const IGNORE_LINES: [&str; 2] = [".stewards/briefs/", ".stewards/telemetry/"];
 const STARTING_FILES: [&str; 2] = [".stewards/units.toml", ".stewards/repo.toml"];
 const ARCHITECT_TASK: &str =
     "name and describe each proposed unit; propose merges or splits only where a boundary is wrong";
-const FIRST_REVIEW_TASK: &str = "first review: read the unit's files, draft its card, and approve";
+const FIRST_REVIEW_TASK: &str = "first review: read the unit's files, draft its card, record each problem as a gap, and approve; existing code is not changed";
 
 /// Whether a file name is a manifest, which makes its directory a root.
 fn is_manifest(name: &str) -> bool {
@@ -737,7 +737,7 @@ fn propose(repo: &Repo) -> Result<Init> {
 }
 
 /// How adoption finishes: the per-role flow, so each unit's first docs come from its documenter.
-const THEN: &str = "start one subagent per job's handoff, giving it exactly that sentence as its whole task; when they have finished, run `stewards review --roles` until it exits 0";
+const THEN: &str = "start one subagent per job's handoff, giving it exactly that sentence as its whole task (a first review records each problem it finds as a gap on the card and never asks for existing code to change); when they have finished, run `stewards review --roles` until it exits 0";
 /// With `--direct`, which submitted these jobs.
 const THEN_DIRECT: &str = "run `stewards review --roles` until it exits 0";
 

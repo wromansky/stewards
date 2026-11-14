@@ -42,8 +42,13 @@ fn plan(dir: &Path, tasks: Value) -> (i32, Value) {
     submit_maintainer(dir, &answer)
 }
 
-/// Writes the api maintainer's review brief with `next` and submits `findings`.
+/// Writes api's maintainer review brief and submits `findings`; for `changes`, api is stamped and
+/// changed first because a first review may not ask for changes.
 fn review(dir: &Path, verdict: &str, findings: Value) -> (i32, Value) {
+    if verdict == "changes" {
+        assert_eq!(run(dir, &["stamp", "api"]).0, 0);
+        common::append(&dir.join("src/api/items.py"), "\n# changed\n");
+    }
     run(dir, &["next", "--roles", "--task", "t", "--no-run"]);
     assert!(dir.join(common::brief(dir, "api-maintainer")).is_file());
     let answer = json!({"verdict": verdict, "findings": findings, "card_patch": null,

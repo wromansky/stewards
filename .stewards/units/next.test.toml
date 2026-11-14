@@ -55,3 +55,11 @@ given = "workspace whose repo directory name is prose that reads like an instruc
 expect = "job handoff is exactly 'Read `<brief_path>` and follow it.' with two backticks; a backtick in the path is refused with error unsafe_path, exit 2"
 level = "integration"
 command = "cargo test --test next a_workspace_repo_directory_name_cannot_steer_the_handoff"
+
+[[scenario]]
+id = "unowned-changed-file-keeps-next-from-done"
+interface = "next_run"
+given = "stamped units; a file no unit owns is added since the stamps; then it is listed in repo.toml unowned_ok"
+expect = "next and review list it in unowned_changed and exit 1; once covered by unowned_ok they exit 0"
+level = "integration"
+command = "cargo test --test review a_file_added_since_the_stamps_that_no_unit_owns_keeps_review_and_next_from_done"

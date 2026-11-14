@@ -196,7 +196,7 @@ command = "cargo test --test next a_workspace_repo_directory_name_cannot_steer_t
 id = "answer-too-long-target"
 interface = "answer-too-long"
 given = "a maintainer answer with a 302-character field capped at 300"
-expect = "answer_too_long saying 302 characters, cap 300, cut to 240 or fewer; the fix says it does not count toward the three tries"
+expect = "answer_too_long saying 302 characters, 2 over the cap of 300, cut to 240 or fewer; the fix says it does not count toward the three tries"
 level = "integration"
 command = "cargo test --test submit answer_too_long_says_how_far_over_and_a_target_well_under_the_cap"
 
@@ -239,3 +239,27 @@ given = "a tester repro using another unit's test command, then a scenario and r
 expect = "the other unit's is command_not_allowed; its own is accepted and the test card command is unchanged"
 level = "integration"
 command = "cargo test --test submit_roles a_units_own_test_command_is_allowed_for_its_jobs_and_no_other_units"
+
+[[scenario]]
+id = "first-review-rejects-findings"
+interface = "first-review"
+given = "a first review of a never-stamped unit answering approve with a finding"
+expect = "answer_parse_failed on findings[0] naming the file and line to record as a gap, and nothing written"
+level = "integration"
+command = "cargo test --test submit a_first_review_approving_with_a_finding_is_rejected_and_writes_nothing"
+
+[[scenario]]
+id = "tester-duplicate-bug-not-added"
+interface = "tester-bug"
+given = "a tester bug with a new title on the anchor of a bug the card has"
+expect = "the bug is not added and the summary names it as a possible duplicate of the known one"
+level = "integration"
+command = "cargo test --test submit_roles tester_bug_with_a_new_title_on_a_known_bugs_anchor_is_reported_and_not_added"
+
+[[scenario]]
+id = "reviewer-duplicate-bug-not-added"
+interface = "tester-bug"
+given = "a reviewer bug with a new title on the anchor of a bug the card has"
+expect = "the bug is not added and the summary names it as a possible duplicate of the known one"
+level = "integration"
+command = "cargo test --test review a_reviewers_bug_with_a_new_title_on_a_known_bugs_anchor_is_reported_and_not_added"

@@ -183,7 +183,14 @@ fn draft_on_a_fresh_repo_writes_step_1_and_the_architect_and_first_review_briefs
         jobs(&v),
         pairs(&[("", "architect"), ("a", "maintainer"), ("b", "maintainer")])
     );
-    // adoption finishes in the per-role flow
+    // adoption finishes in the per-role flow, and changes no existing code
+    assert!(
+        v["then"]
+            .as_str()
+            .unwrap()
+            .contains("never asks for existing code to change"),
+        "{v}"
+    );
     assert!(
         v["then"]
             .as_str()
@@ -253,7 +260,7 @@ fn draft_first_review_briefs_carry_the_first_review_task_and_name_the_units_file
     let (_tmp, dir) = repo();
     let (code, v) = run(&dir, &["init", "--draft"]);
     assert_eq!(code, 0, "{v}");
-    let task = "first review: read the unit's files, draft its card, and approve";
+    let task = "first review: read the unit's files, draft its card, record each problem as a gap, and approve; existing code is not changed";
     for (i, unit) in [(1, "a"), (2, "b")] {
         assert_eq!(v["jobs"][i]["task"], task, "{v}");
         let brief = common::brief(&dir, &format!("{unit}-maintainer"));
@@ -441,6 +448,112 @@ fn a_scripted_draft_run_ends_with_a_green_check_and_no_jobs() {
     // after adoption, the plain per-change review has nothing to do either
     let (code, v) = run(&dir, &["next"]);
     assert_eq!((code, jobs(&v)), (0, vec![]), "{v}");
+}
+
+/// Adopting never asks for existing code to change: a first review's finding is refused, the
+/// same problem recorded as a gap is accepted, and `review --roles` reaches exit 0 with the
+/// source exactly as it was.
+#[test]
+fn adoption_records_problems_as_gaps_and_review_roles_exits_0_with_no_source_change() {
+    let (_tmp, dir) = repo();
+    let src_before = git(&dir, &["rev-parse", "HEAD:src"]);
+    let (code, v) = run(&dir, &["init", "--draft"]);
+    assert_eq!(code, 0, "{v}");
+    let brief = fs::read_to_string(dir.join(common::brief(&dir, "a-maintainer"))).unwrap();
+    assert!(
+        brief.contains(&format!(
+            "\n\n{}\n\nYou maintain unit `a`.",
+            stewards::brief::FIRST_REVIEW
+        )),
+        "{brief}"
+    );
+    let a = architect(json!([
+        proposal("a", "Does A.", &["src/a/**"]),
+        proposal("b", "Does B.", &["src/b/**"])
+    ]));
+    submit(&dir, None, "architect", &a);
+
+    let card = dir.join(".stewards/units/a.toml");
+    let card_before = fs::read(&card).ok();
+    let mut changes = approve(Some("src/a/f0.py::thing0"));
+    changes["verdict"] = json!("changes");
+    changes["findings"] = json!([{"file": "src/a/f1.py", "line": 2, "rung": "not_needed",
+                                  "cut": "pass", "replace_with": "nothing"}]);
+    let file = dir.join(common::answer(&dir, "a-maintainer"));
+    fs::write(&file, changes.to_string()).unwrap();
+    let args = [
+        "submit",
+        "a",
+        "--role",
+        "maintainer",
+        "--file",
+        file.to_str().unwrap(),
+    ];
+    let (code, v) = run(&dir, &args);
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (2, &json!("answer_parse_failed")),
+        "{v}"
+    );
+    let fields: Vec<&str> = v["error"]["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["field"].as_str().unwrap())
+        .collect();
+    assert_eq!(fields, ["verdict", "findings[0]"], "{v}");
+    assert!(
+        v["error"]["errors"][1]["problem"]
+            .as_str()
+            .unwrap()
+            .contains("card_patch.gaps"),
+        "{v}"
+    );
+    assert_eq!(fs::read(&card).ok(), card_before, "nothing written");
+
+    // the same problem as a gap: accepted, and the first review stamps
+    let mut recorded = approve(Some("src/a/f0.py::thing0"));
+    recorded["card_patch"]["gaps"] = json!([{"kind": "gap", "title": "thing1 does nothing",
+        "anchor": "src/a/f1.py::thing1", "note": "its body is only pass"}]);
+    submit(&dir, Some("a"), "maintainer", &recorded);
+    let text = fs::read_to_string(&card).unwrap();
+    assert!(
+        text.contains("thing1 does nothing") && text.contains("[reviewed]"),
+        "{text}"
+    );
+    submit(
+        &dir,
+        Some("b"),
+        "maintainer",
+        &approve(Some("src/b/f0.py::thing0")),
+    );
+    assert_eq!(run(&dir, &["next", "--roles"]).0, 1);
+    for unit in ["a", "b"] {
+        submit(&dir, Some(unit), "documenter", &documenter());
+    }
+    let (code, v) = run(&dir, &["review", "--roles", "--task", "adopt"]);
+    assert_eq!((code, &v["then"]), (0, &json!("done")), "{v}");
+    assert_eq!(git(&dir, &["status", "--porcelain", "--", "src"]), "");
+    assert_eq!(git(&dir, &["rev-parse", "HEAD:src"]), src_before);
+
+    // a second review of the now stamped unit may ask for changes as before
+    common::append(&dir.join("src/a/f1.py"), "x = 1\n");
+    let (code, v) = run(&dir, &["next", "--roles", "--task", "t"]);
+    assert_eq!(code, 1, "{v}");
+    let brief = fs::read_to_string(dir.join(common::brief(&dir, "a-maintainer"))).unwrap();
+    assert!(!brief.contains(stewards::brief::FIRST_REVIEW), "{brief}");
+    let mut second = approve(None);
+    second["verdict"] = json!("changes");
+    second["findings"] = json!([{"file": "src/a/f1.py", "line": 3, "rung": "untraced",
+                                 "cut": "x = 1", "replace_with": "nothing"}]);
+    let v = submit(&dir, Some("a"), "maintainer", &second);
+    assert!(
+        v["summary"]
+            .as_str()
+            .unwrap()
+            .contains("a maintainer: changes"),
+        "{v}"
+    );
 }
 
 #[test]

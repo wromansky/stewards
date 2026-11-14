@@ -155,6 +155,16 @@ fn human_prints_a_table() {
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.starts_with("| unit | freshness |"), "{text}");
     assert!(text.contains("| store | unreviewed | 1/2 |"), "{text}");
+    assert!(text.contains("it is not proof the code is right"), "{text}");
+}
+
+#[test]
+fn status_says_what_a_stamp_claims() {
+    let repo = fixture("single");
+    let (_, v) = run(repo.path(), &["status"]);
+    let claim = v["stamp_claim"].as_str().unwrap();
+    assert!(claim.contains("one reviewer"), "{claim}");
+    assert!(claim.contains("review --roles"), "{claim}");
 }
 
 #[test]

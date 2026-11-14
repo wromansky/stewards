@@ -5,8 +5,8 @@
 # Each unit's tests sit inside its directory, and each unit's test command is
 # set on its test card from `[source.test_commands]` in
 # evals/suites/fixture.toml. The root `.gitignore` and `AGENTS.md` stay unowned
-# (`unowned` in evals/suites/fixture.toml); the test files adoption may add are
-# its `tests`.
+# (`unowned` in evals/suites/fixture.toml, written to the adopted copy's
+# `unowned_ok`); the test files adoption may add are its `tests`.
 
 [[unit]]
 name = "api"

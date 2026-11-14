@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use common::{git, stewards};
 use serde_json::Value;
 use stewards::guide;
-use stewards::model::load_repo;
+use stewards::model::{CommandEntry, load_repo};
 use tempfile::TempDir;
 
 fn write(root: &Path, rel: &str, text: &str) {
@@ -223,6 +223,111 @@ fn written_files_load_and_every_name_passes_the_name_rule() {
     assert_eq!(loaded.repo.name, "proj");
     assert_eq!(loaded.repo.test_roots, ["tests"]);
     assert_eq!(loaded.repo.commands.test.len(), 1);
+}
+
+/// Each unit's test command comes from its own directories, run from the repo root; a root with
+/// no toolchain sets no repo-wide command, so no unit inherits another's.
+#[test]
+fn each_unit_gets_its_own_test_command_and_the_repo_only_its_roots() {
+    let (_tmp, dir) = build(
+        &s(&[
+            "svc/Cargo.toml",
+            "svc/src/main.rs",
+            "py/pyproject.toml",
+            "py/items.py",
+            "web/package.json",
+            "web/index.js",
+            "blank/package.json",
+            "blank/index.js",
+            "tool/go.mod",
+            "tool/Makefile",
+            "tool/main.go",
+        ]),
+        &[],
+    );
+    write(
+        &dir,
+        "web/package.json",
+        r#"{"scripts": {"test": "node --test"}}"#,
+    );
+    let placeholder = r#"{"scripts": {"test": "echo \"Error: no test specified\" && exit 1"}}"#;
+    write(&dir, "blank/package.json", placeholder);
+    write(
+        &dir,
+        "tool/Makefile",
+        "build:\n\tgo build\n\ntest: build\n\tgo test ./...\n",
+    );
+    let v = init(&dir);
+    let tests: Vec<(String, Option<String>)> = v["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| {
+            let cmd = u["test_command"].as_str().map(String::from);
+            (u["name"].as_str().unwrap().into(), cmd)
+        })
+        .collect();
+    let want = |name: &str, cmd: Option<&str>| (name.to_string(), cmd.map(String::from));
+    assert_eq!(
+        tests,
+        [
+            want("blank", None),
+            want("py", Some("pytest py")),
+            want("svc", Some("cargo test --manifest-path svc/Cargo.toml")),
+            want("tool", Some("make -C tool test")),
+            want("web", Some("npm test --prefix web")),
+        ]
+    );
+    let loaded = load_repo(&dir).unwrap();
+    assert!(loaded.repo.commands.test.is_empty());
+    assert_eq!(
+        loaded.tests["svc"].test_command.as_deref(),
+        Some("cargo test --manifest-path svc/Cargo.toml")
+    );
+    assert!(!loaded.tests.contains_key("blank"));
+}
+
+/// A unit whose directories hold different toolchains gets no command, and init says why.
+#[test]
+fn a_unit_whose_directories_disagree_gets_no_command_and_a_note() {
+    let mut initial = vec![];
+    for d in ["src/a", "src/b", "src/c"] {
+        initial.extend(files_in(d, 3));
+    }
+    initial.extend(s(&["src/a/test_x.py", "src/b/Makefile"]));
+    let mut rounds: Vec<Vec<String>> = (0..3).map(|_| s(&["src/a/f0.py", "src/b/f0.py"])).collect();
+    rounds.extend(solo_rounds(&["src/c"]));
+    let (_tmp, dir) = build(&initial, &rounds);
+    write(&dir, "src/b/Makefile", "test:\n\techo ok\n");
+    let human = stewards(&dir, &["--human", "init"]);
+    let human = String::from_utf8_lossy(&human.stdout).into_owned();
+    std::fs::remove_dir_all(dir.join(".stewards")).unwrap();
+    let v = init(&dir);
+    let a = &v["units"][0];
+    assert_eq!(a["name"], "a", "{v}");
+    assert!(a.get("test_command").is_none(), "{v}");
+    let note = a["test_note"].as_str().unwrap();
+    for cmd in [
+        "python3 -m unittest discover -s src/a",
+        "make -C src/b test",
+    ] {
+        assert!(note.contains(cmd), "{note}");
+    }
+    assert!(human.contains(note), "{human}");
+}
+
+/// The fixture's layout: a Python test file and no manifest at the root give the repo-wide
+/// command, which a unit of the same toolchain leaves to the repo.
+#[test]
+fn a_root_test_layout_sets_the_repo_wide_command() {
+    let (_tmp, dir) = build(&s(&["items.py", "test_items.py"]), &[]);
+    let v = init(&dir);
+    assert!(v["units"][0].get("test_command").is_none(), "{v}");
+    let loaded = load_repo(&dir).unwrap();
+    assert!(matches!(
+        &loaded.repo.commands.test[..],
+        [CommandEntry::Plain(c)] if c == "python3 -m unittest"
+    ));
 }
 
 #[test]

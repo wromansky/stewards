@@ -55,3 +55,35 @@ given = "a fresh repo with main.py, run `init` and `--human init`"
 expect = "JSON note equals guide::AGENTS_ONLY (which names instruction_files) and the human output contains it"
 level = "integration"
 command = "cargo test --test init init_says_the_block_is_in_agents_md_only_in_json_and_human_output"
+
+[[scenario]]
+id = "init-unit-test-commands"
+interface = "init"
+given = "a repo with svc/Cargo.toml, py/pyproject.toml, web/package.json with a test script, blank/package.json with npm's placeholder, tool/Makefile with a test target, no root manifest"
+expect = "each unit's test card holds its own command run from the root (cargo test --manifest-path svc/Cargo.toml, pytest py, npm test --prefix web, make -C tool test), blank has none, repo commands.test is empty"
+level = "integration"
+command = "cargo test --test init each_unit_gets_its_own_test_command_and_the_repo_only_its_roots"
+
+[[scenario]]
+id = "init-root-test-layout"
+interface = "init"
+given = "a repo with items.py and test_items.py at the root and no manifest"
+expect = "repo commands.test is [python3 -m unittest] and the unit has no test_command of its own"
+level = "integration"
+command = "cargo test --test init a_root_test_layout_sets_the_repo_wide_command"
+
+[[scenario]]
+id = "init-unit-test-disagreeing-dirs"
+interface = "init"
+given = "unit_test over paths a/** (Cargo.toml) and b/** (test_x.py), with and without cargo among the repo root's toolchains"
+expect = "disagreeing dirs give no command and a note naming the cargo command; with root cargo the Python dir's unittest command is the unit's; a non-dir/** path is ignored"
+level = "unit"
+command = "cargo test --lib unit_test_takes_none_when_its_directories_disagree_or_the_repo_covers_it"
+
+[[scenario]]
+id = "init-unit-test-disagreeing-note"
+interface = "init"
+given = "a repo whose unit a spans src/a (test_x.py) and src/b (Makefile with a test target), run `--human init` and `init`"
+expect = "unit a has no test_command; its test_note names both python3 -m unittest discover -s src/a and make -C src/b test, and the human output contains that note"
+level = "integration"
+command = "cargo test --test init a_unit_whose_directories_disagree_gets_no_command_and_a_note"

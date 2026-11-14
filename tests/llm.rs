@@ -116,6 +116,49 @@ fn every_answer_shape_parses() {
     }
 }
 
+/// A unit's `test_command` is allowlisted as repo.toml's commands are, so no answer may set it:
+/// no schema names it and the field is unknown at the top of every answer, in a reviewer's unit,
+/// and in a scenario.
+#[test]
+fn no_answer_of_any_role_can_set_a_test_command() {
+    let answers = [
+        review(),
+        explain(),
+        developer(),
+        tester(),
+        documenter(),
+        validator(),
+        architect(),
+        reviewer(),
+    ];
+    for ((role, mode), answer) in SHAPES.into_iter().zip(answers) {
+        assert!(
+            !output_format(role, mode).contains("test_command"),
+            "{role:?} {mode:?}"
+        );
+        let mut v = answer.clone();
+        v["test_command"] = json!("sh");
+        let e = only_error(role, mode, &v.to_string(), "test_command");
+        assert!(e.problem.contains("unknown field"), "{e:?}");
+    }
+    let mut v = reviewer();
+    v["units"][0]["test_command"] = json!("sh");
+    only_error(
+        Role::Reviewer,
+        Mode::Review,
+        &v.to_string(),
+        "units[0].test_command",
+    );
+    let mut v = tester();
+    v["scenario_patch"][0]["test_command"] = json!("sh");
+    only_error(
+        Role::Tester,
+        Mode::Review,
+        &v.to_string(),
+        "scenario_patch[0].test_command",
+    );
+}
+
 #[test]
 fn mode_serializes_lowercase_for_the_brief_header() {
     assert_eq!(serde_json::to_value(Mode::Review).unwrap(), "review");

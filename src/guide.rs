@@ -237,12 +237,12 @@ static ERRORS: [ErrorRow; 31] = [
     e(
         "answer_too_long",
         "field over cap",
-        "shorten `<field>` to ≤ N chars",
+        "cut `<field>` to the target the error states (80% of its cap); this rejection does not count toward the three tries",
     ),
     e(
         "command_not_allowed",
         "command outside the allowlist",
-        "prefix with one of `commands.test` or add it to `repo.toml`",
+        "prefix with one of `commands.test` or the unit's test command, or add it to `repo.toml`",
     ),
     e(
         "command_timeout",
@@ -336,8 +336,8 @@ static ERRORS: [ErrorRow; 31] = [
     ),
     e(
         "eval_setup_incomplete",
-        "`eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted",
-        "read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0",
+        "`eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted; or a `repo` suite at `HEAD` has uncommitted changes under `src/`, `baml_src/`, or `.stewards/`, or an `[[absent]]` probe's text is already in its tree",
+        "read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0; commit the source and rebuild, or pin a commit before the task's change",
     ),
     e(
         "not_implemented",

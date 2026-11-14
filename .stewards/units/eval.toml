@@ -1,11 +1,11 @@
 unit = "eval"
 
 [reviewed]
-commit = "da01fc113109d4cff274a2cf280e9381a0a47b50"
-fingerprint = "sha256:2711222fa953ea52544359fbcb5a0b9bddca16ca2048ac2063b63508beca7956"
-tree = "21812a267688b3f3a7e5e1ec37cd103f488c1f3f"
-tester = "21812a267688b3f3a7e5e1ec37cd103f488c1f3f"
-documenter = "21812a267688b3f3a7e5e1ec37cd103f488c1f3f"
+commit = "0f569c2c9170d04e4f55bd3c68183e25778cdd1d"
+fingerprint = "sha256:ae59f952334091d3066b4286d3b8dbfa0197d58cf6abb36db6744cadfda25b14"
+tree = "f0dc44ce3f6a0a9622108b05bf9a60a85edac06a"
+tester = "f0dc44ce3f6a0a9622108b05bf9a60a85edac06a"
+documenter = "f0dc44ce3f6a0a9622108b05bf9a60a85edac06a"
 
 [[interface]]
 id = "eval_run"
@@ -35,7 +35,7 @@ contract = "Writes an isolated Pi agent dir: settings with only npm:pi-subagents
 [[interface]]
 id = "suite_load"
 anchor = "src/eval/suite.rs::load"
-contract = "Loads evals/suites/<name>.toml (fixture or repo source, tasks with read_only, setup, files_opened_vs_bare); an unknown name is a usage error listing the valid ones; unknown fields are rejected."
+contract = "Loads evals/suites/<name>.toml (fixture source with per-unit test_commands, repo source with commit HEAD or a sha, absent probes, tasks with read_only, setup, files_opened_vs_bare); an unknown name is a usage error listing the valid ones; unknown fields are rejected."
 
 [[interface]]
 id = "grade_task"
@@ -116,6 +116,11 @@ contract = "Writes an isolated Claude Code config dir: settings.json with only t
 id = "task_prompt"
 anchor = "src/eval/mod.rs::task_prompt"
 contract = "The task file <dir>/NN-* verbatim; an error when none; a usage error when it contains `think` in any case."
+
+[[interface]]
+id = "pinned_commit"
+anchor = "src/eval/mod.rs::pinned_commit"
+contract = "A repo suite's commit: HEAD is the evals/ checkout's commit, refused when src/, baml_src/ or .stewards/ have uncommitted changes; a sha as given; either refused when an absent probe's text is in its file there. Refusals are eval_setup_incomplete."
 
 [[anchor]]
 path = "src/eval/mod.rs"
@@ -256,6 +261,10 @@ name = "add_context_file"
 [[anchor]]
 path = "src/eval/mod.rs"
 name = "run_session"
+
+[[anchor]]
+path = "src/eval/mod.rs"
+name = "pinned_commit"
 
 [[gap]]
 kind = "gap"

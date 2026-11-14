@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::check::one_line;
 use crate::llm::types::UnitProposal;
 use crate::llm::{self, Mode};
-use crate::model::{self, Role, SCHEMA, UnitDef};
+use crate::model::{self, Role, SCHEMA, TestCard, UnitDef};
 use crate::next::{self, Job};
 use crate::output::{CliError, Global, Human, emit, not_implemented, with_note};
 use crate::route::Router;
@@ -37,20 +37,143 @@ const ARCHITECT_TASK: &str =
     "name and describe each proposed unit; propose merges or splits only where a boundary is wrong";
 const FIRST_REVIEW_TASK: &str = "first review: read the unit's files, draft its card, and approve";
 
-/// `Some(test command)` for a manifest file name (empty when it implies none), `None` otherwise.
-fn manifest(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "Cargo.toml" => "cargo test",
-        "package.json" => "npm test",
-        "pyproject.toml" | "setup.py" => "pytest",
-        "go.mod" => "go test ./...",
-        "Gemfile" => "bundle exec rspec",
-        "pom.xml" => "mvn test",
-        "main.tf" => "",
-        n if n.ends_with(".csproj") || n.ends_with(".sln") => "dotnet test",
-        n if n.starts_with("build.gradle") => "gradle test",
-        _ => return None,
-    })
+/// Whether a file name is a manifest, which makes its directory a root.
+fn is_manifest(name: &str) -> bool {
+    matches!(
+        name,
+        "Cargo.toml"
+            | "package.json"
+            | "pyproject.toml"
+            | "setup.py"
+            | "go.mod"
+            | "Gemfile"
+            | "pom.xml"
+            | "main.tf"
+    ) || name.ends_with(".csproj")
+        || name.ends_with(".sln")
+        || name.starts_with("build.gradle")
+}
+
+/// The test commands the tracked `files` directly in `dir` (repo-relative, `""` for the root)
+/// imply, each with its toolchain, in this order: a Cargo manifest, a Python manifest or else
+/// `test*.py` files (what `unittest` discovers), a package.json with a real `test` script, a
+/// Makefile with a `test` target, then the other manifests. Each runs from the repo root, as
+/// every allowlisted command does, so a subdirectory's names it.
+fn dir_tests(repo: &Repo, dir: &str, files: &[&str]) -> Vec<(&'static str, String)> {
+    let names: Vec<&str> = files
+        .iter()
+        .filter_map(|f| match f.rsplit_once('/') {
+            Some((d, name)) if d == dir => Some(name),
+            None if dir.is_empty() => Some(*f),
+            _ => None,
+        })
+        .collect();
+    let has = |n: &str| names.contains(&n);
+    // a file that is a link or unreadable says nothing
+    let text = |n: &str| {
+        repo.read(&join(dir, n), 1 << 20)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+    };
+    let at_root = dir.is_empty();
+    let mut out = vec![];
+    let mut add = |tool, root: &str, sub: String| {
+        out.push((tool, if at_root { root.to_string() } else { sub }));
+    };
+    if has("Cargo.toml") {
+        add(
+            "cargo",
+            "cargo test",
+            format!("cargo test --manifest-path {dir}/Cargo.toml"),
+        );
+    }
+    if has("pyproject.toml") || has("setup.py") {
+        add("python", "pytest", format!("pytest {dir}"));
+    } else if names
+        .iter()
+        .any(|n| n.starts_with("test") && n.ends_with(".py"))
+    {
+        add(
+            "python",
+            "python3 -m unittest",
+            format!("python3 -m unittest discover -s {dir}"),
+        );
+    }
+    let npm_test = text("package.json")
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v["scripts"]["test"].as_str().map(String::from))
+        // npm init's placeholder only fails
+        .is_some_and(|t| !t.contains("no test specified"));
+    if has("package.json") && npm_test {
+        add("node", "npm test", format!("npm test --prefix {dir}"));
+    }
+    let make_test = ["Makefile", "makefile", "GNUmakefile"].iter().any(|n| {
+        has(n)
+            && text(n).is_some_and(|t| {
+                t.lines().any(|l| {
+                    l.strip_prefix("test")
+                        .is_some_and(|r| r.trim_start().starts_with(':'))
+                })
+            })
+    });
+    if make_test {
+        add("make", "make test", format!("make -C {dir} test"));
+    }
+    if has("go.mod") {
+        add("go", "go test ./...", format!("go -C {dir} test ./..."));
+    }
+    if has("pom.xml") {
+        add("maven", "mvn test", format!("mvn -f {dir}/pom.xml test"));
+    }
+    if names.iter().any(|n| n.starts_with("build.gradle")) {
+        add("gradle", "gradle test", format!("gradle -p {dir} test"));
+    }
+    if names
+        .iter()
+        .any(|n| n.ends_with(".csproj") || n.ends_with(".sln"))
+    {
+        add("dotnet", "dotnet test", format!("dotnet test {dir}"));
+    }
+    // simplified: bundler has no flag for another directory's Gemfile, so only the root gets rspec
+    if has("Gemfile") && at_root {
+        add("ruby", "bundle exec rspec", String::new());
+    }
+    out
+}
+
+/// A unit's own test command from the directories its `dir/**` paths name (never a parent):
+/// the first command each implies, left out when the repo root's commands cover its toolchain.
+/// Paths whose directories imply different commands get none, and the reason.
+fn unit_test(
+    repo: &Repo,
+    paths: &[String],
+    files: &[&str],
+    repo_tools: &[&str],
+) -> (Option<String>, Option<String>) {
+    let mut found: Vec<String> = vec![];
+    for p in paths {
+        let Some(dir) = p.strip_suffix("/**") else {
+            continue;
+        };
+        // simplified: one command per directory, the first in `dir_tests`' order
+        if let Some((tool, cmd)) = dir_tests(repo, dir, files).into_iter().next()
+            && !repo_tools.contains(&tool)
+            && !found.contains(&cmd)
+        {
+            found.push(cmd);
+        }
+    }
+    match found.len() {
+        0 => (None, None),
+        1 => (found.pop(), None),
+        _ => (
+            None,
+            Some(format!(
+                "no test command: its directories imply different ones ({})",
+                found.join(", ")
+            )),
+        ),
+    }
 }
 
 fn is_generated(path: &str) -> bool {
@@ -249,10 +372,16 @@ fn merge_groups(cands: &[Candidate], commits: &[BTreeSet<usize>]) -> Vec<Vec<usi
     groups
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct Proposed {
     name: String,
     paths: Vec<String>,
+    /// Written to the unit's test card; see `unit_test`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    test_command: Option<String>,
+    /// Why the unit has no test command, when its directories disagree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    test_note: Option<String>,
 }
 
 /// The units of one root. `files` are its repo-relative paths, `commits` the repo's recent history.
@@ -290,6 +419,7 @@ fn root_units(
         return vec![Proposed {
             name: unique_name(root_name, root_name, taken),
             paths,
+            ..Default::default()
         }];
     }
     let size = |g: &[usize]| g.iter().map(|&i| cands[i].files).sum::<usize>();
@@ -319,6 +449,7 @@ fn root_units(
             Proposed {
                 name: unique_name(&cands[*biggest].base, root_name, taken),
                 paths: paths(g),
+                ..Default::default()
             }
         })
         .collect();
@@ -326,6 +457,7 @@ fn root_units(
         units.push(Proposed {
             name: unique_name(&format!("{root_name}-misc"), root_name, taken),
             paths: paths(&rest),
+            ..Default::default()
         });
     }
     units
@@ -359,9 +491,15 @@ struct Init {
 
 impl Human for Init {
     fn render(&self) -> String {
-        let mut out = String::from("# stewards init\n\n| unit | paths |\n|---|---|\n");
+        let mut out =
+            String::from("# stewards init\n\n| unit | paths | test command |\n|---|---|---|\n");
         for u in &self.units {
-            out += &format!("| {} | {} |\n", u.name, u.paths.join(", "));
+            let test = match (&u.test_command, &u.test_note) {
+                (Some(cmd), _) => format!("`{cmd}`"),
+                (None, Some(note)) => note.clone(),
+                (None, None) => String::new(),
+            };
+            out += &format!("| {} | {} | {test} |\n", u.name, u.paths.join(", "));
         }
         out += "\nWrote:\n";
         for w in &self.wrote {
@@ -473,16 +611,16 @@ fn propose(repo: &Repo) -> Result<Init> {
         })
         .collect();
     let mut roots = BTreeSet::new();
-    let mut test_commands: Vec<String> = Vec::new();
     for f in &files {
         let (dir, name) = f.rsplit_once('/').unwrap_or(("", f));
-        if let Some(cmd) = manifest(name) {
+        if is_manifest(name) {
             roots.insert(dir.to_string());
-            if !cmd.is_empty() && !test_commands.iter().any(|c| c == cmd) {
-                test_commands.push(cmd.to_string());
-            }
         }
     }
+    // the repo-wide commands are the root's own; a subdirectory's belong to its units
+    let root_tests = dir_tests(repo, "", &files);
+    let repo_tools: Vec<&str> = root_tests.iter().map(|(tool, _)| *tool).collect();
+    let test_commands: Vec<String> = root_tests.into_iter().map(|(_, cmd)| cmd).collect();
     if roots.is_empty() {
         roots.insert(String::new());
     }
@@ -525,6 +663,25 @@ fn propose(repo: &Repo) -> Result<Init> {
         }
     }
 
+    for u in &mut proposed {
+        (u.test_command, u.test_note) = unit_test(repo, &u.paths, &files, &repo_tools);
+    }
+    let cards: Vec<(String, String)> = proposed
+        .iter()
+        .filter_map(|u| {
+            let card = TestCard {
+                unit: u.name.clone(),
+                primary_paths: vec![],
+                test_command: Some(u.test_command.clone()?),
+                scenarios: vec![],
+            };
+            Some((format!(".stewards/units/{}.test.toml", u.name), card))
+        })
+        .map(|(rel, card)| Ok((rel, toml::to_string(&card)?)))
+        .collect::<Result<_>>()?;
+    for (rel, _) in &cards {
+        workspace::safe_path(&repo.root, rel, false)?;
+    }
     let defs: Vec<UnitDef> = proposed
         .iter()
         .map(|u| UnitDef {
@@ -561,6 +718,10 @@ fn propose(repo: &Repo) -> Result<Init> {
         ".stewards/units.toml".to_string(),
         ".stewards/repo.toml".to_string(),
     ];
+    for (rel, text) in cards {
+        repo.write(&rel, text.as_bytes())?;
+        wrote.push(rel);
+    }
     if append_gitignore(repo)? {
         wrote.push(".gitignore".into());
     }
@@ -703,8 +864,9 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
             let unit = unit_of(j);
             let done = || -> Result<Submitted> {
                 let answer = llm::direct(j.role, Mode::Review, unit.unwrap_or_default(), text)?;
-                brief::write_text(repo, unit, j.role, text)?;
-                let answer_rel = brief::answer_rel(&brief::rel_path(unit, j.role, None));
+                brief::write_text(repo, unit, j.role, None, &j.snapshot, text)?;
+                let answer_rel =
+                    brief::answer_rel(&brief::rel_path(unit, j.role, None, &j.snapshot));
                 repo.write(&answer_rel, answer.as_bytes())?;
                 submit::submit_file(repo, unit, j.role, &repo.root.join(answer_rel))
             };
@@ -734,6 +896,35 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_test_takes_none_when_its_directories_disagree_or_the_repo_covers_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = Repo {
+            name: "r".into(),
+            root: tmp.path().to_path_buf(),
+            loaded: None,
+        };
+        let files = ["a/Cargo.toml", "a/lib.rs", "b/test_x.py", "c/README.md"];
+        let paths = |p: &[&str]| -> Vec<String> { p.iter().map(|s| s.to_string()).collect() };
+        let cargo = "cargo test --manifest-path a/Cargo.toml";
+        assert_eq!(
+            unit_test(&repo, &paths(&["a/**", "c/**"]), &files, &[]),
+            (Some(cargo.into()), None)
+        );
+        let (cmd, note) = unit_test(&repo, &paths(&["a/**", "b/**"]), &files, &[]);
+        assert_eq!(cmd, None);
+        assert!(note.unwrap().contains(cargo));
+        // the repo's root cargo covers it; the Python directory is left alone
+        assert_eq!(
+            unit_test(&repo, &paths(&["a/**", "b/**"]), &files, &["cargo"]),
+            (Some("python3 -m unittest discover -s b".into()), None)
+        );
+        assert_eq!(
+            unit_test(&repo, &paths(&["c/**", "a/lib.rs"]), &files, &[]),
+            (None, None)
+        );
+    }
 
     #[test]
     fn failure_note_carries_cleaned_capped_summaries_and_unapplied_proposals() {

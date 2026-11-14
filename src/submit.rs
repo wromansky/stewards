@@ -15,7 +15,7 @@ use crate::git;
 use crate::harness;
 use crate::llm::types::{self, CardPatch, Verdict};
 use crate::llm::{self, Answer, FieldError, Mode};
-use crate::model::{self, CommandEntry, Commands, GapKind, Role, TestCard, UnitCard};
+use crate::model::{self, CommandEntry, GapKind, Loaded, Role, TestCard, UnitCard};
 use crate::next;
 use crate::output::{CliError, Global, Human, emit, with_note};
 use crate::route::Router;
@@ -223,12 +223,12 @@ pub(crate) fn submit_file(
     if let Some(unit) = unit {
         loaded.unit(unit)?;
     }
-    // a developer's task number is in its answer file's name
-    let n = match unit.filter(|_| role == Role::Developer) {
-        Some(u) => Some(task_number(u, file)?),
-        None => None,
+    // An answer file named as the brief names it says which brief it answers, so an answer to an
+    // older snapshot's brief finds none; a developer's must, since it carries the task number.
+    let (brief_rel, n) = match answered_job(unit, role, file)? {
+        Some(j) => (brief::rel_path(unit, role, j.n, &j.snap), j.n),
+        None => (brief::find(&repo.root, unit, role, None)?, None),
     };
-    let brief_rel = brief::rel_path(unit, role, n);
     let header = brief::read_header(&repo.root.join(&brief_rel))?;
     check_header(&repo.root, unit, role, n, &header, &brief_rel)?;
     // A reviewer's units name the files it writes, as a unit does, and only a stamped unit is
@@ -316,32 +316,33 @@ pub(crate) fn submit_file(
     Ok(out)
 }
 
-/// The `n` of a developer answer file named `<unit>-developer-<n>.answer.json`; `usage` for any
-/// other name.
-fn task_number(unit: &str, file: &Path) -> Result<usize> {
-    let name = file
+/// The job `file`'s name gives when it is this job's answer file (`brief::rel_path`'s stem plus
+/// `.answer.json`; a task number from 1 for a developer, none otherwise). A developer answer
+/// file named otherwise is `usage`: its name is the only place the task number is.
+fn answered_job(unit: Option<&str>, role: Role, file: &Path) -> Result<Option<brief::JobName>> {
+    let job = file
         .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-    let n = name
-        .strip_prefix(&format!("{unit}-developer-"))
-        .and_then(|r| r.strip_suffix(".answer.json"))
-        .and_then(|d| {
-            d.parse::<usize>()
-                .ok()
-                .filter(|n| *n > 0 && n.to_string() == d)
+        .and_then(|n| n.to_str())
+        .filter(|n| n.ends_with(".answer.json"))
+        .and_then(brief::job_of)
+        .filter(|j| {
+            j.unit.as_deref() == unit
+                && j.role == role
+                && j.n.is_some_and(|n| n > 0) == (role == Role::Developer)
         });
-    n.ok_or_else(|| {
-        CliError::new(
+    if job.is_none()
+        && let (Some(unit), Role::Developer) = (unit, role)
+    {
+        bail!(CliError::new(
             "usage",
             format!(
-                "{}: a developer answer file is named `{unit}-developer-<n>.answer.json`, n the task number",
+                "{}: a developer answer file is named `{unit}-developer-<n>-<snapshot>.answer.json`, n the task number",
                 file.display()
             ),
             "write the answer to the path the developer brief names",
-        )
-        .into()
-    })
+        ));
+    }
+    Ok(job)
 }
 
 /// `no_brief` unless the header names this unit, role, and developer task number and a full
@@ -368,6 +369,7 @@ fn check_header(
         || h.n != n
         || !units_ok
         || !hex
+        || rel != brief::rel_path(unit, role, n, &h.snapshot)
         || !git::is_tree(root, &h.snapshot)
     {
         let (job, brief) = match unit {
@@ -452,8 +454,8 @@ fn maintainer(
         Answer::MaintainerExplain(a) => {
             let p = &mut problems;
             check_text(p, "explanation", &a.explanation, EXPLANATION_CAP, false);
-            let commands = &loaded.repo.commands;
-            check_tasks(p, &a.tasks, root, unit, &router, commands);
+            let allowed = allowlist(loaded, Some(unit));
+            check_tasks(p, &a.tasks, root, unit, &router, &allowed);
             let tasks = (!a.tasks.is_empty()).then(|| a.tasks.clone());
             (&a.card_patch, &a.pulled_anchors, &a.notes, false, tasks)
         }
@@ -570,13 +572,15 @@ fn maintainer(
     }
     edits.extend(task_edits(root, unit, tasks.as_ref())?);
     if let Some(text) = tester_text {
-        let rel = brief::rel_path(Some(unit), Role::Tester, None);
+        let rel = brief::rel_path(Some(unit), Role::Tester, None, &snapshot);
         out.tester_brief = Some(root.join(&rel));
         let answer = brief::answer_rel(&rel);
+        let old = brief::superseded(root, Some(unit), Role::Tester, None, &snapshot)?;
         edits.push((rel, Some(text)));
         edits.push((answer, None));
+        edits.extend(old.into_iter().map(|rel| (rel, None)));
     }
-    let brief_rel = brief::rel_path(Some(unit), Role::Maintainer, None);
+    let brief_rel = brief::rel_path(Some(unit), Role::Maintainer, None, &header.snapshot);
     write_remove_and_retire(repo, before, &checked, &edits, &brief_rel)?;
     Ok(out)
 }
@@ -838,7 +842,7 @@ fn developer(
             s
         }
     };
-    let brief_rel = brief::rel_path(Some(unit), Role::Developer, Some(n));
+    let brief_rel = brief::rel_path(Some(unit), Role::Developer, Some(n), &header.snapshot);
     write_and_retire(repo, before, &[], &brief_rel)?;
     Ok(Submitted {
         summary,
@@ -862,19 +866,19 @@ fn tester(
         unreachable!("a tester answer parses to the tester variant")
     };
     let loaded = repo.loaded()?;
-    let commands = &loaded.repo.commands;
+    let allowed = allowlist(loaded, Some(unit));
     let mut card = loaded.card(unit);
     let mut tests = test_card(loaded, unit);
 
     let mut p = vec![];
-    check_scenarios(&mut p, &a.scenario_patch, &card, unit, commands);
+    check_scenarios(&mut p, &a.scenario_patch, &card, unit, &allowed);
     check_list(&mut p, "results", a.results.len());
     for (i, r) in a.results.iter().enumerate() {
         let f = format!("results[{i}]");
         check_text(&mut p, &format!("{f}.scenario"), &r.scenario, ID_CAP, true);
         check_text(&mut p, &format!("{f}.output"), &r.output, PROSE_CAP, false);
     }
-    check_bugs(&mut p, &a.bugs, &card, unit, commands);
+    check_bugs(&mut p, &a.bugs, &card, unit, &allowed);
     check_list(&mut p, "tests_written", a.tests_written.len());
     for (i, t) in a.tests_written.iter().enumerate() {
         check_text(&mut p, &format!("tests_written[{i}]"), t, LINE_CAP, true);
@@ -907,7 +911,7 @@ fn tester(
         repo,
         before,
         &writes,
-        &brief::rel_path(Some(unit), Role::Tester, None),
+        &brief::rel_path(Some(unit), Role::Tester, None, &header.snapshot),
     )?;
 
     let ids = a.scenario_patch.iter().map(|s| s.id.as_str());
@@ -960,7 +964,7 @@ fn check_scenarios(
     scenarios: &[types::Scenario],
     card: &UnitCard,
     unit: &str,
-    commands: &Commands,
+    allowed: &[String],
 ) {
     check_list(p, "scenario_patch", scenarios.len());
     for (i, s) in scenarios.iter().enumerate() {
@@ -972,7 +976,7 @@ fn check_scenarios(
         check_text(p, &format!("{f}.level"), &s.level, ID_CAP, true);
         if let Some(c) = &s.command {
             check_text(p, &format!("{f}.command"), c, LINE_CAP, true);
-            check_command(p, &format!("{f}.command"), c, commands);
+            check_command(p, &format!("{f}.command"), c, allowed);
         }
         check_interface_id(p, format!("{f}.interface"), &s.interface, card, unit);
     }
@@ -985,14 +989,14 @@ fn check_bugs(
     bugs: &[types::Bug],
     card: &UnitCard,
     unit: &str,
-    commands: &Commands,
+    allowed: &[String],
 ) {
     check_list(p, "bugs", bugs.len());
     for (i, b) in bugs.iter().enumerate() {
         let f = format!("bugs[{i}]");
         check_text(p, &format!("{f}.title"), &b.title, ID_CAP, true);
         check_text(p, &format!("{f}.repro"), &b.repro, LINE_CAP, true);
-        check_command(p, &format!("{f}.repro"), &b.repro, commands);
+        check_command(p, &format!("{f}.repro"), &b.repro, allowed);
         check_text(p, &format!("{f}.evidence"), &b.evidence, PROSE_CAP, false);
         if let Some(id) = &b.interface {
             check_text(p, &format!("{f}.interface"), id, ID_CAP, true);
@@ -1102,7 +1106,7 @@ pub fn documenter(
         before,
         &checked,
         &edits,
-        &brief::rel_path(Some(unit), Role::Documenter, None),
+        &brief::rel_path(Some(unit), Role::Documenter, None, &header.snapshot),
     )?;
     Ok(Submitted {
         summary: format!("{unit} documenter: doc updated; {}", writes[1].0),
@@ -1153,9 +1157,9 @@ pub fn reviewer(
     let Answer::Review(a) = parse_answer(Role::Reviewer, header.mode, text)? else {
         unreachable!("a reviewer answer parses to the review variant")
     };
-    // `next` rewrites review.md: an answer to an older brief must not stamp the newer one
+    // an answer to an older review brief, named otherwise, must not stamp the newer one
     if a.snapshot != header.snapshot {
-        let brief_rel = brief::rel_path(None, Role::Reviewer, None);
+        let brief_rel = brief::rel_path(None, Role::Reviewer, None, &header.snapshot);
         bail!(CliError::new(
             "no_brief",
             format!(
@@ -1241,13 +1245,14 @@ pub fn reviewer(
                 }
                 // the scenarios and bugs may name an interface the patch adds
                 let scenarios = u.scenario_patch.as_deref().unwrap_or_default();
-                check_scenarios(p, scenarios, &card, unit, commands);
+                let allowed = allowlist(loaded, Some(unit));
+                check_scenarios(p, scenarios, &card, unit, &allowed);
                 check_bugs(
                     p,
                     u.bugs.as_deref().unwrap_or_default(),
                     &card,
                     unit,
-                    commands,
+                    &allowed,
                 );
                 match &u.doc {
                     Some(doc) => check_doc(p, doc),
@@ -1374,7 +1379,7 @@ pub fn reviewer(
         }
     }
     let checked: Vec<&str> = checked.iter().map(String::as_str).collect();
-    let brief_rel = brief::rel_path(None, Role::Reviewer, None);
+    let brief_rel = brief::rel_path(None, Role::Reviewer, None, &header.snapshot);
     write_remove_and_retire(repo, before, &checked, &edits, &brief_rel)?;
     Ok(Submitted {
         summary: one_line(&format!("reviewer: {}", parts.join(", "))),
@@ -1460,7 +1465,7 @@ fn validator(
         repo,
         before,
         &writes,
-        &brief::rel_path(Some(unit), Role::Validator, None),
+        &brief::rel_path(Some(unit), Role::Validator, None, &header.snapshot),
     )?;
     Ok(Submitted {
         summary: format!("{unit} validator: {}: {verdict}", one_line(title)),
@@ -1542,7 +1547,7 @@ fn architect(
         }
         if let Some(c) = &flow.check {
             check_text(&mut p, &format!("{f}.check"), c, LINE_CAP, true);
-            check_command(&mut p, &format!("{f}.check"), c, &loaded.repo.commands);
+            check_command(&mut p, &format!("{f}.check"), c, &allowlist(loaded, None));
         }
     }
     check_list(&mut p, "decisions", a.decisions.len());
@@ -1662,7 +1667,7 @@ fn architect(
         repo,
         before,
         &writes,
-        &brief::rel_path(None, Role::Architect, None),
+        &brief::rel_path(None, Role::Architect, None, &header.snapshot),
     )?;
 
     let names = a.flows.iter().map(|f| f.name.as_str());
@@ -1823,10 +1828,12 @@ fn rejected(problems: Problems) -> anyhow::Error {
         "answer_parse_failed"
     };
     let fix = match code {
-        "answer_too_long" => "shorten each field listed to its cap and rerun submit",
+        "answer_too_long" => {
+            "cut each field listed to the target its error gives, not to the cap, and rerun submit; a rejection for length alone does not count toward the three tries"
+        }
         "answer_dead_anchor" => "correct each anchor listed or drop it, then rerun submit",
         "command_not_allowed" => {
-            "start each command listed with one of `commands.test` in .stewards/repo.toml, or add it there, and write it as plain argv with no shell characters"
+            "start each command listed with one of `commands.test` in .stewards/repo.toml or with the unit's own test command, or add it to commands.test, and write it as plain argv with no shell characters"
         }
         _ => "fix the fields listed in `errors` and rerun submit",
     };
@@ -1863,6 +1870,12 @@ fn rejected(problems: Problems) -> anyhow::Error {
     err.into()
 }
 
+/// What an `answer_too_long` error tells the answer to cut to: 80% of `cap`, well under it, so a
+/// retry does not land a few characters over again.
+fn target(cap: usize) -> usize {
+    cap * 4 / 5
+}
+
 /// `answer_too_long` when the list `field` has more than `LIST_CAP` entries.
 fn check_list(out: &mut Problems, field: &str, len: usize) {
     if len > LIST_CAP {
@@ -1870,8 +1883,11 @@ fn check_list(out: &mut Problems, field: &str, len: usize) {
             "answer_too_long",
             FieldError {
                 field: field.to_string(),
-                problem: format!("{len} entries; the cap is {LIST_CAP}"),
-                example: format!("at most {LIST_CAP} entries"),
+                problem: format!(
+                    "{len} entries; the cap is {LIST_CAP}; cut to {} or fewer",
+                    target(LIST_CAP)
+                ),
+                example: format!("at most {} entries", target(LIST_CAP)),
             },
         ));
     }
@@ -1933,7 +1949,7 @@ pub(crate) fn read_tasks(repo: &Repo, unit: &str) -> Result<Vec<types::Task>> {
         &repo.root,
         unit,
         &router,
-        &loaded.repo.commands,
+        &allowlist(loaded, Some(unit)),
     );
     match p.first() {
         Some((_, e)) => Err(unusable(&format!("{} fails its check", e.field))),
@@ -1949,7 +1965,7 @@ fn check_tasks(
     root: &Path,
     unit: &str,
     router: &Router,
-    commands: &Commands,
+    allowed: &[String],
 ) {
     check_list(out, "tasks", tasks.len());
     let mut lanes = std::collections::HashMap::new();
@@ -1994,7 +2010,7 @@ fn check_tasks(
         }
         if let Some(c) = &t.check {
             check_text(out, &format!("{f}.check"), c, LINE_CAP, true);
-            check_command(out, &format!("{f}.check"), c, commands);
+            check_command(out, &format!("{f}.check"), c, allowed);
         }
     }
 }
@@ -2030,9 +2046,28 @@ fn check_owned(
     ));
 }
 
+/// The commands a scenario, repro, or check of `unit` may start with: the repo's `commands.test`
+/// and that unit's own test card `test_command` (no other unit's). Only a person or `init`
+/// writes either: no answer has a field that sets them.
+fn allowlist(loaded: &Loaded, unit: Option<&str>) -> Vec<String> {
+    let unit_test = unit
+        .and_then(|u| loaded.tests.get(u))
+        .and_then(|t| t.test_command.clone());
+    loaded
+        .repo
+        .commands
+        .test
+        .iter()
+        .map(|e| match e {
+            CommandEntry::Plain(c) | CommandEntry::Timed { cmd: c, .. } => c.clone(),
+        })
+        .chain(unit_test)
+        .collect()
+}
+
 /// `command_not_allowed` unless `cmd` has no `SHELL_CHARS` and its leading words are all the
-/// words of one `commands.test` entry, so `pytest` allows `pytest tests/x` but not `pytest-x`.
-fn check_command(out: &mut Problems, field: &str, cmd: &str, commands: &Commands) {
+/// words of one `allowed` entry, so `pytest` allows `pytest tests/x` but not `pytest-x`.
+fn check_command(out: &mut Problems, field: &str, cmd: &str, allowed: &[String]) {
     if let Some(c) = cmd.chars().find(|c| SHELL_CHARS.contains(c)) {
         out.push((
             "command_not_allowed",
@@ -2048,27 +2083,23 @@ fn check_command(out: &mut Problems, field: &str, cmd: &str, commands: &Commands
         return;
     }
     let words: Vec<&str> = cmd.split_whitespace().collect();
-    let entries: Vec<&str> = commands
-        .test
-        .iter()
-        .map(|e| match e {
-            CommandEntry::Plain(c) | CommandEntry::Timed { cmd: c, .. } => c.as_str(),
-        })
-        .collect();
-    let allowed = entries.iter().any(|e| {
+    let ok = allowed.iter().any(|e| {
         let entry: Vec<&str> = e.split_whitespace().collect();
         !entry.is_empty() && words.starts_with(&entry)
     });
-    if !allowed {
+    if !ok {
         out.push((
             "command_not_allowed",
             FieldError {
                 field: field.to_string(),
                 problem: format!(
-                    "`{cmd}` does not start with a commands.test entry ({})",
-                    entries.join(", ")
+                    "`{cmd}` does not start with a commands.test entry or the unit's test command ({})",
+                    allowed.join(", ")
                 ),
-                example: format!("\"{} tests\"", entries.first().unwrap_or(&"pytest")),
+                example: format!(
+                    "\"{} tests\"",
+                    allowed.first().map_or("pytest", String::as_str)
+                ),
             },
         ));
     }
@@ -2089,10 +2120,13 @@ fn check_text(out: &mut Problems, field: &str, value: &str, cap: usize, one_line
     };
     let n = value.chars().count();
     if n > cap {
-        let example = format!("at most {cap} characters");
+        let example = format!("at most {} characters", target(cap));
         add(
             "answer_too_long",
-            format!("{n} characters; the cap is {cap}"),
+            format!(
+                "{n} characters; the cap is {cap}; cut to {} or fewer",
+                target(cap)
+            ),
             &example,
         );
     }

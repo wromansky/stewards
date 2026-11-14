@@ -47,3 +47,43 @@ given = "a driver with a context_file and arm copies with and without AGENTS.md"
 expect = "the file is committed only into copies with an AGENTS.md, history keeps its shape"
 level = "integration"
 command = "cargo test --test eval a_context_file_is_committed_into_every_arm_copy_with_an_agents_md"
+
+[[scenario]]
+id = "eval-hermes-refused-not-launch"
+interface = "hermes_parse"
+given = "the recorded Hermes session whose third delegate_task call was refused"
+expect = "only the children that ran count as launches and subagent sessions"
+level = "integration"
+command = "cargo test --test eval hermes_refused_sample_counts_only_the_children_that_ran"
+
+[[scenario]]
+id = "eval-listing-opens-nothing"
+interface = "existing_files"
+given = "a listing (ls, find, Glob, search_files target files) on each driver"
+expect = "no file is counted as opened on any driver"
+level = "integration"
+command = "cargo test --test eval a_listing_opens_no_file_on_any_driver"
+
+[[scenario]]
+id = "eval-interrupt-recorded"
+interface = "execute"
+given = "a SIGTERM to the runner during a session"
+expect = "the session is stopped and recorded failed (interrupted), no other starts, the summary is written, an interrupted error returned"
+level = "integration"
+command = "cargo test --test eval_interrupt"
+
+[[scenario]]
+id = "eval-hermes-home-and-daemon"
+interface = "hermes_template"
+given = "two Hermes sessions in the same directory with a fake hermes starting a daemon and printing .env keys"
+expect = "each gets a fresh home from the template, the daemon is killed, keys are [redacted] in kept files"
+level = "integration"
+command = "cargo test --test eval hermes_driver_runs_each_session_in_its_own_home_and_kills_the_daemon"
+
+[[scenario]]
+id = "eval-hermes-max-cost-refused"
+interface = "eval_run"
+given = "stewards eval --harness hermes with --max-cost, or a --model without a provider"
+expect = "a usage error"
+level = "integration"
+command = "cargo test --test eval hermes_refuses_max_cost_and_a_model_without_a_provider"

@@ -1283,24 +1283,25 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   task 5.
 - **Arms, three:** `bare` (no `.stewards/`, no block), `block-only` (block
   present, binary off PATH; ritual and persistence graders `n/a`), `full`.
-- **Runner:** `stewards eval --harness <pi|claude-code>` (default `pi`)
-  drives `pi --mode json` or `claude -p --output-format stream-json
-  --verbose` (both built; `codex exec --json` is stage 4) behind one
+- **Runner:** `stewards eval --harness <pi|claude-code|hermes>` (default
+  `pi`) drives `pi --mode json`, `claude -p --output-format stream-json
+  --verbose`, or `hermes chat --oneshot --format stream-json` (all three
+  built; `codex exec --json` is stage 4) behind one
   `Driver` trait (start a session on a prompt in a directory with a model
   and thinking level and return its transcript; parse it). The drivers
   under `src/eval/` are the only place stewards knows a harness's command
   line; a test keeps their launch flags (`--dangerously`, `--mode json`,
-  `exec --json`) out of the rest of `src/`. Suites, arms,
-  tasks, prompts, graders, the gate, and the summary are the same for both
+  `exec --json`, `--oneshot`) out of the rest of `src/`. Suites, arms,
+  tasks, prompts, graders, the gate, and the summary are the same for all
   and never branch on the harness: each driver maps its transcript into the
   same `Run` and the same harness-neutral actions (a shell command, a
   subagent launch with each child's task). The runner parses each transcript
   to `Run {main_tokens? {input, output, cache_read, cache_write},
-  total_tokens? {same}, cache_warming {same}, peak_main_context,
+  total_tokens? {same}, cache_warming {same}, peak_main_context?,
   tool_calls[], files_opened[], files_opened_tree[], shell_commands[],
   ritual_steps{status, route, next, review, handoff, handoff_exact,
   reviewer_submit, check_green}, cost_usd?, harness_reported_cost_usd?, duration_s, models[], thinking_levels[],
-  sessions_without_thinking[], subagent_sessions, reviews[],
+  sessions_without_thinking[], subagent_sessions, uncounted_sessions[], reviews[],
   git_history_commands[], stop_reason, failed_children[],
   truncated_lines}`.
   Main tokens = the parent session only; total = parent + all children
@@ -1325,10 +1326,10 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   the process, children included): both exact. A session that ended
   without that line (killed) has `main_tokens` and `total_tokens` `null`,
   never the records' short sum; `peak_main_context` still comes from the
-  main records. On either driver a timed-out run's counts are partial, so
+  main records. On every driver a timed-out run's counts are partial, so
   the runner sets its `main_tokens` and `total_tokens` to `null` (its
   `cost_usd` stays): its task's token medians are then `null`, and the
-  adoption ratio leaves it out, on Pi and Claude Code alike. Its `models`
+  adoption ratio leaves it out, on every driver alike. Claude Code's `models`
   are the records' models plus every `modelUsage` key, which also names
   side requests (titles, summaries) made outside the parent and its
   children, so one on another model is flagged as any model mismatch.
@@ -1341,19 +1342,82 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   session failed when the stream's `result` line says `is_error` or its last
   response is an API error (`isApiErrorMessage`), a child when its last
   response is one. Files opened are its `Read` tool's `file_path`, its
-  `Grep` tool's `path` (a directory is dropped, as below), each file a
-  `Glob` call matched as the persisted result lists them
-  (`toolUseResult.filenames`; a call without that result counts none), and
-  the shell reads below; a relative path is resolved against the `cwd` of
+  `Grep` tool's `path` (a directory is dropped, as below), and the shell
+  reads below; a relative path is resolved against the `cwd` of
   the record that made the call, since a `cd` in one `Bash` call carries
   over to the next, and every path is then taken relative to the main
-  session's starting directory (a `..` steps back up).
+  session's starting directory (a `..` steps back up). For Hermes the
+  transcript is `hermes sessions export --format jsonl` of the session's
+  own home, run after the session (`transcript.jsonl`, beside the stream as
+  `stdout.log` and the home's `logs/agent.log` with its rotations
+  `agent.log.<n>`): one row per session. The task's session is the
+  first-started row with no `parent_session_id`; another such row (a
+  `hermes` a session started itself with the inherited `HERMES_HOME`) and
+  the rows under it are left out of every count and named in the run's
+  `uncounted_sessions`, flagged in the summary, not failed (on Pi and
+  Claude Code a nested session is simply not counted). Under the task's
+  session a row is a child only when its `source` is `subagent`; a row
+  with the parent's own `source` is the same session continued after
+  Hermes compressed its context (a new row under the old one), so its
+  tokens, tool calls, and API calls belong to that session (main or
+  child), and a call it kept from the row before counts once. Hermes keeps
+  each row's counts itself
+  (`input_tokens` uncached, `output_tokens` with reasoning inside,
+  `cache_read_tokens`, `cache_write_tokens`; per-call deltas): main tokens are the main
+  session's rows' (equal to the stream's `result.tokens`, whose `input` includes
+  the cache reads), total tokens add every child's. It persists no
+  per-response usage, so its `peak_main_context` is the largest prompt
+  (`in=`, cache included) of the main session's API calls in `agent.log*`,
+  `null` without such a line. Its `estimated_cost_usd` prices
+  `deepseek-flash` from Hermes's own table at DeepSeek's off-peak rates in
+  every hour (its source notes peak hours, Mon-Fri 01-04 and 06-10 UTC,
+  cost twice that), so its runs record `cost_usd: null`, keep the summed
+  figure as `harness_reported_cost_usd`, and `--max-cost` with this
+  harness is a `usage` error, as for Claude Code. Its `--model` is
+  `provider/model` (`deepseek/deepseek-flash`), split at the first `/` into
+  `--provider` and `-m` (without one, a `usage` error); each session's
+  model is recorded as `billing_provider/model`. A `delegate_task` call is
+  a subagent launch for each of its children that ran, as its result's
+  `results` report them: a task they mark refused is left out, a result
+  without `results` (Hermes refused the whole call with an `error`: a
+  spent one-shot budget, the depth limit, a bad argument) launched
+  nothing, and a call with no result (the session ended inside it) counts
+  all its tasks. Its tasks are `tasks` (an array, or the JSON
+  string of one, which Hermes accepts for small models), else the
+  top-level `goal`, `context`, and `output_schema`, which Hermes reads only
+  when `tasks` is absent or empty. Each child's task is the whole text it
+  was given: its `goal` (its first message), plus, when there is any, the
+  context Hermes puts in its system prompt (its `context`, with the output
+  contract Hermes appends for an `output_schema`). Hermes's tool
+  description asks the model to fill `context`, so a weak model may add
+  text there that another harness's would not; the summary's setup note
+  says so. Its shell commands are `terminal` calls; commands an
+  `execute_code` script runs through its own `terminal()` are not seen (not
+  in `shell_commands`, files opened, or the ritual steps), and the setup
+  note says so. Its main session failed when the stream's
+  `result` line has a nonzero `exit_code` or an `error`, else by its last
+  response's `finish_reason`; a child failed when the `delegate_task` call
+  that ran it reports a status other than `completed`, or its own last
+  response stopped with `error`, `aborted`, or `length`. Its `duration_s`
+  includes the start of the gateway daemon (8 to 10 s before the turn
+  began in the smoke runs, of 47 s and 65 s), so it is longer than the same turn on another
+  harness; the setup note says so. Hermes's auxiliary
+  requests (titles, compression) are not in the export; on the
+  verification machine they failed for want of a Nous login and spent
+  nothing.
   `peak_main_context` is the largest input + cache read + cache write of
   any one main-session response.
   `files_opened` (main session) and `files_opened_tree` (every session)
-  count distinct paths relative to each session's cwd, from the `read` tool
-  plus simply recognised shell reads (`cat`, `head`, `tail`, `less`, `sed
-  -n`, `grep`/`rg` with a path argument; separators inside quotes do not
+  count distinct paths relative to each session's cwd, by one rule on every
+  driver: a file counts when its content was read or searched, through a
+  read tool (Pi's `read`, Claude Code's `Read`, Hermes's `read_file`), a
+  content search given its path (Claude Code's `Grep`, Hermes's
+  `search_files`), or a simply recognised shell read (a Hermes
+  `terminal` call's reads start in its `workdir` when it gives one); a
+  listing never counts, whatever produced it (`ls`, `find`, Claude Code's
+  `Glob`, Hermes's `search_files` with `target: files` or `find`), nor do
+  Hermes's `execute_code` scripts. The shell reads are `cat`, `head`, `tail`, `less`, `sed
+  -n`, `grep`/`rg` with a path argument (separators inside quotes do not
   split, heredoc bodies (`<<WORD`, `<<'WORD'`, `<<-WORD` up to the line
   equal to `WORD`) are skipped, a relative path after a leading `cd <dir>`
   segment is taken under `<dir>`, and words with `$`, words starting with
@@ -1369,9 +1433,11 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   one of its argument strings, the file named as `brief::rel_path` names a
   brief, `-<snap>` included, so a name an older stewards wrote does not
   count), `handoff_exact` (every such launch gives
-  each child exactly the handoff as its task, the `task` strings of a
-  pi-subagents call or the `prompt` of a Claude Code `Task` call, nothing
-  added), `reviewer_submit` (`stewards submit ...
+  each child exactly the handoff as its task: the whole task text the
+  child was given equals the handoff, nothing added; that text is each
+  `task` string of a pi-subagents call, the `prompt` of a Claude Code
+  `Task` call, and a Hermes child's `goal` plus the context Hermes adds to
+  its system prompt, as above), `reviewer_submit` (`stewards submit ...
   --role reviewer` in a child session), and `check_green`, which comes
   from the runner: after each `full` (and `full-no-developers`) session it
   runs `stewards next --no-brief` in the run directory and records the
@@ -1394,8 +1460,9 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   failed, and listed in the summary. A session whose last main response,
   or any child's last response, stopped with `error`, `aborted`, or
   `length` is a failed run whatever the harness's exit code; the stop
-  reason and the failed child are recorded. A session directory with more
-  than one top-level session file fails the parse; an unparseable line is
+  reason and the failed child are recorded. A Pi session directory with more
+  than one top-level session file fails the parse (a second top-level
+  Hermes session is left uncounted and flagged, as above); an unparseable line is
   tolerated only as the last line of a file from a failed or timed-out
   session (counted in `truncated_lines`). A run whose transcript cannot be
   parsed has an unknown cost: after one, `--max-cost` stops the eval, as it
@@ -1417,8 +1484,17 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   but API failures; an `on` session is flagged as any other level. Because
   of those words, the runner reads every planned task prompt before any
   session and stops with a `usage` error naming the file when one contains
-  `think` in any case. `--thinking` stays the user's control for Pi, so a
-  run meant to compare with Claude Code uses `--thinking off` on Pi; the
+  `think` in any case (Hermes has no such words). Hermes has a level,
+  `--reasoning`: the driver passes `--thinking` as it (`off` as `none`)
+  and children inherit it, but its transcript records only a child's
+  level, never the main session's, so each Hermes session's effective
+  setting is recorded as for Claude Code: `on` when it counted reasoning
+  tokens or a response holds non-blank `reasoning` or `reasoning_content`
+  (Hermes stores a lone space with reasoning off), else `off`. A requested
+  level other than `off` is then flagged as a thinking mismatch in every
+  Hermes run, so Hermes runs meant for comparison use `--thinking off`.
+  `--thinking` stays the user's control for Pi and Hermes, so a run meant
+  to compare with Claude Code uses `--thinking off` on them; the
   summary says in one sentence, whenever the requested or any recorded
   level is not `off`, that two harnesses' results compare only at the same
   setting and to run each driver with thinking off. Its children run on the
@@ -1454,14 +1530,48 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   it; the block text stays only in `AGENTS.md`; the file is folded into
   the copy's last commit (reflog expired), so the history keeps its shape
   and the run's `changed` does not see it, and adoption's unowned check
-  accepts it. The summary says so. Each session gets its own
+  accepts it. The summary says so. For Hermes, one template home per
+  invocation (`<work>/a`) holds a `config.yaml` with only
+  `delegation.subagent_auto_approve: true` (children run shell commands
+  unprompted: the children's counterpart of `--yolo`) and
+  `delegation.oneshot_max_children: 0` (unlimited: Hermes lets a one-shot
+  session start 2 subagents by default and then refuses `delegate_task`,
+  telling the model to review its own work inline, which would contradict
+  the block; the eval lifts the cap so a run can delegate as on Pi and
+  Claude Code, which have none; a user running stewards in a Hermes
+  one-shot session meets that default), `.env` linked to
+  the user's (the provider keys), and `installs/`, the Python dependency
+  environment Hermes builds in every new home (424 MB, built once by
+  `hermes sessions list`, no model call; a gateway daemon it may start for
+  the template is stopped). Every session gets a fresh home
+  `<work>/<n>/h` (`HERMES_HOME`) with that config, `.env` and `installs/`
+  linked: no user config, memory, SOUL.md, skills, plugins, or earlier
+  sessions (one home per eval would show later runs the earlier runs'
+  sessions through `session_search`, and their memory); a fresh home holds
+  Hermes's own default SOUL.md, bundled skills, and bundled plugins. A
+  session starts only while `installs/` is unchanged since it was built
+  (every entry's path, size, mtime, and mode, without the `.leases`
+  directories and `*.lock` files Hermes touches on every use), else the
+  eval stops. That catches a session that installed into the shared
+  environment by accident; it is no guarantee: a `--yolo` session can
+  write a file and restore its size and mtime, write under a `.leases`
+  directory or a `*.lock` name, or change Hermes's own source tree
+  (`~/.hermes/hermes-agent`, the daemon's code), which is not checked.
+  Every value of a key, token, secret, or password entry (8 characters or
+  more) of the linked `.env` is replaced by `[redacted]` in the session
+  files the results keep (Hermes blocks `read_file` on `.env` and redacts
+  some tool output, but a shell `cat` can still print it). Hermes
+  reads the project `AGENTS.md` itself, so it runs without
+  `--ignore-rules` (which would skip it), and no copy holds another file
+  it reads (`.hermes.md`, `.cursorrules`); the summary says so. Each session gets its own
   `CARGO_INSTALL_ROOT` (never on `PATH`), each `full` session its own
   `STEWARDS_HOME` (the other arms none, so the environment names no
   stewards), and every other harness env prefix is stripped (the Claude
   Code driver also drops `CLAUDECODE`, which an enclosing Claude Code sets
   for its shell outside the `CLAUDE_CODE` prefix, and
-  `MAX_THINKING_TOKENS`). Claude Code shows a session its git status and
-  last five commit subjects unasked, so every arm commit the runner and
+  `MAX_THINKING_TOKENS`; the Hermes driver drops `AI_AGENT`, which Hermes
+  sets only when unset). Claude Code shows a session its git status and
+  last five commit subjects unasked (Hermes its last commits too), so every arm commit the runner and
   `evals/arms.sh` make is subject `initial` or `update`, by `dev
   <dev@example.invalid>`, naming no eval, `stewards`, fixture, adoption,
   or block. Runs are sequential, each in a
@@ -1505,13 +1615,29 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   first runs task 5 there as a `setup` run. A fixture session has 30
   minutes, then the harness's process group is killed
   and the session recorded `timed_out`. After every session (normal exit,
-  failure, or timeout) the runner kills every process whose
-  `/proc/<pid>/cwd` is under that session's `<n>/` directory (Pi starts
-  shell commands and background subagents in their own process groups,
-  Claude Code its shell commands; its subagents run inside its own
-  process),
+  failure, timeout, or interrupt) the runner kills every process whose
+  `/proc/<pid>/cwd` is under that session's `<n>/` directory, or whose
+  `HERMES_HOME` (from `/proc/<pid>/environ`; no other variable, so a
+  process that only visited the directory, with it in `OLDPWD`, is left
+  alone) is a path under it (Pi starts shell commands and background subagents in their own process
+  groups, Claude Code its shell commands, its subagents running inside its
+  own process; the Hermes agent runs in a gateway daemon that `hermes
+  chat` starts in its own session, with Hermes's source tree as its working
+  directory, not the task directory, though its shell and file tools act
+  in the `--in` directory: the driver kills the daemon's process group,
+  named in `<home>/gateway.pid`, after the session, a timeout included,
+  only while that pid's environment holds the session's `HERMES_HOME` (a
+  stale pid may name another process), and the sweep finds anything else
+  by the `HERMES_HOME` it carries; the summary says so),
   waits up to 10 s until none is left, and records how many it killed; a
-  survivor stops the eval after the run is recorded. A failed or timed-out
+  survivor stops the eval after the run is recorded. A SIGINT or SIGTERM
+  to the runner (one handler, every driver) kills the running session's
+  process group at once, lets the driver stop what it started (Hermes's
+  daemon, whose turn would otherwise go on with the user's key) and the
+  sweep run, records that session `failed` with `failure: interrupted`
+  and its token counts `null` (partial, as for a timeout), starts no other
+  session, writes the summary, and exits non-zero (`interrupted`); a
+  second signal ends the runner at once. A failed or timed-out
   session is recorded and counted, never retried or dropped. `--max-cost`
   stops before the next session when the spend so far plus its mean per
   session would pass the ceiling; the first always runs. Results go to
@@ -2315,7 +2441,97 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   before exiting. A `PI_*` environment from an enclosing Pi session
   (`PI_SUBAGENT_CHILD`) makes a nested `pi` start without `subagent`, so
   the runner strips every harness's env prefix, then sets
-  `PI_CODING_AGENT_DIR` itself.
+  `PI_CODING_AGENT_DIR` itself. Hermes Agent (verified 2026-11-13 on
+  v0.23.1, 2026.9.24, source `3b42157858`, with `deepseek/deepseek-flash`;
+  five short runs, one with a subagent; on 2026-11-14 the one-shot child
+  cap, compression rows, `delegate_task` shapes, refusals, log rotation,
+  and `workdir` re-read from that source, and three more runs: a `bare`
+  smoke run, and two one-shot sessions in a repo whose `AGENTS.md` set a
+  codeword, told to start three children in three calls: both answered
+  with the codeword (the main row's exported `system_prompt` holds the
+  `AGENTS.md` under "Project Context"), with `oneshot_max_children: 0`
+  all three children ran, at the default the third call returned the
+  budget error and started nothing (recorded as the `refused` fixture),
+  and in both the model filled each task's `context` unasked): the eval runs `hermes chat
+  --query=<prompt> --oneshot --yolo --in <dir> --format stream-json
+  --reasoning <level> --provider <p> -m <m>`, stdin closed, with
+  `HERMES_HOME` the session's own home. `hermes chat` is only a client:
+  it starts (`start_new_session`, cwd the Hermes source tree) or attaches
+  to a gateway daemon for that home (`gateway run --idle-exit`, idle for
+  600 s before it exits), and the agent runs in the daemon; killing the
+  client leaves the turn running ("accepted work continues at the
+  gateway"), and a `process_supervisor.sh` reaps the daemon's registered
+  process groups when the daemon dies. `<home>/gateway.pid` (JSON, `pid`)
+  names the daemon. `--in` sets the session's cwd: `pwd` printed it and a
+  relative `write_file` landed there. The stream holds `system/init`,
+  `tool_use`/`tool_result` and `text` events of the main session only,
+  then a `result` line with `exit_code`, `error` (on failure), and
+  `tokens {input (cache reads included), output, total, cache_read,
+  cache_write}` of the main session alone; `Session: <id>` goes to
+  stderr. `hermes sessions export --format jsonl --yes <file>` writes one
+  line per session of the home (main and children, `parent_session_id`,
+  per-session counts, `model`, `billing_provider`, `estimated_cost_usd`,
+  `cwd`, and `messages` with `tool_calls[].function.{name, arguments (a
+  JSON string)}`, tool results as JSON strings, `finish_reason`,
+  `reasoning`/`reasoning_content`); it works after the daemon is killed
+  and starts none. Per-response usage is only in `logs/agent.log`
+  (`[<session id>] … API call #N: … in=<prompt> out=…`). A new home builds
+  `installs/` (the dependency environment, 424 MB, minutes) on its first
+  command, and a home linking another's `installs/` builds nothing; a
+  fresh home seeds Hermes's default SOUL.md, its bundled skills (listed in
+  the system prompt), and enables its bundled plugins. The project
+  `AGENTS.md` loads into the system prompt ("# Project Context") without
+  `--ignore-rules`, which skips it along with SOUL.md, memory, and
+  preloaded skills; a "Workspace" block also lists the last commits.
+  `delegate_task` takes `tasks[] {goal, context, output_schema, images}`
+  (`tasks` may also be the JSON string of that array; a legacy top-level
+  `goal`/`context`/`output_schema` is read only when `tasks` is absent or
+  empty); a child's first message is
+  its `goal`, its `context` goes into its system prompt (after
+  `CONTEXT:`, with an output contract appended for an `output_schema`)
+  with the repo's `AGENTS.md`. A finite one-shot session (`hermes chat
+  -q`/`--oneshot`, `hermes -z`) may start `delegation.oneshot_max_children`
+  subagents in all, 2 by default (0 is unlimited); past it `delegate_task`
+  returns `{"error": "Delegation budget for this one-shot run is exhausted
+  ... reviewing your own diff and running the tests inline is expected
+  here, not a delegated review."}` and starts nothing. Interactive
+  sessions and messaging-gateway sessions are never charged
+  (`_oneshot_spawn_budget`); a one-shot turn the local gateway daemon runs
+  is, since its launch policy's source is `oneshot`.
+  `delegation.max_spawn_depth` is 1 by default: children cannot delegate.
+  A task its backend cannot route is refused alone, its result entry
+  `status: error`, `api_calls: 0`, `route.refused: true`. In a one-shot session the call runs its children
+  synchronously ("async delivery unsupported on this session runtime"),
+  so the session waits for them, and returns their summaries, statuses
+  (`completed`, `failed`, `error`, `timeout`, `interrupted`), and token
+  counts. Children inherit the parent's reasoning level (their session's
+  `model_config.reasoning_config`); the main session's level is only in
+  the gateway's own policy. `--reasoning none` and `low` left the main
+  session's `reasoning_content` a lone space with 0 reasoning tokens; the
+  default left reasoning text. Hermes has no prompt words that set
+  thinking. Children auto-deny "dangerous" shell commands unless
+  `delegation.subagent_auto_approve: true`. Tools: `terminal {command}`,
+  `read_file {path}`, `search_files {pattern, target content|files, path}`
+  (`files` lists paths, `.git` internals included), `write_file`,
+  `patch`, `execute_code`; `terminal` also takes `workdir`, and
+  `search_files` maps `target: grep` to `content` and `find` to `files`.
+  An `execute_code` script can call `terminal()` itself; those commands
+  are not `terminal` calls in the export. `read_file` refuses `.env`
+  files ("not a security boundary; the terminal tool can still bypass").
+  Compressing a session's context saves the rest of the conversation as a
+  new session row whose `parent_session_id` is the old row and whose
+  `source` is the old row's (`agent/conversation_compression.py`), at 75%
+  of the window for windows under 512K; token counts are written as
+  per-call deltas to the row in use. `logs/agent.log` rotates at 5 MB,
+  three backups (`agent.log.1`..`.3`). The client's start of the gateway
+  daemon precedes the turn (8 to 10 s in the smoke runs). Hermes sets `AI_AGENT=hermes-agent` and
+  `HERMES_AGENT=true` only when unset, and `HERMES_*` variables; the
+  daemon inherits the client's environment (its shell commands get it
+  minus a secret blocklist), and the client's `PATH` reaches them with
+  Hermes's tool directories prepended. Its price table has
+  `deepseek-flash` at $0.15 / $0.60 / $0.003 per million input, output,
+  and cache-read tokens, DeepSeek's off-peak rates (models.dev agrees),
+  applied in every hour.
 - `claude plugin eval` exists (cases under `evals/<case>/`, six fixed grader
   types, with/without ablation, `--json`) but has no custom-code graders and
   starts in an empty workspace; stewards uses its own runner.

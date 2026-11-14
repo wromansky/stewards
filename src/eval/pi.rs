@@ -334,8 +334,8 @@ fn review_submits(records: &[&Value]) -> Vec<(String, ReviewSubmit)> {
     out
 }
 
-/// The distinct repo-relative paths one session opened, in order: each `read` tool path and each
-/// path `shell_reads` finds in a `bash` command.
+/// The distinct repo-relative paths one session opened (see `Run::files_opened`), in order: each
+/// `read` tool path and each path `shell_reads` finds in a `bash` command.
 fn files_opened(records: &[&Value]) -> Vec<String> {
     let cwd = records
         .iter()
@@ -525,7 +525,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         main_tokens: Some(main_tokens),
         total_tokens: Some(total_tokens),
         cache_warming,
-        peak_main_context,
+        peak_main_context: Some(peak_main_context),
         tool_calls: tool_names,
         files_opened: files_opened(&main),
         files_opened_tree: tree_files,
@@ -539,6 +539,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         thinking_levels: thinking_levels.into_iter().collect(),
         sessions_without_thinking,
         subagent_sessions: children.len(),
+        uncounted_sessions: vec![],
         reviews: {
             reviews.sort_by(|a, b| a.0.cmp(&b.0));
             reviews.into_iter().map(|(_, r)| r).collect()

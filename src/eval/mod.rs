@@ -7,6 +7,7 @@ use std::hash::BuildHasher;
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
@@ -19,6 +20,7 @@ use crate::output::{CliError, Global, emit, not_implemented};
 
 pub mod claude;
 pub mod grade;
+pub mod hermes;
 pub mod pi;
 pub mod suite;
 
@@ -145,12 +147,16 @@ pub struct Run {
     /// Cache refreshes over the tree, which do not enter model context: not in the token sums
     /// above; their cost is in `cost_usd`.
     pub cache_warming: Tokens,
-    /// The largest `Tokens::context` of any one main-session response.
-    pub peak_main_context: u64,
+    /// The largest `Tokens::context` of any one main-session response; `None` when the
+    /// transcript has no per-response usage (a Hermes session without its `agent.log` lines).
+    pub peak_main_context: Option<u64>,
     /// Tool names called in the main session, in order.
     pub tool_calls: Vec<String>,
-    /// Distinct repo-relative paths the main session opened (see `pi::parse` for what counts;
-    /// the runner then keeps only `existing_files`).
+    /// Distinct repo-relative paths the main session opened: a file counts when its content was
+    /// read or searched (a read tool, a content search given its path, a `shell_reads` command);
+    /// a listing never counts, whatever produced it (`ls`, `find`, Claude Code's `Glob`, Hermes's
+    /// `search_files` with `target: files`). Each driver's `files_opened` names its tools; the
+    /// runner then keeps only `existing_files`.
     pub files_opened: Vec<String>,
     /// The same over the whole session tree.
     pub files_opened_tree: Vec<String>,
@@ -176,6 +182,9 @@ pub struct Run {
     pub sessions_without_thinking: Vec<String>,
     /// Child sessions in the tree.
     pub subagent_sessions: usize,
+    /// Top-level sessions in the transcript besides the task's own (a harness a session started
+    /// itself), left out of every count (flagged, not failed).
+    pub uncounted_sessions: Vec<String>,
     /// Each successful `stewards submit --role reviewer` a child ran, in order.
     pub reviews: Vec<ReviewSubmit>,
     /// Shell commands anywhere in the tree that read git history (see `reads_git_history`).
@@ -635,8 +644,42 @@ pub trait Driver {
     }
 }
 
-/// Spawns `cmd` in its own process group and waits for it, killing the group after `limit`.
-/// Returns its status and seconds.
+/// Set by a SIGINT or SIGTERM to the runner; `run_session` clears it when it kills its command.
+static SIGNALLED: AtomicBool = AtomicBool::new(false);
+/// Set by a SIGINT or SIGTERM to the runner and never cleared: the session it interrupted is
+/// recorded `failed` (`interrupted`) and no other starts.
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_interrupt(_: libc::c_int) {
+    SIGNALLED.store(true, Ordering::SeqCst);
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
+/// Catches the runner's next SIGINT and SIGTERM (see `SIGNALLED`, `INTERRUPTED`); a second one
+/// gets the default action, so it ends the runner at once.
+fn catch_interrupts() {
+    // SAFETY: the handler only stores to atomics, which is async-signal-safe.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_interrupt as *const () as libc::sighandler_t;
+        action.sa_flags = libc::SA_RESETHAND;
+        for signal in [libc::SIGINT, libc::SIGTERM] {
+            libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
+    }
+}
+
+fn interrupted_error() -> anyhow::Error {
+    CliError::new(
+        "interrupted",
+        "the eval was interrupted (SIGINT or SIGTERM); the session it stopped is recorded `failed` (`interrupted`) and the summary covers the sessions so far",
+        "start the eval again",
+    )
+    .into()
+}
+
+/// Spawns `cmd` in its own process group and waits for it, killing the group after `limit`, or
+/// at once on an interrupt (`SIGNALLED`, then `Failed`). Returns its status and seconds.
 fn run_session(cmd: &mut Command, limit: Duration) -> Result<(Status, f64)> {
     std::os::unix::process::CommandExt::process_group(cmd, 0);
     let started = Instant::now();
@@ -655,13 +698,18 @@ fn run_session(cmd: &mut Command, limit: Duration) -> Result<(Status, f64)> {
             kill(&mut child);
             break Status::TimedOut;
         }
+        if SIGNALLED.swap(false, Ordering::SeqCst) {
+            kill(&mut child);
+            break Status::Failed;
+        }
         std::thread::sleep(Duration::from_millis(200));
     };
     Ok((status, started.elapsed().as_secs_f64()))
 }
 
 /// Kills the session's whole process group, then the child itself; the runner then kills what
-/// left the group (harnesses start shell commands and background subagents in their own groups).
+/// left the group (harnesses start shell commands, background subagents, and Hermes its gateway
+/// daemon in their own groups).
 fn kill(child: &mut Child) {
     let _ = Command::new("kill")
         .args(["-KILL", &format!("-{}", child.id())])
@@ -867,8 +915,12 @@ struct Runner<'a> {
 }
 
 impl Runner<'_> {
-    /// Starts one session unless `--max-cost` says stop, and records it. Returns whether it ran.
+    /// Starts one session unless `--max-cost` says stop or the eval was interrupted, and records
+    /// it. Returns whether it ran to its end, uninterrupted.
     fn session(&mut self, s: SessionSpec) -> Result<bool> {
+        if INTERRUPTED.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
         if let Some(m) = self.plan.max_cost
             && (!self.unknown_cost.is_empty() || would_exceed(m, &self.costs))
         {
@@ -897,6 +949,7 @@ impl Runner<'_> {
             &sessions,
             &env,
         )?;
+        let interrupted = INTERRUPTED.load(Ordering::SeqCst);
         let root = s.dir.parent().unwrap_or(&s.dir).to_path_buf();
         let leftovers = kill_leftovers(&root)?;
         let changed = changed_paths(&s.dir, start.trim())?
@@ -928,8 +981,9 @@ impl Runner<'_> {
         let mut failure = None;
         let mut reviews = vec![];
         if let Some(r) = &mut result {
-            // a timed-out run's counts are partial on every driver, so no median mixes them in
-            if session.status == Status::TimedOut {
+            // a timed-out or interrupted run's counts are partial on every driver, so no median
+            // mixes them in
+            if session.status == Status::TimedOut || interrupted {
                 (r.main_tokens, r.total_tokens) = (None, None);
             }
             r.files_opened = existing_files(&s.dir, &r.files_opened);
@@ -953,6 +1007,10 @@ impl Runner<'_> {
                 why.extend(r.failed_children.iter().map(|c| format!("child {c}")));
                 failure = Some(why.join("; "));
             }
+        }
+        if interrupted {
+            status = Status::Failed;
+            failure = Some("interrupted".to_string());
         }
         match &result {
             None => self.unknown_cost.push(label.clone()),
@@ -1005,7 +1063,7 @@ impl Runner<'_> {
                 root.display()
             );
         }
-        Ok(true)
+        Ok(!interrupted)
     }
 }
 
@@ -1025,8 +1083,11 @@ struct SessionSpec {
 /// setup (when a `full` arm is planned), then per task, per run number, each arm in a fresh copy
 /// at `<work>/<n>/repo`; a task with a `setup` task runs after it in the same copy. Every planned
 /// task prompt is read first (see `task_prompt`). Writes `runs/*.json` as each session ends, then
-/// `summary.json` and `summary.md`.
+/// `summary.json` and `summary.md`. A SIGINT or SIGTERM stops the session running (see
+/// `run_session`; the driver and the sweep then stop what it left), records it `failed`
+/// (`interrupted`), writes the summary, and returns an `interrupted` error.
 pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
+    catch_interrupts();
     let tasks_dir = plan.evals.join(&plan.suite.tasks_dir);
     for &t in &plan.tasks {
         task_prompt(&tasks_dir, t)?;
@@ -1071,6 +1132,13 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
         }
     };
     let mut adopted = None;
+    let fail = |r: &Runner, notes: SetupNotes, err: anyhow::Error| -> Result<Summary> {
+        write_summary(
+            plan,
+            &grade::summarize(plan, &r.records, r.stopped, &r.unknown_cost, notes),
+        )?;
+        Err(err)
+    };
     if let Some(arm) = plan.arms.iter().copied().find(|a| a.is_full()) {
         let dir = match (fixture, &plan.setup_dir) {
             (None, _) => {
@@ -1101,7 +1169,7 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
                     unowned,
                     test_commands,
                 )?);
-                r.session(SessionSpec {
+                let ran = r.session(SessionSpec {
                     label: "adopt".into(),
                     task: None,
                     arm,
@@ -1111,15 +1179,11 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
                     prompt: ADOPT_PROMPT.into(),
                     path: path_on.clone(),
                 })?;
+                if !ran {
+                    return fail(&r, notes, interrupted_error());
+                }
                 dir
             }
-        };
-        let fail = |r: &Runner, notes: SetupNotes, err: anyhow::Error| -> Result<Summary> {
-            write_summary(
-                plan,
-                &grade::summarize(plan, &r.records, r.stopped, &r.unknown_cost, notes),
-            )?;
-            Err(err)
         };
         if let Some((_, _, unowned, tests, _)) = fixture {
             if plan.setup_dir.is_none() {
@@ -1218,6 +1282,9 @@ pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary> {
     }
     let summary = grade::summarize(plan, &r.records, r.stopped, &r.unknown_cost, notes);
     write_summary(plan, &summary)?;
+    if INTERRUPTED.load(Ordering::SeqCst) {
+        return Err(interrupted_error());
+    }
     Ok(summary)
 }
 
@@ -1538,13 +1605,25 @@ pub fn next_check(stewards: &Path, dir: &Path) -> Result<NextCheck> {
     })
 }
 
-/// Kills every process whose working directory is under `dir` (from Linux `/proc/<pid>/cwd`),
-/// again until none is left or 10 s pass. `None` where there is no `/proc`.
+/// Kills every process whose working directory is under `dir`, or whose `HERMES_HOME` is a path
+/// under it (Hermes's gateway daemon, which a session starts elsewhere; no other variable is read,
+/// so a process that merely visited `dir`, with it in `OLDPWD`, is left alone), from Linux
+/// `/proc/<pid>/cwd` and `/proc/<pid>/environ`, again until none is left or 10 s pass. `None`
+/// where there is no `/proc`.
 pub fn kill_leftovers(dir: &Path) -> Result<Option<Leftovers>> {
+    use std::os::unix::ffi::OsStrExt;
     if !Path::new("/proc/self/cwd").exists() {
         return Ok(None);
     }
     let dir = dir.canonicalize()?;
+    let in_env = |pid: u32| {
+        std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| {
+            env.split(|b| *b == 0).any(|kv| {
+                kv.strip_prefix(b"HERMES_HOME=")
+                    .is_some_and(|v| Path::new(OsStr::from_bytes(v)).starts_with(&dir))
+            })
+        })
+    };
     let me = std::process::id();
     let mut killed = HashSet::new();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1556,7 +1635,7 @@ pub fn kill_leftovers(dir: &Path) -> Result<Option<Leftovers>> {
             .filter(|&pid| {
                 pid != me
                     && std::fs::read_link(format!("/proc/{pid}/cwd"))
-                        .is_ok_and(|cwd| cwd.starts_with(&dir))
+                        .is_ok_and(|cwd| cwd.starts_with(&dir) || in_env(pid))
             })
             .collect();
         if pids.is_empty() || Instant::now() >= deadline {
@@ -1888,12 +1967,18 @@ pub struct Flags<'a> {
 
 pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
     let h = harness::by_name(f.harness.unwrap_or("pi"))?;
-    if !matches!(h.name, "pi" | "claude-code") {
+    if !matches!(h.name, "pi" | "claude-code" | "hermes") {
         return not_implemented(&format!("eval --harness {}", h.name));
     }
-    if h.name == "claude-code" && f.max_cost.is_some() {
+    if h.name != "pi" && f.max_cost.is_some() {
+        return Err(usage(format!(
+            "--max-cost needs a cost figure, and {}'s is not used (its cost_usd is null)",
+            h.name
+        )));
+    }
+    if h.name == "hermes" && !f.model.is_some_and(|m| m.contains('/')) {
         return Err(usage(
-            "--max-cost needs a cost figure, and Claude Code's is not used (its cost_usd is null)"
+            "--harness hermes needs --model <provider>/<model>, such as deepseek/deepseek-flash"
                 .into(),
         ));
     }
@@ -1946,6 +2031,10 @@ pub fn run(g: &Global, f: Flags) -> Result<ExitCode> {
         let mut pi = pi::Pi::find(&path, limit)?;
         let note = pi.isolate(&work.join("a"), f.thinking)?;
         (Box::new(pi), note, f.thinking)
+    } else if h.name == "hermes" {
+        let mut hermes = hermes::Hermes::find(&path, limit)?;
+        let note = hermes.isolate(&work.join("a"))?;
+        (Box::new(hermes), note, f.thinking)
     } else {
         let mut claude = claude::ClaudeCode::find(&path, limit)?;
         let note = claude.isolate(&work.join("a"))?;

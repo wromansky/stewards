@@ -25,6 +25,9 @@ pub struct Job {
     /// The snapshot tree of the job's repo that `changed` was computed against.
     pub snapshot: String,
     pub reasons: Vec<String>,
+    /// The units a reviewer job's brief covers; other jobs omit it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<String>,
     pub changed: Vec<String>,
     pub brief_path: Option<PathBuf>,
     /// What to give the subagent for `brief_path`: `brief::handoff`.
@@ -117,7 +120,7 @@ pub fn next(ws: &Workspace, task: Option<&str>, briefs: Briefs, roles: bool) -> 
             };
             if !due.is_empty() {
                 let (task, snapshot) = (&first.job.task, &first.job.snapshot);
-                jobs.push(reviewer_job(ws, repo, &due, task, snapshot, briefs)?);
+                jobs.extend(reviewer_jobs(ws, repo, &due, task, snapshot, briefs)?);
             }
             for j in of_repo {
                 if j.job.role == Role::Maintainer && j.job.reasons == [NEVER_REVIEWED] {
@@ -182,15 +185,17 @@ fn write_role_brief(repo: &Repo, unit: Option<&str>, briefs: Briefs, job: &mut J
         return Ok(());
     }
     let text = brief::build(repo, unit, job.role, Mode::Review, &job.task, &job.snapshot)?;
-    place_brief(repo, unit, briefs, job, &text)
+    place_brief(repo, unit, None, briefs, job, &text)
 }
 
-/// Fills `job`'s brief path and handoff as `briefs` says, writing the brief `text`. With
-/// `KeepWaiting`, a brief on disk whose bytes are exactly `text` (same task, units, snapshot, and
-/// body) is left as it is and the job marked waiting; anything else there is rewritten.
+/// Fills `job`'s brief path and handoff as `briefs` says, writing the brief `text` (review brief
+/// `n` of a round). With `KeepWaiting`, a brief on disk whose bytes are exactly `text` (same task,
+/// units, snapshot, and body) is left as it is and the job marked waiting; anything else there is
+/// rewritten.
 fn place_brief(
     repo: &Repo,
     unit: Option<&str>,
+    n: Option<usize>,
     briefs: Briefs,
     job: &mut Job,
     text: &str,
@@ -198,7 +203,7 @@ fn place_brief(
     if briefs == Briefs::None {
         return Ok(());
     }
-    let rel = brief::rel_path(unit, job.role, None, &job.snapshot);
+    let rel = brief::rel_path(unit, job.role, n, &job.snapshot);
     job.waiting = briefs == Briefs::KeepWaiting
         && repo
             .read(&rel, text.len() as u64)
@@ -206,7 +211,7 @@ fn place_brief(
     let path = if job.waiting {
         repo.root.join(rel)
     } else {
-        brief::write_text(repo, unit, job.role, None, &job.snapshot, text)?
+        brief::write_text(repo, unit, job.role, n, &job.snapshot, text)?
     };
     job.handoff = Some(brief::handoff(&path)?);
     job.brief_path = Some(path);
@@ -268,59 +273,64 @@ fn due_for_review(jobs: &[&RoleJob]) -> Vec<Due> {
     due
 }
 
-/// The one reviewer job of `repo` for the `due` units its review brief covers; the units over the
-/// review budget are named as next round and stay due.
-fn reviewer_job(
+/// The reviewer jobs of `repo` for the `due` units, one per review brief of the round: every due
+/// unit in exactly one, in units.toml order, as many briefs as the review budget needs.
+fn reviewer_jobs(
     ws: &Workspace,
     repo: &Repo,
     due: &[Due],
     task: &str,
     snapshot: &str,
     briefs: Briefs,
-) -> Result<Job> {
+) -> Result<Vec<Job>> {
     let units: Vec<DueUnit> = due
         .iter()
         .map(|d| (d.unit.clone(), d.reasons.clone()))
         .collect();
-    let (text, pack) = brief::build_review(repo, &units, task, snapshot)?;
-    let covered = &due[..pack.units.len()];
-    let mut reasons: Vec<String> = covered
-        .iter()
-        .flat_map(|d| {
-            let name = ws.display_name(repo, &d.unit);
-            d.reasons.iter().map(move |r| format!("{name}: {r}"))
-        })
-        .collect();
-    if !pack.next_round.is_empty() {
-        let later: Vec<String> = pack
-            .next_round
+    let built = brief::build_review(repo, &units, task, snapshot)?;
+    let mut jobs = vec![];
+    for (i, (text, pack)) in built.iter().enumerate() {
+        let covered: Vec<&Due> = pack
+            .units
             .iter()
-            .map(|u| ws.display_name(repo, u))
+            .filter_map(|p| due.iter().find(|d| p.unit.as_ref() == Some(&d.unit)))
             .collect();
-        reasons.push(format!(
-            "next round, over the review budget: {}",
-            later.join(", ")
-        ));
+        let mut job = Job {
+            unit: String::new(),
+            role: Role::Reviewer,
+            task: task.to_string(),
+            snapshot: snapshot.to_string(),
+            reasons: covered
+                .iter()
+                .flat_map(|d| {
+                    let name = ws.display_name(repo, &d.unit);
+                    d.reasons.iter().map(move |r| format!("{name}: {r}"))
+                })
+                .collect(),
+            units: covered
+                .iter()
+                .map(|d| ws.display_name(repo, &d.unit))
+                .collect(),
+            changed: covered.iter().flat_map(|d| d.changed.clone()).collect(),
+            brief_path: None,
+            handoff: None,
+            waiting: false,
+            command: if ws.is_workspace {
+                format!("stewards --repo {} brief --role reviewer", repo.name)
+            } else {
+                "stewards brief --role reviewer".into()
+            },
+            debt_added: covered.iter().flat_map(|d| d.debt_added.clone()).collect(),
+        };
+        place_brief(repo, None, Some(i + 1), briefs, &mut job, text)?;
+        jobs.push(job);
     }
-    let mut job = Job {
-        unit: String::new(),
-        role: Role::Reviewer,
-        task: task.to_string(),
-        snapshot: snapshot.to_string(),
-        reasons,
-        changed: covered.iter().flat_map(|d| d.changed.clone()).collect(),
-        brief_path: None,
-        handoff: None,
-        waiting: false,
-        command: if ws.is_workspace {
-            format!("stewards --repo {} brief --role reviewer", repo.name)
-        } else {
-            "stewards brief --role reviewer".into()
-        },
-        debt_added: covered.iter().flat_map(|d| d.debt_added.clone()).collect(),
-    };
-    place_brief(repo, None, briefs, &mut job, &text)?;
-    Ok(job)
+    if briefs != Briefs::None {
+        for rel in brief::files_past(&repo.root, None, Role::Reviewer, built.len())? {
+            repo.remove(&rel)?;
+        }
+    }
+    Ok(jobs)
 }
 
 /// The snapshot, task, and the stamped units of `repo` due for review (units.toml order) with
@@ -391,6 +401,7 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
                 task: task.clone(),
                 snapshot: snapshot.clone(),
                 reasons,
+                units: vec![],
                 changed,
                 brief_path: None,
                 handoff: None,
@@ -513,6 +524,7 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
                 "units changed since their stamps: {}",
                 names.join(", ")
             )],
+            units: vec![],
             changed: moved.iter().flat_map(|(.., c)| c.clone()).collect(),
             brief_path: None,
             handoff: None,
@@ -630,7 +642,11 @@ impl Human for NextReport {
         for j in &self.jobs {
             let who = format!("{} {}", j.unit, j.role.as_str());
             let reasons = one_line(&j.reasons.join("; "));
-            out.push(format!("- `{}`: {reasons}", who.trim()));
+            let covers = match j.units.as_slice() {
+                [] => String::new(),
+                units => format!(" (units {})", one_line(&units.join(", "))),
+            };
+            out.push(format!("- `{}`{covers}: {reasons}", who.trim()));
             if let Some(h) = &j.handoff {
                 let waiting = if j.waiting { " (waiting)" } else { "" };
                 out.push(format!("  handoff{waiting}: {}", one_line(h)));

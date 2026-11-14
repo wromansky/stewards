@@ -14,7 +14,6 @@ pub mod model;
 pub mod next;
 pub mod output;
 pub mod pack;
-pub mod render;
 pub mod review;
 pub mod route;
 pub mod status;

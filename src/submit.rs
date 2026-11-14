@@ -75,9 +75,12 @@ pub struct Submitted {
     /// A review's verdict per unit (the reviewer's, or a maintainer review's one unit).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     units: Vec<UnitVerdict>,
-    /// A review's findings, for the agent that made the change to fix.
+    /// A review's blocking findings, for the agent that made the change to fix.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     findings: Vec<ShownFinding>,
+    /// A review's non-blocking findings: remarks that do not hold up approval or make a fix task.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<ShownFinding>,
     #[serde(flatten)]
     developer: Option<DeveloperReport>,
     #[serde(skip)]
@@ -93,6 +96,12 @@ pub(crate) struct ShownFinding {
     pub(crate) line: i64,
     pub(crate) cut: String,
     pub(crate) replace_with: String,
+    /// The reviewer's why, when it contested the agent's answer to this finding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) contested: Option<String>,
+    /// What to pass `review --answer` before the reason, when the finding can be answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) answer: Option<String>,
 }
 
 impl ShownFinding {
@@ -103,6 +112,23 @@ impl ShownFinding {
             line: f.line,
             cut: f.cut.clone(),
             replace_with: f.replace_with.clone(),
+            contested: None,
+            answer: None,
+        }
+        .capped()
+    }
+
+    /// Finding `i` of `unit`'s stored findings, with its answer prefix while it can be answered.
+    fn stored(unit: &str, stored: &[StoredFinding], i: usize) -> ShownFinding {
+        let f = &stored[i];
+        ShownFinding {
+            unit: unit.to_string(),
+            file: f.file.clone(),
+            line: f.line,
+            cut: f.cut.clone(),
+            replace_with: f.replace_with.clone(),
+            contested: f.contested.clone(),
+            answer: f.answerable().then(|| answer_prefix(unit, stored, i)),
         }
         .capped()
     }
@@ -115,7 +141,26 @@ impl ShownFinding {
         check_owned(&mut p, "file", &self.file, root, &self.unit, router);
         check_text(&mut p, "cut", &self.cut, PROSE_CAP, false);
         check_text(&mut p, "replace_with", &self.replace_with, PROSE_CAP, false);
+        if let Some(why) = &self.contested {
+            check_text(&mut p, "contested", why, PROSE_CAP, false);
+        }
         p.is_empty()
+    }
+
+    /// The finding on one line after `lead`: where, what to cut and the replacement, the
+    /// reviewer's why when contested, and the `review --answer` prefix when it can be answered.
+    pub(crate) fn line_text(&self, lead: &str) -> String {
+        let mut line = format!(
+            "{lead} {} {}:{}: cut {}; replace with {}",
+            self.unit, self.file, self.line, self.cut, self.replace_with
+        );
+        if let Some(why) = &self.contested {
+            line += &format!(" (contested: {why})");
+        }
+        if let Some(prefix) = &self.answer {
+            line += &format!(" (to answer instead: --answer \"{prefix}<reason>\")");
+        }
+        line
     }
 
     /// Each text on one line and cut to what submit prints.
@@ -126,6 +171,8 @@ impl ShownFinding {
             file: shown(&self.file),
             cut: shown(&self.cut),
             replace_with: shown(&self.replace_with),
+            contested: self.contested.as_deref().map(shown),
+            answer: self.answer.as_deref().map(shown),
             ..self
         }
     }
@@ -169,12 +216,8 @@ impl Human for Submitted {
                 .map(|p| format!("tester brief: {}", p.display())),
         );
         out.extend(self.unit_proposals.iter().map(proposal_line));
-        out.extend(self.findings.iter().map(|f| {
-            one_line(&format!(
-                "- {} {}:{}: cut {}; replace with {}",
-                f.unit, f.file, f.line, f.cut, f.replace_with
-            ))
-        }));
+        out.extend(self.findings.iter().map(|f| one_line(&f.line_text("-"))));
+        out.extend(self.notes.iter().map(|f| one_line(&f.line_text("- note"))));
         out.extend(self.warning.as_ref().map(|w| format!("warning: {w}")));
         out.join("\n")
     }
@@ -227,7 +270,7 @@ pub(crate) fn submit_file(
     // older snapshot's brief finds none; a developer's must, since it carries the task number.
     let (brief_rel, n) = match answered_job(unit, role, file)? {
         Some(j) => (brief::rel_path(unit, role, j.n, &j.snap), j.n),
-        None => (brief::find(&repo.root, unit, role, None)?, None),
+        None => brief::find(&repo.root, unit, role)?,
     };
     let header = brief::read_header(&repo.root.join(&brief_rel))?;
     check_header(&repo.root, unit, role, n, &header, &brief_rel)?;
@@ -270,6 +313,7 @@ pub(crate) fn submit_file(
         files.push(format!(".stewards/units/{u}.test.toml"));
         if matches!(role, Role::Maintainer | Role::Reviewer) {
             files.push(tasks_rel(u));
+            files.push(findings_rel(u));
         }
         // a bad docs_path is the documenter's own error, reported after the answer's
         if matches!(role, Role::Documenter | Role::Reviewer)
@@ -299,6 +343,7 @@ pub(crate) fn submit_file(
         harness: harness::detect().map(|h| h.name),
         out_of_lane: out.developer.as_ref().map(|d| d.out_of_lane.len()),
         units: header.units.as_ref().map(Vec::len),
+        notes: (!out.units.is_empty()).then_some(out.notes.len()),
         timestamp: telemetry::rfc3339(SystemTime::now()),
     };
     if let Err(e) = telemetry::append(repo, &record) {
@@ -328,7 +373,7 @@ fn answered_job(unit: Option<&str>, role: Role, file: &Path) -> Result<Option<br
         .filter(|j| {
             j.unit.as_deref() == unit
                 && j.role == role
-                && j.n.is_some_and(|n| n > 0) == (role == Role::Developer)
+                && j.n.is_some_and(|n| n > 0) == matches!(role, Role::Developer | Role::Reviewer)
         });
     if job.is_none()
         && let (Some(unit), Role::Developer) = (unit, role)
@@ -449,7 +494,15 @@ fn maintainer(
                 check_first_review(&mut problems, &a.verdict, &a.findings);
                 None
             } else {
-                check_review(&mut problems, &a.verdict, &a.findings, root, unit, &router)
+                check_review(
+                    &mut problems,
+                    &a.verdict,
+                    &a.findings,
+                    &[],
+                    root,
+                    unit,
+                    &router,
+                )
             };
             (
                 &a.card_patch,
@@ -522,21 +575,27 @@ fn maintainer(
             stamped: approve,
             check_reported: None,
         });
-        out.findings = a
-            .findings
+        let (blocking, notes): (Vec<_>, Vec<_>) = a.findings.iter().partition(|f| f.blocking);
+        out.findings = blocking
             .iter()
             .map(|f| ShownFinding::new(unit, f))
             .collect();
+        out.notes = notes.iter().map(|f| ShownFinding::new(unit, f)).collect();
     }
+    let notes = match out.notes.len() {
+        0 => String::new(),
+        n => format!("; {}", count(n, "note")),
+    };
     out.summary = match &answer {
         Answer::MaintainerReview(_) if approve => {
             let short: String = header.snapshot.chars().take(7).collect();
-            format!("{unit} maintainer: approve; {card_line}; stamped {short}")
+            format!("{unit} maintainer: approve; {card_line}{notes}; stamped {short}")
         }
         Answer::MaintainerReview(a) => {
             let list: Vec<String> = a
                 .findings
                 .iter()
+                .filter(|f| f.blocking)
                 .map(|f| format!("{} {}:{}", rung(f), f.file, f.line))
                 .collect();
             let mut findings = count(list.len(), "finding");
@@ -545,7 +604,7 @@ fn maintainer(
             }
             brief::check_root(root)?;
             format!(
-                "{unit} maintainer: changes; {findings}; {card_line}; next: stewards -C {} brief {unit} --role developer",
+                "{unit} maintainer: changes; {findings}{notes}; {card_line}; next: stewards -C {} brief {unit} --role developer",
                 brief::shell_quote(root)
             )
         }
@@ -578,6 +637,12 @@ fn maintainer(
         edits.push((card_rel.clone(), Some(text)));
     }
     edits.extend(task_edits(root, unit, tasks.as_ref())?);
+    // a stamp settles the unit's answered findings
+    let findings_rel = findings_rel(unit);
+    if approve {
+        checked.push(&findings_rel);
+        edits.push((findings_rel.clone(), None));
+    }
     if let Some(text) = tester_text {
         let rel = brief::rel_path(Some(unit), Role::Tester, None, &snapshot);
         out.tester_brief = Some(root.join(&rel));
@@ -646,30 +711,35 @@ fn anchor_alive(
         && matches!(resolve(root, a), Resolution::Found { .. })
 }
 
-/// Checks a review's verdict against its findings (`approve` has none, `changes` at least one)
-/// and each finding of `unit`; returns a `changes` review's fix task: the findings as one task
-/// whose lane is the files they name.
+/// Checks a review's verdict against its blocking findings and the answered findings it
+/// `contested` (`approve` has none, `changes` at least one) and each finding of `unit`; returns a
+/// `changes` review's fix task: the blocking and contested findings as one task whose lane is the
+/// files they name. A finding with `blocking: false` is a note: it never holds up approval and
+/// is not in the fix task.
 fn check_review(
     problems: &mut Problems,
     verdict: &Verdict,
     findings: &[types::Finding],
+    contested: &[StoredFinding],
     root: &Path,
     unit: &str,
     router: &Router,
 ) -> Option<types::Task> {
-    let empty = findings.is_empty();
-    if (*verdict == Verdict::Approve) != empty {
-        let (problem, example) = if empty {
+    let blocking: Vec<&types::Finding> = findings.iter().filter(|f| f.blocking).collect();
+    let none = blocking.is_empty() && contested.is_empty();
+    if (*verdict == Verdict::Approve) != none {
+        let (problem, example) = if none {
             (
-                "changes with no findings; a changes verdict needs at least one finding"
+                "changes with no blocking finding; a changes verdict needs at least one"
                     .to_string(),
                 "\"approve\"",
             )
         } else {
             (
                 format!(
-                    "approve with {}; an approval has no findings",
-                    count(findings.len(), "finding")
+                    "approve with {} and {}; an approval has no blocking finding",
+                    count(blocking.len(), "blocking finding"),
+                    count(contested.len(), "contested finding")
                 ),
                 "\"changes\"",
             )
@@ -700,28 +770,35 @@ fn check_review(
     }
     let fix = (*verdict == Verdict::Changes).then(|| {
         let mut files: Vec<String> = vec![];
-        for f in findings {
-            if !files.contains(&f.file) {
-                files.push(f.file.clone());
+        let mut lines: Vec<String> = vec![];
+        for f in &blocking {
+            files.push(f.file.clone());
+            lines.push(one_line(&format!(
+                "{}:{} {}: cut {}; replace with {}",
+                f.file,
+                f.line,
+                rung(f),
+                f.cut,
+                f.replace_with
+            )));
+        }
+        for c in contested {
+            files.push(c.file.clone());
+            lines.push(one_line(&format!(
+                "{}:{} contested: cut {}; replace with {}",
+                c.file, c.line, c.cut, c.replace_with
+            )));
+        }
+        let mut lane: Vec<String> = vec![];
+        for f in files {
+            if !lane.contains(&f) {
+                lane.push(f);
             }
         }
-        let lines: Vec<String> = findings
-            .iter()
-            .map(|f| {
-                one_line(&format!(
-                    "{}:{} {}: cut {}; replace with {}",
-                    f.file,
-                    f.line,
-                    rung(f),
-                    f.cut,
-                    f.replace_with
-                ))
-            })
-            .collect();
         types::Task {
             title: "fix review findings".into(),
             change: lines.join("\n"),
-            files,
+            files: lane,
             check: None,
         }
     });
@@ -819,7 +896,7 @@ fn task_edits(
     let text = tasks.map(serde_json::to_string_pretty).transpose()?;
     let mut edits = vec![(tasks_rel(unit), text)];
     if tasks.is_none() {
-        let files = brief::developer_files_past(root, unit, 0)?;
+        let files = brief::files_past(root, Some(unit), Role::Developer, 0)?;
         edits.extend(files.into_iter().map(|rel| (rel, None)));
     }
     Ok(edits)
@@ -1223,7 +1300,7 @@ pub fn reviewer(
     };
     // an answer to an older review brief, named otherwise, must not stamp the newer one
     if a.snapshot != header.snapshot {
-        let brief_rel = brief::rel_path(None, Role::Reviewer, None, &header.snapshot);
+        let brief_rel = brief::rel_path(None, Role::Reviewer, header.n, &header.snapshot);
         bail!(CliError::new(
             "no_brief",
             format!(
@@ -1259,9 +1336,42 @@ pub fn reviewer(
             let unit = u.unit.as_str();
             let old = loaded.card(unit);
             let (card, _) = apply_patch(&old, u.card_patch.as_ref());
+            let stored = read_findings(repo, unit)?;
             let mut fix = None;
+            // each contested entry names one answered finding the pack showed, by file and line
+            let mut contested: Vec<StoredFinding> = vec![];
+            let mut taken: Vec<usize> = vec![];
             prefixed(&mut p, &format!("units[{k}]."), |p| {
-                fix = check_review(p, &u.verdict, &u.findings, root, unit, &router);
+                let claims = u.contested.as_deref().unwrap_or_default();
+                check_list(p, "contested", claims.len());
+                for (j, c) in claims.iter().enumerate() {
+                    check_text(p, &format!("contested[{j}].why"), &c.why, PROSE_CAP, false);
+                    let at = (0..stored.len()).find(|i| {
+                        let s = &stored[*i];
+                        s.pending() && s.file == c.file && s.line == c.line && !taken.contains(i)
+                    });
+                    match at {
+                        Some(i) => {
+                            taken.push(i);
+                            contested.push(StoredFinding {
+                                contested: Some(c.why.clone()),
+                                ..stored[i].clone()
+                            });
+                        }
+                        None => p.push((
+                            "answer_parse_failed",
+                            FieldError {
+                                field: format!("contested[{j}]"),
+                                problem: format!(
+                                    "`{unit}` has no answered finding at {}:{}; contest only a finding the pack lists as answered",
+                                    c.file, c.line
+                                ),
+                                example: "null".into(),
+                            },
+                        )),
+                    }
+                }
+                fix = check_review(p, &u.verdict, &u.findings, &contested, root, unit, &router);
                 let alive = |a: &model::Anchor| anchor_alive(root, &entries, &router, unit, a);
                 check_patch(p, u.card_patch.as_ref(), &old, alive);
                 // the brief shows the unit's and the repo's test commands: with one, run it
@@ -1334,7 +1444,7 @@ pub fn reviewer(
                     None => {}
                 }
             });
-            reviews.push((u, old, card, fix));
+            reviews.push((u, old, card, fix, stored, contested));
             continue;
         };
         p.push((
@@ -1370,9 +1480,10 @@ pub fn reviewer(
     let mut paged = vec![];
     let mut parts = vec![];
     let mut findings = vec![];
+    let mut notes = vec![];
     let mut verdicts = vec![];
     let short: String = header.snapshot.chars().take(7).collect();
-    for (u, old, mut card, fix) in reviews {
+    for (u, old, mut card, fix, stored, contested) in reviews {
         let unit = u.unit.as_str();
         let duplicates = apply_bugs(&mut card, u.bugs.as_deref().unwrap_or_default());
         let mut part = vec![card_line(&old, &card)];
@@ -1400,11 +1511,36 @@ pub fn reviewer(
             r.documenter = Some(header.snapshot.clone());
             card.reviewed = Some(r);
             part.push(format!("stamped {short}"));
-        } else {
-            part.insert(0, count(u.findings.len(), "finding"));
-            part.push("not stamped".into());
-            findings.extend(u.findings.iter().map(|f| ShownFinding::new(unit, f)));
         }
+        let (kept, accepted) = settle_findings(&stored, &contested, &u.findings);
+        if !accepted.is_empty() {
+            part.push(format!("accepted answers: {}", accepted.join(", ")));
+        }
+        let rel = findings_rel(unit);
+        if u.verdict == Verdict::Approve {
+            // a stamp settles the unit's findings
+            edits.push((rel.clone(), None));
+        } else {
+            let shown: Vec<ShownFinding> = (0..kept.len())
+                .filter(|&i| !kept[i].waived)
+                .map(|i| ShownFinding::stored(unit, &kept, i))
+                .collect();
+            part.insert(0, count(shown.len(), "finding"));
+            part.push("not stamped".into());
+            findings.extend(shown);
+            edits.push((rel.clone(), Some(serde_json::to_string_pretty(&kept)?)));
+        }
+        checked.push(rel);
+        let unit_notes: Vec<ShownFinding> = u
+            .findings
+            .iter()
+            .filter(|f| !f.blocking)
+            .map(|f| ShownFinding::new(unit, f))
+            .collect();
+        if !unit_notes.is_empty() {
+            part.push(count(unit_notes.len(), "note"));
+        }
+        notes.extend(unit_notes);
         let card_text = toml::to_string(&card)?;
         if card_text != toml::to_string(&old)? {
             let rel = format!(".stewards/units/{unit}.toml");
@@ -1444,15 +1580,65 @@ pub fn reviewer(
         }
     }
     let checked: Vec<&str> = checked.iter().map(String::as_str).collect();
-    let brief_rel = brief::rel_path(None, Role::Reviewer, None, &header.snapshot);
+    let brief_rel = brief::rel_path(None, Role::Reviewer, header.n, &header.snapshot);
     write_remove_and_retire(repo, before, &checked, &edits, &brief_rel)?;
     Ok(Submitted {
         summary: one_line(&format!("reviewer: {}", parts.join(", "))),
         units: verdicts,
         findings,
+        notes,
         pulled_anchors: a.pulled_anchors,
         ..Default::default()
     })
+}
+
+/// A unit's stored findings after a reviewer's round, and the `<file>:<line>` of each answer it
+/// accepted: the answers it did not contest are accepted (waived until the stamp), the
+/// `contested` ones are blocking again, and each blocking finding of `findings` is open, unless a
+/// contested finding at its file and line was answered already.
+fn settle_findings(
+    stored: &[StoredFinding],
+    contested: &[StoredFinding],
+    findings: &[types::Finding],
+) -> (Vec<StoredFinding>, Vec<String>) {
+    let mut kept = vec![];
+    let mut accepted = vec![];
+    let mut taken = contested.to_vec();
+    for s in stored {
+        if s.waived {
+            kept.push(s.clone());
+        } else if s.pending() {
+            match taken
+                .iter()
+                .position(|c| c.file == s.file && c.line == s.line)
+            {
+                Some(at) => kept.push(taken.remove(at)),
+                None => {
+                    accepted.push(format!("{}:{}", s.file, s.line));
+                    kept.push(StoredFinding {
+                        waived: true,
+                        ..s.clone()
+                    });
+                }
+            }
+        }
+    }
+    let answered: Vec<StoredFinding> = kept.iter().chain(stored).cloned().collect();
+    for f in findings.iter().filter(|f| f.blocking) {
+        let before = answered
+            .iter()
+            .find(|s| s.contested.is_some() && s.file == f.file && s.line == f.line);
+        kept.push(StoredFinding {
+            file: f.file.clone(),
+            line: f.line,
+            cut: f.cut.clone(),
+            replace_with: f.replace_with.clone(),
+            answer: before.and_then(|s| s.answer.clone()),
+            contested: before.and_then(|s| s.contested.clone()),
+            waived: false,
+        });
+    }
+    (kept, accepted)
 }
 
 /// Runs `check` on a list of its own and adds its problems to `out`, `prefix` before each field.
@@ -1966,6 +2152,176 @@ fn check_common(out: &mut Problems, pulled: &[String], notes: &str) {
         check_text(out, &format!("pulled_anchors[{i}]"), a, LINE_CAP, true);
     }
     check_text(out, "notes", notes, PROSE_CAP, false);
+}
+
+/// A blocking finding of a unit's last reviewer `changes` round, kept in `findings_rel` until the
+/// unit is stamped, with what became of the agent's answer to it (`review --answer`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredFinding {
+    pub file: String,
+    pub line: i64,
+    pub cut: String,
+    pub replace_with: String,
+    /// The agent's reason for not applying it; given once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    /// The reviewer's why when it contested the answer: blocking again, and not answerable again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contested: Option<String>,
+    /// The reviewer accepted the answer: not raised again until the unit is stamped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waived: bool,
+}
+
+impl StoredFinding {
+    /// Answered and not yet judged by a reviewer.
+    pub fn pending(&self) -> bool {
+        self.answer.is_some() && self.contested.is_none() && !self.waived
+    }
+
+    /// Open to `review --answer`: not answered yet.
+    pub fn answerable(&self) -> bool {
+        self.answer.is_none()
+    }
+}
+
+/// The tool-owned list of a unit's last review findings: `StoredFinding`s.
+pub(crate) fn findings_rel(unit: &str) -> String {
+    format!(".stewards/briefs/{unit}-findings.json")
+}
+
+/// The location `review --answer` names finding `i` of `stored` by: `<file>:<line>`, with `#<k>`
+/// (k from 1) when the unit has more than one finding at that file and line.
+pub(crate) fn finding_location(stored: &[StoredFinding], i: usize) -> String {
+    let f = &stored[i];
+    let same = |o: &&StoredFinding| o.file == f.file && o.line == f.line;
+    let loc = format!("{}:{}", f.file, f.line);
+    if stored.iter().filter(same).count() < 2 {
+        return loc;
+    }
+    format!("{loc}#{}", stored[..=i].iter().filter(same).count())
+}
+
+/// What an agent copies to answer finding `i` of `unit`'s `stored` findings:
+/// `<unit>: <location>: `, its reason to follow.
+pub(crate) fn answer_prefix(unit: &str, stored: &[StoredFinding], i: usize) -> String {
+    format!("{unit}: {}: ", finding_location(stored, i))
+}
+
+/// The unit's stored findings, strictly parsed and checked again against the repo as it is now
+/// (the file sits where subagents can write); none when the file is absent.
+pub(crate) fn read_findings(repo: &Repo, unit: &str) -> Result<Vec<StoredFinding>> {
+    let rel = findings_rel(unit);
+    let path = safe_path(&repo.root, &rel, false)?;
+    let unusable = |why: String| -> anyhow::Error {
+        CliError::new(
+            "usage",
+            format!("{rel} is not a usable findings list: {why}"),
+            format!("remove {rel}; the next review raises its findings again"),
+        )
+        .into()
+    };
+    match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Ok(m) if m.is_file() && m.len() <= ANSWER_BYTES => {}
+        _ => return Err(unusable("not a regular file of at most 256 KiB".into())),
+    }
+    let text = std::fs::read_to_string(&path).map_err(|_| unusable("cannot read it".into()))?;
+    let stored: Vec<StoredFinding> =
+        serde_json::from_str(&text).map_err(|_| unusable("not a JSON list of findings".into()))?;
+    let loaded = repo.loaded()?;
+    let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+    let mut p = vec![];
+    check_list(&mut p, "findings", stored.len());
+    for (i, f) in stored.iter().enumerate() {
+        let at = |field: &str| format!("[{i}].{field}");
+        check_text(&mut p, &at("file"), &f.file, LINE_CAP, true);
+        check_owned(&mut p, &at("file"), &f.file, &repo.root, unit, &router);
+        check_text(&mut p, &at("cut"), &f.cut, PROSE_CAP, false);
+        check_text(
+            &mut p,
+            &at("replace_with"),
+            &f.replace_with,
+            PROSE_CAP,
+            false,
+        );
+        for (field, text) in [("answer", &f.answer), ("contested", &f.contested)] {
+            if let Some(t) = text {
+                check_text(&mut p, &at(field), t, PROSE_CAP, false);
+            }
+        }
+    }
+    match p.first() {
+        Some((_, e)) => Err(unusable(format!("{} fails its check", e.field))),
+        None => Ok(stored),
+    }
+}
+
+/// `stored` with `reason` recorded as the agent's answer to the finding at `location` (as
+/// `finding_location` gives it); `shown` names the unit as the agent wrote it. `usage` when there
+/// is no such finding, or it was answered already (a contested one is to be applied, or the task
+/// changed).
+pub(crate) fn answer_finding(
+    mut stored: Vec<StoredFinding>,
+    shown: &str,
+    location: &str,
+    reason: &str,
+) -> Result<Vec<StoredFinding>> {
+    let usage = |message: String, fix: String| -> anyhow::Error {
+        CliError::new("usage", message, fix).into()
+    };
+    let Some(i) = (0..stored.len()).find(|&i| finding_location(&stored, i) == location) else {
+        let open: Vec<String> = (0..stored.len())
+            .filter(|&i| stored[i].answerable())
+            .map(|i| answer_prefix(shown, &stored, i))
+            .collect();
+        return Err(usage(
+            format!("unit `{shown}` has no finding at `{location}` from its last review"),
+            if open.is_empty() {
+                format!("unit `{shown}` has no finding left to answer")
+            } else {
+                format!("start the answer with one of: {}", open.join(" | "))
+            },
+        ));
+    };
+    let f = &stored[i];
+    if f.contested.is_some() {
+        return Err(usage(
+            format!(
+                "a reviewer contested the answer to `{shown}: {location}`; it cannot be answered again"
+            ),
+            "apply the finding, or change the task with `stewards review --task \"<the change>\"`"
+                .into(),
+        ));
+    }
+    if !f.answerable() {
+        return Err(usage(
+            format!("the finding at `{shown}: {location}` was answered already"),
+            "a finding is answered once: wait for the reviewer's judgment, or apply it".into(),
+        ));
+    }
+    let reason = reason.trim();
+    let mut p = vec![];
+    check_text(&mut p, "reason", reason, PROSE_CAP, false);
+    if reason.is_empty() || !p.is_empty() {
+        return Err(usage(
+            format!("the answer to `{shown}: {location}` needs a reason in plain text"),
+            format!(
+                "pass `--answer \"{shown}: {location}: <why you will not apply it>\"`, at most {PROSE_CAP} characters"
+            ),
+        ));
+    }
+    stored[i].answer = Some(reason.to_string());
+    Ok(stored)
+}
+
+/// Writes the unit's stored findings.
+pub(crate) fn write_findings(repo: &Repo, unit: &str, stored: &[StoredFinding]) -> Result<()> {
+    repo.write(
+        &findings_rel(unit),
+        serde_json::to_string_pretty(stored)?.as_bytes(),
+    )
 }
 
 /// The tool-owned task list a maintainer submit writes for the unit's developers.

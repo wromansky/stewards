@@ -93,6 +93,15 @@ impl TypeBuilder {
         )
     }
 
+    /// Access the `ContestedFinding` class builder.
+    pub fn ContestedFinding(&self) -> ContestedFindingClassBuilder {
+        ContestedFindingClassBuilder::new(
+            self.inner
+                .get_class("ContestedFinding")
+                .expect("class ContestedFinding is defined in schema"),
+        )
+    }
+
     /// Access the `Decision` class builder.
     pub fn Decision(&self) -> DecisionClassBuilder {
         DecisionClassBuilder::new(

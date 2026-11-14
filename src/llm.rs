@@ -225,7 +225,7 @@ fn example(role: Role, mode: Mode) -> Value {
     let mut v = match (role, mode) {
         (Role::Maintainer, Mode::Review) => json!({
             "verdict": "changes",
-            "findings": [{"file": "src/api.rs", "line": 12, "rung": "stdlib", "cut": "the hand-rolled join", "replace_with": "slice::join"}],
+            "findings": [{"file": "src/api.rs", "line": 12, "rung": "stdlib", "cut": "the hand-rolled join", "replace_with": "slice::join", "blocking": true}],
             "card_patch": card_patch,
             "tester_needed": false
         }),
@@ -266,12 +266,13 @@ fn example(role: Role, mode: Mode) -> Value {
             "units": [{
                 "unit": "api",
                 "verdict": "changes",
-                "findings": [{"file": "src/api.rs", "line": 12, "rung": "stdlib", "cut": "the hand-rolled join", "replace_with": "slice::join"}],
+                "findings": [{"file": "src/api.rs", "line": 12, "rung": "stdlib", "cut": "the hand-rolled join", "replace_with": "slice::join", "blocking": true}],
                 "card_patch": card_patch,
                 "check": {"command": "cargo test api", "pass": true, "output": "1 passed"},
                 "scenario_patch": [{"id": "create-ok", "interface": "create-item", "given": "a valid body", "expect": "201", "level": "integration", "command": "cargo test create_ok"}],
                 "bugs": [{"title": "count off by one", "repro": "cargo test count", "evidence": "expected 2, got 3", "interface": "create-item"}],
-                "doc": {"overview": "Serves items over HTTP.", "how_it_works": "Requests enter at src/api.rs::router.", "how_to_change": "Start at the router; keep status codes stable."}
+                "doc": {"overview": "Serves items over HTTP.", "how_it_works": "Requests enter at src/api.rs::router.", "how_to_change": "Start at the router; keep status codes stable."},
+                "contested": [{"file": "src/api.rs", "line": 30, "why": "the helper is called once; inline it"}]
             }]
         }),
     };

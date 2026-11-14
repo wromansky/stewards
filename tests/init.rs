@@ -435,12 +435,16 @@ fn a_second_init_refuses_and_changes_nothing() {
 }
 
 #[test]
-fn hooks_and_ci_are_not_implemented() {
+fn ci_is_not_implemented_and_the_cut_hooks_and_render_are_gone() {
     let (_tmp, dir) = build(&s(&["main.py"]), &[]);
-    for flag in ["--hooks", "--ci"] {
-        let out = stewards(&dir, &["init", flag]);
+    let out = stewards(&dir, &["init", "--ci"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["code"], "not_implemented");
+    // cut from 0.1.0: no such flag or command
+    for args in [&["init", "--hooks"][..], &["render", "--harness", "pi"]] {
+        let out = stewards(&dir, args);
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(v["error"]["code"], "not_implemented", "{flag}");
+        assert_eq!(v["error"]["code"], "usage", "{args:?}");
     }
     assert!(!dir.join(".stewards").exists());
 }

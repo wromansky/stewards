@@ -28,7 +28,7 @@ fn with_common(mut v: Value) -> Value {
 fn review() -> Value {
     with_common(json!({
         "verdict": "changes",
-        "findings": [{"file": "src/a.rs", "line": 3, "rung": "one_line", "cut": "loop", "replace_with": "iter().sum()"}],
+        "findings": [{"file": "src/a.rs", "line": 3, "rung": "one_line", "blocking": true, "cut": "loop", "replace_with": "iter().sum()"}],
         "card_patch": {"gaps": [{"kind": "gap", "title": "t", "note": "n"}]},
         "tester_needed": true
     }))
@@ -79,7 +79,7 @@ fn reviewer() -> Value {
             "scenario_patch": null, "bugs": null, "doc": null
         }, {
             "unit": "store", "verdict": "changes",
-            "findings": [{"file": "src/s.rs", "line": 1, "rung": "no_check", "cut": "c", "replace_with": "r"}],
+            "findings": [{"file": "src/s.rs", "line": 1, "rung": "no_check", "blocking": true, "cut": "c", "replace_with": "r"}],
             "check": {"command": "cargo test", "pass": false, "output": "boom"}
         }]
     }))
@@ -810,4 +810,24 @@ fn prepared_env_turns_off_baml_logging_and_download_before_direct() {
         assert!(stdout.contains(line), "{line}: {stdout}");
     }
     assert!(!stderr.contains("Downloading"), "{stderr}");
+}
+
+#[test]
+fn every_finding_schema_states_blocking_and_what_false_is_for() {
+    for (role, mode) in [
+        (Role::Maintainer, Mode::Review),
+        (Role::Reviewer, Mode::Review),
+    ] {
+        let schema = output_format(role, mode);
+        assert!(schema.contains("blocking: bool"), "{role:?}");
+        assert!(
+            schema.contains("false for a remark that should not hold up approval"),
+            "{role:?}"
+        );
+        assert!(
+            role_text(role, mode).contains("`blocking: false`"),
+            "{role:?}"
+        );
+    }
+    assert!(output_format(Role::Reviewer, Mode::Review).contains("contested: ["));
 }

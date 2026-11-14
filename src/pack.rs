@@ -17,6 +17,7 @@ use crate::model::{
 use crate::next::DueUnit;
 use crate::output::{CliError, Global, Human, emit};
 use crate::route::Router;
+use crate::submit::{StoredFinding, read_findings};
 use crate::workspace::{Repo, here};
 
 /// Lines of source on each side of an anchor's match.
@@ -51,6 +52,9 @@ pub struct Pack {
     /// The tester's and reviewer's view of the unit's bug gaps, so a defect already recorded is
     /// reported under its title rather than again under a new one.
     pub known_bugs: Option<Vec<Gap>>,
+    /// The reviewer's view of the unit's findings the agent answered (`review --answer`): pending
+    /// ones to accept or contest, accepted and contested ones as they stand.
+    pub answered: Option<Vec<StoredFinding>>,
     pub flows: Option<Vec<Flow>>,
     pub decisions: Option<Vec<Decision>>,
     pub units: Option<Vec<UnitSummary>>,
@@ -231,6 +235,7 @@ fn assemble(
         test_commands: None,
         gaps: None,
         known_bugs: None,
+        answered: None,
         flows: None,
         decisions: None,
         units: None,
@@ -329,6 +334,9 @@ fn assemble(
                 p.test_command = test_command;
                 p.test_commands = Some(test_commands(&loaded.repo.commands));
                 p.doc = Some(card.and_then(|c| c.doc.clone()).unwrap_or_default());
+                let mut answered = read_findings(repo, name)?;
+                answered.retain(|f| f.answer.is_some());
+                p.answered = Some(answered);
             }
             Some(card.map_or(vec![], |c| c.anchors.clone()))
         }
@@ -497,61 +505,62 @@ fn other_changed(
     Ok(other)
 }
 
-/// The review brief's pack: the reviewer's section of each unit of `due` (in units.toml order),
-/// added while the whole rendering fits `REVIEW_BUDGET`. The first unit is always in; alone over
-/// the budget, it is shrunk by `squeeze` and no other unit joins it. From the first unit that
-/// does not fit on, the units are `next_round`. The files changed in units not due are listed
-/// once.
+/// One review brief's pack: the reviewer's section of each of its units, every section together
+/// within `REVIEW_BUDGET`. The files changed in units not due are listed once.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewPack {
     pub budget: usize,
     pub bytes: usize,
     pub units: Vec<Pack>,
     pub other_changed_files: Vec<String>,
-    pub next_round: Vec<String>,
 }
 
-pub fn review(repo: &Repo, due: &[DueUnit], task: &str, snapshot: &str) -> Result<ReviewPack> {
+/// Every due unit of a round, as `review` groups them: one `ReviewPack` per review brief.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewRound {
+    pub groups: Vec<ReviewPack>,
+}
+
+/// The review packs of `due` (in units.toml order): units join a group while the whole rendering
+/// fits `REVIEW_BUDGET`, and the first that does not starts the next group. A unit alone over the
+/// budget is shrunk by `squeeze` and no other unit joins it. Every due unit is in exactly one group.
+pub fn review(repo: &Repo, due: &[DueUnit], task: &str, snapshot: &str) -> Result<ReviewRound> {
     let loaded = repo.loaded()?;
     let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
     let entries = git::ls_tree(&repo.root, snapshot)?;
     let names: Vec<&str> = due.iter().map(|(u, _)| u.as_str()).collect();
     let other = other_changed(&repo.root, snapshot, &entries, &router, loaded, &names)?;
-    let mut r = ReviewPack {
+    let empty = || ReviewPack {
         budget: REVIEW_BUDGET,
         bytes: 0,
         units: vec![],
-        other_changed_files: other,
-        next_round: vec![],
+        other_changed_files: other.clone(),
     };
     // what a unit section may take: the budget less the rest and the newline joining them
     let room = |r: &ReviewPack| REVIEW_BUDGET.saturating_sub(r.render().len() + 1);
-    for (i, (unit, reasons)) in due.iter().enumerate() {
+    let mut groups = vec![empty()];
+    for (unit, reasons) in due {
         let mut p = assemble(repo, Some(unit), Role::Reviewer, task, true, snapshot, None)?;
         p.due_because = Some(reasons.clone());
         p.bytes = p.render().len();
-        if p.bytes <= room(&r) {
-            r.units.push(p);
-            continue;
+        let mut r = groups.last_mut().expect("one group at least");
+        if p.bytes > room(r) && !r.units.is_empty() {
+            groups.push(empty());
+            r = groups.last_mut().expect("just pushed");
         }
-        let alone = r.units.is_empty();
-        r.next_round = names[i + usize::from(alone)..]
-            .iter()
-            .map(|u| u.to_string())
-            .collect();
-        if alone {
-            p.squeeze(room(&r));
+        if p.bytes > room(r) {
+            p.squeeze(room(r));
+            r.units.push(p);
+            groups.push(empty());
+        } else {
             r.units.push(p);
         }
-        break;
     }
-    // the next-round line may push the last units out
-    while r.render().len() > REVIEW_BUDGET && r.units.len() > 1 {
-        let last = r.units.pop().and_then(|p| p.unit).unwrap_or_default();
-        r.next_round.insert(0, last);
+    groups.retain(|r| !r.units.is_empty());
+    for r in &mut groups {
+        r.bytes = r.render().len();
     }
-    r.bytes = r.render().len();
-    Ok(r)
+    Ok(ReviewRound { groups })
 }
 
 impl ReviewPack {
@@ -563,19 +572,14 @@ impl ReviewPack {
                 paths_table(&self.other_changed_files)
             ));
         }
-        if !self.next_round.is_empty() {
-            out.push(format!(
-                "# Next round\n\nDue, but over this pack's budget; not in this review: {}\n",
-                one_line(&self.next_round.join(", "))
-            ));
-        }
         out.join("\n")
     }
 }
 
-impl Human for ReviewPack {
+impl Human for ReviewRound {
     fn render(&self) -> String {
-        ReviewPack::render(self)
+        let groups: Vec<String> = self.groups.iter().map(ReviewPack::render).collect();
+        groups.join("\n")
     }
 }
 
@@ -745,6 +749,32 @@ impl Pack {
                 })
                 .collect();
             section("Gaps", table(&["kind", "title", "anchor", "note"], rows));
+        }
+        if let Some(list) = self.answered.as_ref().filter(|l| !l.is_empty()) {
+            let rows = list
+                .iter()
+                .map(|f| {
+                    let state = match (&f.contested, f.waived) {
+                        (Some(why), _) => format!("contested: {why}"),
+                        (None, true) => "accepted: do not raise it again".into(),
+                        (None, false) => "answered: accept or contest".into(),
+                    };
+                    vec![
+                        format!("{}:{}", f.file, f.line),
+                        format!("cut {}; replace with {}", f.cut, f.replace_with),
+                        f.answer.clone().unwrap_or_default(),
+                        state,
+                    ]
+                })
+                .collect();
+            section(
+                "Answered findings",
+                "Findings of an earlier round the agent gave a reason not to apply. For each \
+                 answered one, accept the reason (do not raise the finding again) or contest it \
+                 once in `contested`.\n\n"
+                    .to_string()
+                    + &table(&["file:line", "finding", "agent's reason", "state"], rows),
+            );
         }
         if let Some(list) = &self.known_bugs {
             let rows = list

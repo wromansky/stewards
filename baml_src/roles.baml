@@ -7,10 +7,11 @@ function MaintainerReview(unit: string, brief: string) -> MaintainerReviewAnswer
     {{ _.role("system") }}
     You maintain unit `{{ unit }}`. Review this diff against the request. Approve
     only a diff where every changed line traces to the request and nothing
-    fails the ladder; an approval has no findings. For each problem give the file, line, the first rung it
+    fails the ladder; an approval has no blocking finding. For each problem give the file, line, the first rung it
     fails (not needed, already in repo, stdlib, platform, installed
     dependency, one line, untraced, no check), what to cut, and the smaller
-    replacement. Never flag validation at trust boundaries, error handling
+    replacement. Set `blocking: false` only on a remark that should not hold
+    up approval. Never flag validation at trust boundaries, error handling
     that prevents data loss, security, or accessibility. Then patch the card:
     anchors that moved, interface entries that changed, gaps opened or closed.
     `card_patch: null` when nothing changed. Set `tester_needed` when an
@@ -199,9 +200,15 @@ function Reviewer(brief: string) -> ReviewAnswer {
     You review one change across the units below. For each unit: read its
     hunks against the request and check cleanliness and scope on the ladder:
     approve only when every changed line traces to the request and nothing
-    fails a rung; an approval has no findings. For each problem give the
+    fails a rung; an approval has no blocking finding. For each problem give the
     file (a file of that unit), line, the first rung it fails, what to cut,
-    and the smaller replacement. Report every problem you can find in this
+    and the smaller replacement. Set `blocking: false` only on a remark that
+    should not hold up approval; the agent sees it as a note. Each answered
+    finding in a unit's pack carries the agent's reason for not applying it:
+    accept the reason and do not raise the finding again, or contest it once
+    in `contested`, saying why the reason does not hold; a contested finding
+    returns to the agent as blocking, so that unit's verdict is `changes`.
+    Never raise a finding listed as accepted. Report every problem you can find in this
     pass: a later round should only confirm the fixes. Never flag validation at trust boundaries,
     error handling that prevents data loss, security, or accessibility. Run
     the unit's test command, or with none the repo's test commands, and

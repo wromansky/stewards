@@ -188,6 +188,10 @@ impl Driver for Pi {
     fn parse(&self, transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run> {
         parse(transcript, duration_s, truncation_ok)
     }
+
+    fn credential_files(&self) -> Vec<PathBuf> {
+        self.agent_dir.iter().map(|d| d.join("auth.json")).collect()
+    }
 }
 
 /// The `.jsonl` files directly in a session directory, sorted.

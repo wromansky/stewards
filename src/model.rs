@@ -24,6 +24,10 @@ pub struct RepoConfig {
     /// warns when one does not point at `AGENTS.md`.
     #[serde(default)]
     pub instruction_files: Vec<String>,
+    /// Globs of files that may belong to no unit (root config, docs, CI): `check` does not warn
+    /// on them, and `next` and `review` do not ask for them to be added to a unit.
+    #[serde(default)]
+    pub unowned_ok: Vec<String>,
     #[serde(default)]
     pub commands: Commands,
     #[serde(default)]

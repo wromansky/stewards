@@ -182,7 +182,26 @@ fn errors_match_the_design_error_code_table() {
 fn glossary_lists_terms() {
     let (v, _) = guide(&[], &["--glossary"]);
     let terms = v["glossary"].as_array().unwrap();
-    assert!(terms.iter().any(|t| t["term"] == "stamp"));
+    let stamp = terms.iter().find(|t| t["term"] == "stamp").unwrap();
+    assert!(
+        stamp["definition"]
+            .as_str()
+            .unwrap()
+            .contains("not proof the code is right"),
+        "{stamp}"
+    );
+}
+
+#[test]
+fn roles_say_a_stamp_is_one_reviewer_reporting_no_finding() {
+    let (v, _) = guide(&[], &[]);
+    let roles = v["roles"].as_str().unwrap();
+    assert!(roles.contains("one reviewer"), "{roles}");
+    assert!(roles.contains("not proof the code is right"), "{roles}");
+    assert!(
+        roles.contains("review --roles` is the deeper pass"),
+        "{roles}"
+    );
 }
 
 #[test]

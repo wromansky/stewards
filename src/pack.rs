@@ -48,6 +48,9 @@ pub struct Pack {
     pub primary_paths: Option<Vec<String>>,
     pub test_commands: Option<Vec<String>>,
     pub gaps: Option<Vec<Gap>>,
+    /// The tester's and reviewer's view of the unit's bug gaps, so a defect already recorded is
+    /// reported under its title rather than again under a new one.
+    pub known_bugs: Option<Vec<Gap>>,
     pub flows: Option<Vec<Flow>>,
     pub decisions: Option<Vec<Decision>>,
     pub units: Option<Vec<UnitSummary>>,
@@ -227,6 +230,7 @@ fn assemble(
         primary_paths: None,
         test_commands: None,
         gaps: None,
+        known_bugs: None,
         flows: None,
         decisions: None,
         units: None,
@@ -313,6 +317,14 @@ fn assemble(
             p.flows = Some(flows);
             // the reviewer also sees what the tester and documenter would
             if role == Role::Reviewer {
+                let (bugs, gaps) = p
+                    .gaps
+                    .take()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .partition(is_bug);
+                p.gaps = Some(gaps);
+                p.known_bugs = Some(bugs);
                 p.scenarios = Some(test.map_or(vec![], |t| t.scenarios.clone()));
                 p.test_command = test_command;
                 p.test_commands = Some(test_commands(&loaded.repo.commands));
@@ -321,6 +333,9 @@ fn assemble(
             Some(card.map_or(vec![], |c| c.anchors.clone()))
         }
         Role::Tester => {
+            p.known_bugs = Some(card.map_or(vec![], |c| {
+                c.gaps.iter().filter(|g| is_bug(g)).cloned().collect()
+            }));
             p.scenarios = Some(test.map_or(vec![], |t| t.scenarios.clone()));
             p.test_command = test_command;
             p.primary_paths = Some(primary_paths);
@@ -440,6 +455,10 @@ fn assemble(
         p.fit(budget);
     }
     Ok(p)
+}
+
+fn is_bug(g: &Gap) -> bool {
+    g.kind == GapKind::Bug
 }
 
 /// The repo's `commands.test` entries.
@@ -727,6 +746,26 @@ impl Pack {
                 .collect();
             section("Gaps", table(&["kind", "title", "anchor", "note"], rows));
         }
+        if let Some(list) = &self.known_bugs {
+            let rows = list
+                .iter()
+                .map(|g| {
+                    vec![
+                        g.title.clone(),
+                        g.anchor.clone().unwrap_or_default(),
+                        g.note.clone(),
+                        g.severity.clone().unwrap_or_else(|| "not judged".into()),
+                    ]
+                })
+                .collect();
+            section(
+                "Known bugs",
+                "When you report a defect listed here, reuse its exact title so the entry is \
+                 updated; a bug with a new title on a listed bug's anchor is not recorded.\n\n"
+                    .to_string()
+                    + &table(&["title", "anchor", "note", "severity"], rows),
+            );
+        }
         if let Some(list) = &self.flows {
             let rows = list
                 .iter()
@@ -851,6 +890,9 @@ impl Pack {
         }
         if !fits(self) && self.gaps.take().is_some() {
             self.dropped.push("gaps".into());
+        }
+        if !fits(self) && self.known_bugs.take().is_some() {
+            self.dropped.push("known bugs".into());
         }
         if !fits(self) && self.flows.take().is_some() {
             self.dropped.push("flows".into());

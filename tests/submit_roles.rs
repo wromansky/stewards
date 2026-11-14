@@ -276,6 +276,60 @@ fn tester_repeated_bug_title_updates_the_gap_and_keeps_severity_and_issue() {
 }
 
 #[test]
+fn tester_bug_with_a_new_title_on_a_known_bugs_anchor_is_reported_and_not_added() {
+    let dir = fixture("single");
+    let d = dir.path();
+    append(
+        &d.join(CARD),
+        &format!("{BUG}anchor = \"src/api/items.py::create_item\"\nseverity = \"low\"\n"),
+    );
+    let a = tester(
+        json!([]),
+        json!([bug(
+            "count is one too many",
+            "pytest tests/api -k count",
+            "got 3"
+        )]),
+    );
+    let v = submit_ok(d, "tester", &a);
+    assert_eq!(
+        v["summary"],
+        "api tester: 0 scenarios upserted; 0/0 pass; 0 bugs; 0 tests written; bug \"count is one \
+         too many\": possible duplicate of \"count off by one\"; reuse that title to update it, or \
+         give a different anchor"
+    );
+    let bugs: Vec<_> = card(d)
+        .gaps
+        .into_iter()
+        .filter(|g| g.kind == GapKind::Bug)
+        .map(|g| g.title)
+        .collect();
+    assert_eq!(bugs, ["count off by one"]);
+}
+
+#[test]
+fn tester_pack_lists_the_known_bugs_and_says_to_reuse_their_titles() {
+    let dir = fixture("single");
+    let d = dir.path();
+    append(
+        &d.join(CARD),
+        &format!("{BUG}anchor = \"src/api/items.py::create_item\"\n"),
+    );
+    let (_, v) = run(d, &["pack", "api", "--role", "tester"]);
+    assert_eq!(v["known_bugs"][0]["title"], "count off by one", "{v}");
+    let out = common::stewards(d, &["pack", "api", "--role", "tester", "--human"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("## Known bugs"), "{text}");
+    assert!(text.contains("reuse its exact title"), "{text}");
+    assert!(
+        text.contains(
+            "| count off by one | src/api/items.py::create_item | expected 2, got 3 | not judged |"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
 fn tester_repro_outside_the_allowlist_is_command_not_allowed() {
     let dir = fixture("single");
     let d = dir.path();

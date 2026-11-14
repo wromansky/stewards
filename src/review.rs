@@ -357,7 +357,7 @@ pub fn run(g: &Global, task: Option<&str>, roles: bool, pr: Option<u64>) -> Resu
             roles,
         )?)
     };
-    let (then, clean) = match &report {
+    let (mut then, mut clean) = match &report {
         None if changes => (
             format!("Fix the findings, then run stewards {command} again."),
             false,
@@ -386,6 +386,14 @@ pub fn run(g: &Global, task: Option<&str>, roles: bool, pr: Option<u64>) -> Resu
         ),
         Some(_) => ("done".to_string(), true),
     };
+    if let Some(line) = report.as_ref().and_then(NextReport::unowned_line) {
+        then = if clean {
+            line
+        } else {
+            format!("{then} {line}")
+        };
+        clean = false;
+    }
     let text = match &task {
         Some(t) => t.clone(),
         None => match repos.first() {

@@ -3,13 +3,14 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Result;
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::anchors::{Resolution, resolve};
 use crate::git;
-use crate::model::{Anchor, Reviewed};
-use crate::output::{Global, Human, emit};
+use crate::model::{Anchor, RepoConfig, Reviewed};
+use crate::output::{CliError, Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, here};
 
@@ -55,6 +56,26 @@ pub fn escape_invisible(text: &str) -> String {
         }
     }
     shown
+}
+
+/// `repo.toml`'s `unowned_ok` globs, matched as unit paths are.
+pub fn unowned_ok(repo: &RepoConfig) -> Result<GlobSet> {
+    let mut set = GlobSetBuilder::new();
+    for g in &repo.unowned_ok {
+        set.add(
+            GlobBuilder::new(g)
+                .literal_separator(true)
+                .build()
+                .map_err(|e| {
+                    CliError::new(
+                        "invalid_toml",
+                        format!(".stewards/repo.toml: bad unowned_ok glob `{g}`: {e}"),
+                        "fix unowned_ok in .stewards/repo.toml",
+                    )
+                })?,
+        );
+    }
+    Ok(set.build()?)
 }
 
 /// True when the unit has no `[reviewed]`, or its fingerprint differs from `current`.
@@ -335,9 +356,10 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
                 anchor: None,
             });
         }
+        let ok = unowned_ok(&loaded.repo)?;
         let mut unowned: Vec<_> = tracked
             .iter()
-            .filter(|p| router.owner(p).is_none() && !router.tool_owned(p))
+            .filter(|p| router.owner(p).is_none() && !router.tool_owned(p) && !ok.is_match(p))
             .collect();
         unowned.sort();
         if !unowned.is_empty() {

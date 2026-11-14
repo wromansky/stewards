@@ -1,11 +1,11 @@
 unit = "eval"
 
 [reviewed]
-commit = "65d2bd1692e49079478538c4cc437390e93f9270"
-fingerprint = "sha256:a5348640bc82a4e7d938ec5550be4691ec9843df430e8733d1fc6ffb6fffd064"
-tree = "cf4a6959af1e865f973ae0fab7d2589d5791f6f2"
-tester = "cf4a6959af1e865f973ae0fab7d2589d5791f6f2"
-documenter = "cf4a6959af1e865f973ae0fab7d2589d5791f6f2"
+commit = "8f1830aabdf439b0e9581b490c46180bb773c51f"
+fingerprint = "sha256:f85b9b8b7943f77196324bbba10edfabf27c0c5b66f2d946abf86f5c209727f2"
+tree = "b58da3170b033b73b10c8f613fa491219920c4c8"
+tester = "b58da3170b033b73b10c8f613fa491219920c4c8"
+documenter = "b58da3170b033b73b10c8f613fa491219920c4c8"
 
 [[interface]]
 id = "eval_run"
@@ -20,7 +20,7 @@ contract = "Reads every task prompt first, then runs sequentially per task, run 
 [[interface]]
 id = "driver"
 anchor = "src/eval/mod.rs::Driver"
-contract = "A harness: `start` runs one session in a fresh environment (fresh_session_env) and waits for end or timeout; `parse` turns its transcript into a Run, tolerating a truncated last line only if truncation_ok; `context_file` names a file the runner commits beside AGENTS.md (none by default)."
+contract = "A harness: `start` runs one session in a fresh environment and waits; `parse` turns its transcript into a Run; `context_file` names a file committed beside AGENTS.md; `credential_files` names linked credentials the runner redacts."
 
 [[interface]]
 id = "pi_parse"
@@ -133,9 +133,9 @@ anchor = "src/eval/hermes.rs::template"
 contract = "Writes the eval's template Hermes home: config.yaml lifting the one-shot subagent cap and auto-approving children, .env linked, installs/ built; never writes the user's home; each session gets a fresh home linking it and its daemon is killed after."
 
 [[interface]]
-id = "hermes_redact_keys"
-anchor = "src/eval/hermes.rs::redact_keys"
-contract = "Replaces every key, token, secret or password value (8+ chars) of the linked .env with [redacted] in each kept session file."
+id = "eval_redact_secrets"
+anchor = "src/eval/mod.rs::redact_secrets"
+contract = "After each session, replaces every secret value (name holds key, token, secret, password, access or refresh; 8+ chars) of the driver's credential_files with [redacted] in every text file under the kept sessions dir at any depth and in the run record; links not followed."
 
 [[anchor]]
 path = "src/eval/mod.rs"
@@ -295,15 +295,15 @@ name = "template"
 
 [[anchor]]
 path = "src/eval/hermes.rs"
-name = "redact_keys"
-
-[[anchor]]
-path = "src/eval/hermes.rs"
 name = "fingerprint"
 
 [[anchor]]
 path = "src/eval/hermes.rs"
 name = "files_opened"
+
+[[anchor]]
+path = "src/eval/mod.rs"
+name = "redact_secrets"
 
 [[gap]]
 kind = "gap"
@@ -361,5 +361,5 @@ note = "simplified: only a call's workdir and a leading cd are followed; upgrade
 
 [doc]
 overview = "The eval unit is the runner behind `stewards eval`. It measures whether coding agents do better with stewards than without: it drives a harness (Pi, Claude Code or Hermes Agent) over a suite of tasks in several arms, parses every session transcript into a run record, checks that the full arm followed the ritual, and reports cost and token overhead. The graders never branch on the harness. It also holds the material it runs on under evals/: the fixture, task prompts, suite manifests, arms.sh, and one reproduction per seeded bug."
-how_it_works = "run (src/eval/mod.rs) accepts pi, claude-code and hermes, picks the arms, loads the suite (suite.rs) and checks task numbers. pi.rs writes an isolated Pi agent dir; claude.rs an isolated CLAUDE_CONFIG_DIR; hermes.rs a template home (config lifting the one-shot cap of two subagents, .env linked, installs/ built) from which each session gets a fresh HERMES_HOME, and kills its gateway daemon after every session. Only pi takes --max-cost. execute reads every task prompt first, prepares the full arm once, then runs each task per run in every arm in a fresh copy. Each Driver starts a session (run_session, killing its group on timeout or on the runner's one SIGINT/SIGTERM handler) and parses its transcript into a Run: tokens (null when unmeasurable, timed out or interrupted), cost, files opened (content read or searched; a listing never), stewards commands, subagent launches (a refused Hermes delegate is none), reviewer submits, models and thinking. After each session the runner runs `stewards next --no-brief` and kills leftovers by cwd or HERMES_HOME. Hermes kept files have .env secrets [redacted]. grade.rs grades each task on gate misses only; overhead ratios are report-only."
+how_it_works = "run (src/eval/mod.rs) accepts pi, claude-code and hermes, picks the arms, loads the suite (suite.rs) and checks task numbers. pi.rs writes an isolated Pi agent dir; claude.rs an isolated CLAUDE_CONFIG_DIR; hermes.rs a template home (config lifting the one-shot cap of two subagents, .env linked, installs/ built) from which each session gets a fresh HERMES_HOME, and kills its gateway daemon after every session. Only pi takes --max-cost. execute reads every task prompt first, prepares the full arm once, then runs each task per run in every arm in a fresh copy. Each Driver starts a session (run_session, killing its group on timeout or on the runner's one SIGINT/SIGTERM handler) and parses its transcript into a Run: tokens (null when unmeasurable, timed out or interrupted), cost, files opened (content read or searched; a listing never), stewards commands, subagent launches (a refused Hermes delegate is none), reviewer submits, models and thinking. After each session the runner runs `stewards next --no-brief` and kills leftovers by cwd or HERMES_HOME. After the session, redact_secrets (mod.rs) reads each driver's credential_files (Pi auth.json, Claude Code .credentials.json, Hermes .env) and replaces their secret values (8+ characters) with [redacted] in every kept session file and the run record. grade.rs grades each task on gate misses only; overhead ratios are report-only."
 how_to_change = "Start in src/eval/mod.rs for the command, the plan, shared session helpers, the interrupt handler and the per-session loop; pi.rs, claude.rs or hermes.rs for a harness and its transcripts; grade.rs for verdicts and the report; suite.rs for manifest fields. Tests live in tests/eval.rs (the interrupt test in tests/eval_interrupt.rs, its own binary), with recorded transcripts under tests/fixtures/transcripts/<driver>/. Keep true: never write the user's harness config; bare and block-only arms never see stewards on PATH; overhead ratios stay report-only; graders never branch on the harness; one files-opened rule on every driver; no task prompt contains `think`; the first session always runs under --max-cost; no fixture holds key material. A new harness needs a Driver, a branch in run, and its entry in src/harness.rs."

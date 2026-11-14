@@ -160,6 +160,13 @@ impl Driver for ClaudeCode {
     fn context_file(&self) -> Option<(&'static str, &'static str)> {
         Some(("CLAUDE.md", "@AGENTS.md\n"))
     }
+
+    fn credential_files(&self) -> Vec<PathBuf> {
+        self.config_dir
+            .iter()
+            .map(|d| d.join(".credentials.json"))
+            .collect()
+    }
 }
 
 impl ClaudeCode {

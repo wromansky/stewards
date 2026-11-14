@@ -268,9 +268,17 @@ fn code(text: &str) -> String {
     format!("{fence}{pad}{text}{pad}{fence}")
 }
 
+/// Leads the role text of a never-stamped unit's maintainer review.
+pub const FIRST_REVIEW: &str = "This is a first review of existing code, not a review of a change: \
+the unit has never been stamped, so there is no diff. Draft the card (purpose, interface, anchors) \
+and record every problem you see as a gap in `card_patch.gaps`: kind `bug` with a `repro` when you \
+can show one, otherwise `gap`. The verdict is `approve`; write no findings. Adopting stewards never \
+asks for existing code to be rewritten, and submit rejects a first review with `changes` or a \
+finding.";
+
 /// The brief text, frame items 1 to 7 of DESIGN.md's 'Role prompts', around the rendered
 /// `pack_text` packed for `task` under `budget`; `root` is the repo's absolute root, so the answer
-/// path and submit command work from any directory.
+/// path and submit command work from any directory. A `first_review` leads with `FIRST_REVIEW`.
 fn render(
     header: &Header,
     task: &str,
@@ -278,6 +286,7 @@ fn render(
     pack_text: &str,
     memory: &[&Entry],
     root: &Path,
+    first_review: bool,
 ) -> String {
     let unit = header.unit.as_deref();
     let role = header.role.as_str();
@@ -299,6 +308,9 @@ fn render(
     let mut role_text = llm::role_text(header.role, header.mode)
         .trim_end()
         .replace("<unit>", unit.unwrap_or(""));
+    if first_review {
+        role_text = format!("{FIRST_REVIEW}\n\n{role_text}");
+    }
     if let Some(units) = &header.units {
         let names: Vec<String> = units.iter().map(|u| code(u)).collect();
         role_text += &format!(
@@ -424,6 +436,8 @@ pub fn build_review(
         &pack.render(),
         &memory.iter().collect::<Vec<_>>(),
         &repo.root,
+        // `submit` refuses a review brief that lists a never-stamped unit
+        false,
     );
     Ok((text, pack))
 }
@@ -475,6 +489,11 @@ fn frame(
         units: None,
     };
     let memory: Vec<&Entry> = memory.iter().collect();
+    // a first review: the unit's card has no `[reviewed]` block
+    let cards = &repo.loaded()?.cards;
+    let first_review = role == Role::Maintainer
+        && mode == Mode::Review
+        && unit.is_some_and(|u| cards.get(u).is_none_or(|c| c.reviewed.is_none()));
     Ok(render(
         &header,
         &pack.task,
@@ -482,6 +501,7 @@ fn frame(
         &pack.render(),
         &memory,
         &repo.root,
+        first_review,
     ))
 }
 

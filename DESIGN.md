@@ -110,6 +110,24 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   `review --roles` on request or before a release, and for plans
   (maintainer explain, developer tasks, architect). A unit's first review is always its maintainer's. A unit
   stamped through either flow is fresh for both.
+- **First review records; it does not ask for changes:** a unit with no
+  `[reviewed]` block has never been reviewed, so its maintainer review is a
+  first review of existing code, not of a change. Its brief leads the role
+  text with that (`brief::FIRST_REVIEW`): there is no diff; draft the card
+  (purpose, interface, anchors) and record every problem as a gap in
+  `card_patch.gaps` (`bug` with a repro when one can be shown, otherwise
+  `gap`); the verdict is `approve`, with no findings. `submit` rejects a
+  first review with verdict `changes` (field `verdict`) or any finding
+  (`findings[i]`, naming its file and line), as `answer_parse_failed`, and
+  the fix says to move each finding into `card_patch.gaps` and approve; it
+  counts as any validation error. An accepted first review stamps as any
+  approval does; later reviews of the unit may return `changes`. The
+  reviewer is never given a never-stamped unit (`submit` refuses such a
+  header with `no_brief`), so this holds for it too. Adopting stewards
+  must never ask a user to rewrite existing code. (In evals, adoption
+  changed the fixture's source on three of four harness and model pairs:
+  first reviews returned `changes` about code that was already there, and
+  `review --roles` then sent the agent to fix them.)
 - **Team member, physically:** the same in every harness: a fresh-context
   child that reads a brief by path and runs shell. Every command that
   writes a brief prints its **handoff**, ``Read `<absolute brief path>`
@@ -225,7 +243,11 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   `changes` means at least one; `submit` rejects either verdict otherwise.
   A reviewer cannot approve a unit whose test command it reports failing.
   Explain jobs, `changes` verdicts, and the other roles never stamp. `stamp <unit>` is the human
-  override.
+  override. A stamp records that one reviewer, shown this snapshot's diff,
+  reported no finding; it is not proof the code is right (two reviewers
+  given the same brief, model, and code once returned an approval and a
+  real finding), and `review --roles` is the deeper pass. `status` and
+  `guide` say so.
 - **Role marks:** the tester's and documenter's submits each record the
   snapshot they finished at, beside the stamp. Their jobs are due by what
   changed since their own mark, not since the stamp, so a fix round that
@@ -260,7 +282,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Review diff:** the maintainer's pack carries the diff from the unit's
   stamped tree to the current snapshot, so a re-review after a finding sees
   only what changed since. A unit never stamped, or whose stamped tree git
-  has pruned, gets the full pack and no diff: a first review.
+  has pruned, gets the full pack and no diff: a first review (only a never
+  stamped one is held to the first-review rule above).
 - **Task text:** `next` sets each job's task to the branch name plus the
   last commit subject, overridable with `--task`; `brief --task` for ad-hoc
   briefs.
@@ -281,8 +304,20 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   commit for display. `check` fails when a unit's current fingerprint
   differs from its stamp or it has no stamp, an anchor no longer resolves,
   or a scenario references an unknown interface id. Uncovered interfaces,
-  overlapping globs, and files no unit owns warn. Runs in the ritual and in
-  CI.
+  overlapping globs, and files no unit owns warn, except those `repo.toml`'s
+  `unowned_ok` globs list. Runs in the ritual and in CI.
+- **Unowned changes:** a file no unit owns is shown to no reviewer. `next`
+  and `review` list every file in the snapshot that no unit owns and
+  `unowned_ok` does not list, and that changed or was added since the
+  oldest stamp of its repo (a tree has no time, so: since any unit's
+  stamp), as `unowned_changed`, with the line `These changed files belong
+  to no unit and were not reviewed: <paths>. Add them to a unit in
+  .stewards/units.toml, then run stewards review again.`; neither is clean
+  while one is left. `unowned_ok` is for the files a repo means to leave
+  unowned: root config and docs such as `Cargo.toml`, `README.md`,
+  `.gitignore`, `AGENTS.md`, `LICENSE`, CI files. (Twice, source or test
+  files added on a branch had no unit, so no reviewer saw them, and only a
+  `check` warning said so.)
 - **Anchors:** `path::name`. Resolved by text in stage 1 (file exists, whole
   word match). With tree-sitter (stage 3), `name` must be a definition per
   the grammar's `tags.scm`; a mere mention is dead. Static grammars for rust,
@@ -303,7 +338,15 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Bugs:** a tester's or reviewer's `bugs[]` and `validate --report` both
   land on the owning card as `[[gap]] kind = "bug"` with the repro, keyed by title; a
   tester's bug that names an interface takes that interface's anchor as its
-  `anchor`, and one that names none keeps the anchor it had. The
+  `anchor`, and one that names none keeps the anchor it had. The tester's
+  and reviewer's packs list the unit's bug gaps under `Known bugs` (title,
+  anchor, note, severity), saying to reuse the exact title when reporting
+  the same defect. A bug with a new title whose anchor is that of a bug
+  the card already has, judged or not, is a probable duplicate: `submit`
+  does not add it and says so in its summary (`bug "<new>": possible
+  duplicate of "<title>"; reuse that title to update it, or give a
+  different anchor`), and the submit still succeeds. (The same defect was
+  twice recorded under two titles by a tester and a reviewer.) The
   validator's submit sets `severity`, or removes a bug it judges not real;
   the maintainer closes a fixed one like any gap.
 - **Docs:** `docs/units/<unit>.md` is rendered from the card; the
@@ -390,7 +433,9 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **submit**: the command that validates a typed answer and writes it.
 - **snapshot**: a git tree of the working tree as it is now: tracked,
   modified, and untracked-but-not-ignored files.
-- **stamp**: recording that a unit was reviewed at a snapshot.
+- **stamp**: recording that a unit was reviewed at a snapshot: one reviewer,
+  shown that snapshot's diff, reported no finding. It is not proof the code
+  is right; `review --roles` is the deeper pass.
 - **fingerprint**: sha256 over the blobs of the files a unit owns in a
   snapshot; **stale**: the current fingerprint differs from the stamped one.
 - **job**: one task `next` decides is due: one review covering every unit a
@@ -409,6 +454,7 @@ name = "backend"
 test_roots = ["tests"]
 docs_path = "docs/units"
 instruction_files = []                   # other instruction files a harness reads, repo-relative
+unowned_ok = ["Cargo.toml", "README.md"]  # optional; globs (as unit paths) of files that may belong to no unit
 [commands]
 test = ["pytest", "cargo test"]          # allowlist prefixes: repro, step checks, scenarios
 lint = ["ruff check"]
@@ -542,15 +588,15 @@ never routed, never reported as unowned, so no unit ever owns them.
 | Command | Does |
 |---|---|
 | `guide [--harness h] [--all] [--errors] [--glossary]` | prints the ritual, the handoff, roles, editing rules, adoption, delegation text for the detected or named harness (the generic paragraph for one not in the table), error codes, glossary |
-| `init [--draft] [--hooks] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts, writes the AGENTS.md block, and says (`note`) that a harness not reading `AGENTS.md` needs a line pointing at it; `--draft` briefs the naming and card drafting, prints each brief's handoff, and says to start those subagents, then run `review --roles` until it exits 0; `--hooks` installs the pre-push hook; `--ci` writes the CI template |
-| `status [--telemetry]` | units, freshness, coverage, gaps, across the workspace; uninitialized repos |
+| `init [--draft] [--hooks] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts, writes the AGENTS.md block, and says (`note`) that a harness not reading `AGENTS.md` needs a line pointing at it; `--draft` briefs the naming and card drafting (each first review's task: draft the card, record each problem as a gap, approve; existing code is not changed), prints each brief's handoff, and says to start those subagents, noting that a first review never asks for existing code to change, then run `review --roles` until it exits 0; `--hooks` installs the pre-push hook; `--ci` writes the CI template |
+| `status [--telemetry]` | units, freshness, coverage, gaps, across the workspace; uninitialized repos; `stamp_claim`, what a stamp claims |
 | `route <path>...` | owning unit per path, `null` when none; no LLM: an unowned path goes to the architect |
 | `pack [unit] --role <r> [--diff] [--task t]` | the context pack; no unit for the architect or the reviewer (the reviewer's is every due unit's section and the next-round names) |
 | `brief [unit] --role <r> [--task t] [--stdout]` | writes an explain brief (the review brief for the reviewer, a `usage` error when no stamped unit is due; one brief per task for the developer), prints its path, size, and handoff |
 | `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update and what it printed to `<job>.result.json`; an approving maintainer review, or a reviewer's approved unit, stamps |
 | `stamp <unit>` | records `[reviewed]` at the current snapshot; the human override |
 | `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check` and plan step checks, writes the review brief (with `--roles`, the per-role briefs), prints the jobs, each with its handoff |
-| `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files, `instruction_files` entries that do not point at `AGENTS.md` |
+| `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files (outside `unowned_ok`), `instruction_files` entries that do not point at `AGENTS.md` |
 | `validate [--report <f>] [--export]` | `--report` records a bug on its unit's card, runs the repro through the allowlist, writes the validator brief; `--export` files an issue for every judged bug that has none |
 | `review [--task t] [--roles]` | reports, as what subagents reported (not verified), and removes the result files the last round's submits wrote, at most 20 per call, then lists what `next` (`next --roles`) lists for the task in force (`--task`, else the one the last `--task` stored), each job with its handoff, and one `then` line; never starts a session; exit 0 only when no job is listed, no finding is reported, and no result file is left |
 | `review --pr <n>` | maintainer review briefs on a PR or MR diff; findings posted as review comments |
@@ -562,8 +608,9 @@ never routed, never reported as unowned, so no unit ever owns them.
 
 Global flags: `--human`, `--repo <name>`, `-C <dir>`, `--direct`. JSON by
 default, markdown with `--human`. Exit 0 ok, 1 work is due (`check`
-failures; for `next`, also any job or failed flow check; for `review`, any
-job listed, finding reported, or result file left), 2 errors.
+failures; for `next`, also any job, failed flow check, or unowned changed
+file; for `review`, any job listed, finding reported, result file left, or
+unowned changed file), 2 errors.
 
 ## Rules
 
@@ -572,7 +619,7 @@ job listed, finding reported, or result file left), 2 errors.
 ```
 Pack { unit, role, task, budget, bytes, over_budget, purpose, paths[],
        interface[], anchors[{path, name, line, source}], scenarios[],
-       test_command, primary_paths[], test_commands[], gaps[], flows[],
+       test_command, primary_paths[], test_commands[], gaps[], known_bugs[], flows[],
        decisions[], units[{name, purpose, interface_ids, paths, files}], doc,
        changed_files[], hunks[{path, diff}], other_changed_files[], memory[],
        bug, dev_task, repro_result, dropped[] }
@@ -593,12 +640,12 @@ hunks are truncated.
 | role | sections |
 |---|---|
 | maintainer | purpose, paths, interface, anchors (+source), gaps, flows, hunks + other_changed_files with `--diff` (owned files with no usable stamp) |
-| tester | paths, interface (+source at interface anchors), scenarios, test_command, primary_paths, hunks with `--diff` |
+| tester | paths, interface (+source at interface anchors), scenarios, test_command, primary_paths, known bugs, hunks with `--diff` |
 | documenter | purpose, paths, interface, doc prose, flows |
 | validator | purpose, paths, interface, primary_paths, the bug, test_command, commands.test, repro_result |
 | architect | every unit's purpose, interface ids, paths, and owned-file count, all flows, all decisions; no anchors, no source |
 | developer | purpose, paths, interface, its task (change, lane, check), anchors (+source) in its lane, gaps, flows |
-| reviewer | per covered unit: why it is due, the maintainer's `--diff` sections (hunks from the oldest of its stamp and role marks) plus scenarios, test_command, commands.test, and doc prose; once for the brief, the files changed in units not due |
+| reviewer | per covered unit: why it is due, the maintainer's `--diff` sections (hunks from the oldest of its stamp and role marks; its bug gaps as known bugs, the other gaps as gaps) plus scenarios, test_command, commands.test, and doc prose; once for the brief, the files changed in units not due |
 
 The reviewer's pack is one section per unit it covers, under one budget of
 48,000 bytes for them all (a constant, not a `[budgets]` key). Units join
@@ -616,7 +663,7 @@ one the most of its files changed since), so a unit due only because a
 mark is behind its stamp shows the change that mark has not seen.
 Source windows are 20 lines before and after the match (the definition span
 with tree-sitter). Budget is bytes of the `--human` rendering. Shrink order:
-halve every source window once; drop windows last-listed first; drop gaps;
+halve every source window once; drop windows last-listed first; drop gaps; drop known bugs;
 drop flows; truncate hunks to their first 40 lines each. Purpose, interface,
 scenarios, and `other_changed_files` are never dropped (but for the review
 pack's last cuts above). If still over,
@@ -699,7 +746,9 @@ from the stamp. The per-role jobs, which `next --roles` lists:
 - a flow with a `check` and a stale unit → the command runs through the
   allowlist (unless `--no-run`); a failure is reported against the flow
 - `check` failures are included; `next` exits 0 only with no jobs, a green
-  `check`, and passing flow checks; otherwise 1
+  `check`, passing flow checks, and no `unowned_changed` (files no unit
+  owns, outside `unowned_ok`, changed or added since the oldest stamp);
+  otherwise 1
 
 Plain `next` lists, per repo, one `reviewer` job folding every stamped unit
 that has a maintainer (stale), tester, or documenter job above: its reasons
@@ -764,9 +813,14 @@ for one.
   that a subagent which replied without submitting did not finish and a
   new one gets the same handoff. With a `check` failure and no job: `Fix
   the check failures listed under next.check, then run stewards review
-  again.` With nothing left: `done`.
-- **Exit** 0 only when no job is listed, no finding is left, and no
-  result file is left to read; 1 otherwise.
+  again.` When `next` lists `unowned_changed`, its line (`These changed
+  files belong to no unit and were not reviewed: <paths>. Add them to a
+  unit in .stewards/units.toml, then run stewards review again.`) follows
+  the `then` line above, or is the whole `then` line when there is no
+  other. With nothing left: `done`.
+- **Exit** 0 only when no job is listed, no finding is left, no result
+  file is left to read, and no `unowned_changed` file is left; 1
+  otherwise.
 - **Task.** `--task` is stored in `.stewards/briefs/review-task.txt`
   (git-ignored with the briefs, written through `Repo::write`, capped at
   20,000 characters) and used by every later `review` without `--task`; a
@@ -914,7 +968,7 @@ route; group per unit.
   the errors verbatim. A rejection for length alone (`answer_too_long`)
   does not count toward the three: each of its entries says how far over
   the cap the field is and gives a target, 80% of the cap (`302
-  characters; the cap is 300; cut to 240 or fewer`, the example `at most
+  characters; 2 over the cap of 300; cut to 240 or fewer`, the example `at most
   240 characters`), and the brief says to cut to that target, not to the
   cap. (A reviewer once spent all three tries on one field at 308, 303,
   and 302 characters against a 300 cap, and the review was lost.)
@@ -1026,7 +1080,8 @@ Maintainer, review:
 > anchors that moved, interface entries that changed, gaps opened or closed.
 > `card_patch: null` when nothing changed. Set `tester_needed` when an
 > interface's behavior changed on purpose. With no diff in the pack this is
-> a first review: draft the card from source and approve.
+> a first review of existing code: draft the card from source, record each
+> problem as a gap in the card patch, not a finding, and approve.
 
 Maintainer, explain:
 
@@ -1138,7 +1193,8 @@ required when the unit, with its card patch applied, has an interface and
 no docs (otherwise `next` would list it forever), and otherwise given only
 when what a section says is no longer true. `submit` validates the whole answer first and writes nothing on
 any error. Then per unit, through the same code paths: the card patch;
-bugs as the tester's become bug gaps with no severity; the doc as the
+bugs as the tester's become bug gaps with no severity (a probable
+duplicate is reported, not added); the doc as the
 documenter's; scenarios as the tester's, into the test card; the page
 rendered again for every unit whose card or test card was written and
 which has docs; on `approve` the stamp at the brief's snapshot with both role
@@ -1222,7 +1278,9 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   summary records is what identifies a run. The tree is cloned from that
   checkout (no network) without its remote. Its `full`
   arm is that tree with this binary's AGENTS.md block upserted (as `init`
-  does) and committed, and no adoption session; the runner checks
+  does), `AGENTS.md` and the driver's context file added to `unowned_ok`
+  (both newer than every stamp, so `next` would ask for a unit for them),
+  and committed, and no adoption session; the runner checks
   `stewards next --no-brief` exits 0 there before any run (else
   `eval_setup_incomplete`). `bare` is the tree without `.stewards/`,
   `docs/units/`, and `AGENTS.md`; `block-only` adds an `AGENTS.md` holding
@@ -1557,10 +1615,19 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   write a file and restore its size and mtime, write under a `.leases`
   directory or a `*.lock` name, or change Hermes's own source tree
   (`~/.hermes/hermes-agent`, the daemon's code), which is not checked.
-  Every value of a key, token, secret, or password entry (8 characters or
-  more) of the linked `.env` is replaced by `[redacted]` in the session
-  files the results keep (Hermes blocks `read_file` on `.env` and redacts
-  some tool output, but a shell `cat` can still print it). Hermes
+  **Key scrubbing, every driver:** each driver names the credential files
+  it links (Pi the linked `auth.json`, Claude Code the linked
+  `.credentials.json`, Hermes `.env`). After each session the runner reads
+  them (so a token refreshed during the session counts) and collects every
+  value that looks like a secret: a string value, at any depth of a JSON
+  file, or a `NAME=value` line of any other, whose name holds `key`,
+  `token`, `secret`, `password`, `access`, or `refresh` in any case, at
+  least 8 characters. Every exact occurrence is replaced by `[redacted]`
+  in every text file of the session directory, nested child sessions
+  included, before it is kept, and in the run record; a value is never
+  logged or printed. (Hermes blocks `read_file` on `.env` and redacts
+  some tool output, but a shell `cat` can still print it; any harness's
+  agent can print a credential file.) Hermes
   reads the project `AGENTS.md` itself, so it runs without
   `--ignore-rules` (which would skip it), and no copy holds another file
   it reads (`.hermes.md`, `.cursorrules`); the summary says so. Each session gets its own
@@ -1585,7 +1652,8 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `evals/full-units.toml` (`api`, `client`, `cli`; `init` proposes only the
   `cli` manifest root on the fixture; the root `.gitignore` and `AGENTS.md`
   stay unowned, anything else unowned stops the eval; the summary says so
-  in plain words), each with its own test command on its test card from
+  in plain words; those names, and the driver's context file, become the
+  adopted copy's `unowned_ok`), each with its own test command on its test card from
   `[source.test_commands]` in `evals/suites/fixture.toml` (`python3 -m
   unittest discover -s api`, `node --test client/`, `cargo test
   --manifest-path cli/Cargo.toml`; the root has no toolchain, so no

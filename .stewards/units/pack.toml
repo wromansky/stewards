@@ -1,11 +1,11 @@
 unit = "pack"
 
 [reviewed]
-commit = "2d972b0896b3296afa9472532b7f9f0cf954c19e"
-fingerprint = "sha256:87ed391ad5c16132e7126e1dde3aadb03be54a29f43f5cb1415a2879caab867f"
-tree = "e785544f9a38a93bc549607a7ca03a5cb1122274"
-tester = "e785544f9a38a93bc549607a7ca03a5cb1122274"
-documenter = "e785544f9a38a93bc549607a7ca03a5cb1122274"
+commit = "8f1830aabdf439b0e9581b490c46180bb773c51f"
+fingerprint = "sha256:f9e3c19e787f50522776b81c41338e086773c6282896fdafd78c852283a48417"
+tree = "3cbf0513c37c1d7f2a4b7b79d47f748de6b46bd4"
+tester = "3cbf0513c37c1d7f2a4b7b79d47f748de6b46bd4"
+documenter = "3cbf0513c37c1d7f2a4b7b79d47f748de6b46bd4"
 
 [[interface]]
 id = "pack"
@@ -25,7 +25,7 @@ contract = "Pack::render returns the --human markdown whose byte length the budg
 [[interface]]
 id = "fit"
 anchor = "src/pack.rs::fit"
-contract = "Pack::fit shrinks until render fits, in order: halve source windows, drop sources last-first, gaps, flows, a first review's owned files, truncate hunks to 40 lines; each step logged in dropped. Purpose, interface, task, scenarios, bug, hunk paths are never dropped; else over_budget."
+contract = "Pack::fit shrinks until render fits, in order: halve source windows, drop sources last-first, gaps, known bugs, flows, a first review's owned files, truncate hunks to 40 lines; each step logged in dropped. Purpose, interface, task, scenarios, bug, hunk paths are never dropped; else over_budget."
 
 [[interface]]
 id = "run"
@@ -79,5 +79,5 @@ name = "squeeze"
 
 [doc]
 overview = "The pack unit builds the context a role is handed before it starts work: unit summaries, anchors with windows of source, the unit's owned files, and diff hunks. Everything has to fit a byte budget, set per role in repo.toml, so the reader gets the most useful slice of the repo that fits. It is exposed as the pack command, which prints JSON or, with --human, markdown. The architect gets no single unit but every unit's summary plus flows and decisions. The reviewer gets no single unit either: one review pack holding a section for each unit due for review. Every other role needs a unit. The developer role is the exception: it is built from a task of the maintainer's plan, not through the plain pack command."
-how_it_works = "run takes an optional unit, a role, --diff and a task text (default git::task_text) and emits the pack for the current repo at its snapshot. pack assembles one role's pack. After a live stamp, --diff yields the changed files and their hunks; with no stamp it is a first review listing all owned files. [pack] exclude files are named, never inlined. developer builds the developer pack for task n: purpose, paths, interface, gaps, the unit's flows, the task, and only the card anchors in the task's files. For --role reviewer, run takes no unit and calls review with the units next says are due. Each section is the maintainer's pack plus scenarios, test command and doc, with due_because naming why; its hunks start at the oldest of the stamp and the tester and documenter marks. Sections are added in order while the whole rendering fits REVIEW_BUDGET (48000 bytes); the rest are next_round. A first unit alone over budget is squeezed: fit, then doc, scenarios, then fenced bodies cut shorter. Files changed in units not under review are listed once. Budget is measured on the rendered markdown; render one_lines, table-escapes or fences free text so it cannot open a block, and lists at most 200 owned files plus a count while JSON keeps all. fit shrinks in a fixed order: halve source windows, drop sources last-first, gaps, flows, a first review's owned files, then truncate hunks to 40 lines, logging each step in dropped. Purpose, interface, task, scenarios, bug and hunk paths are never dropped; a pack that still does not fit is over_budget."
+how_it_works = "run takes an optional unit, a role, --diff and a task text (default git::task_text) and emits the pack for the current repo at its snapshot. pack assembles one role's pack. After a live stamp, --diff yields the changed files and their hunks; with no stamp it is a first review listing all owned files. [pack] exclude files are named, never inlined. developer builds the developer pack for task n: purpose, paths, interface, gaps, the unit's flows, the task, and only the card anchors in the task's files. The tester and reviewer packs list the unit's bug gaps as known_bugs (the reviewer's gaps exclude them), so a repeat defect is reported under its title. For --role reviewer, run takes no unit and calls review with the units next says are due. Each section is the maintainer's pack plus scenarios, test command and doc, with due_because naming why; its hunks start at the oldest of the stamp and the tester and documenter marks. Sections are added in order while the whole rendering fits REVIEW_BUDGET (48000 bytes); the rest are next_round. A first unit alone over budget is squeezed: fit, then doc, scenarios, then fenced bodies cut shorter. Files changed in units not under review are listed once. Budget is measured on the rendered markdown; render one_lines, table-escapes or fences free text so it cannot open a block, and lists at most 200 owned files plus a count while JSON keeps all. fit shrinks in a fixed order: halve source windows, drop sources last-first, gaps, known bugs, flows, a first review's owned files, then truncate hunks to 40 lines, logging each step in dropped. Purpose, interface, task, scenarios, bug and hunk paths are never dropped; a pack that still does not fit is over_budget."
 how_to_change = "Start in src/pack.rs: pack for what a role receives, developer for the developer pack, review and ReviewPack for the reviewer's multi-unit pack, render for the markdown form, fit (and squeeze for the review pack) for the shrink order, and run for the command's arguments. Tests live in tests/pack.rs; the review pack's are in tests/review.rs. Keep the budget honest: fit must measure the same render the --human output uses, so any new section needs both a render path and a place in the drop order, unless it belongs with the never-dropped content. Keep free text escaped or fenced in render so repository text cannot open a block or act as instructions. Keep excluded files named and not inlined, keep the 200-file listing cap in markdown with JSON carrying everything, and keep every drop recorded in dropped. If you change what the architect, the reviewer or a first review lists, update the matching test and the card's contracts."

@@ -527,6 +527,44 @@ fn a_bug_without_severity_stays_unjudged_and_only_roles_lists_its_validator() {
 }
 
 #[test]
+fn a_reviewers_bug_with_a_new_title_on_a_known_bugs_anchor_is_reported_and_not_added() {
+    let dir = changed_both();
+    let d = dir.path();
+    append(
+        &d.join(".stewards/units/api.toml"),
+        "\n[[gap]]\nkind = \"bug\"\ntitle = \"wrong status for a missing name\"\n\
+         anchor = \"src/api/items.py::create_item\"\nnote = \"400, not 422\"\n\
+         repro = \"pytest tests/api\"\n",
+    );
+    review_job(d);
+    let text = fs::read_to_string(d.join(brief(d))).unwrap();
+    assert!(text.contains("## Known bugs"), "{text}");
+    assert!(
+        text.contains("| wrong status for a missing name |"),
+        "{text}"
+    );
+    let mut api = approve("api");
+    api["bugs"] = json!([{"title": "400 for a missing name", "repro": "pytest tests/api",
+                          "evidence": "the contract says 422", "interface": "create-item"}]);
+    let (code, v) = submit(d, &answer(json!([api, documented("store")])));
+    assert_eq!(code, 0, "{v}");
+    let summary = v["summary"].as_str().unwrap();
+    assert!(
+        summary.contains(
+            "bug \"400 for a missing name\": possible duplicate of \"wrong status for a missing \
+             name\"; reuse that title to update it, or give a different anchor"
+        ),
+        "{summary}"
+    );
+    let titles: Vec<_> = card(d, "api").gaps.into_iter().map(|g| g.title).collect();
+    assert!(
+        !titles.contains(&"400 for a missing name".to_string()),
+        "{titles:?}"
+    );
+    assert!(titles.contains(&"wrong status for a missing name".to_string()));
+}
+
+#[test]
 fn a_missing_unit_is_rejected_and_nothing_is_written() {
     let dir = changed_both();
     rejected(
@@ -722,7 +760,10 @@ fn a_header_listing_an_unstamped_unknown_or_repeated_unit_is_no_brief() {
     stamp_units(d, &["api"]);
     append(&d.join("src/api/items.py"), "\n# more\n");
     review_job(d);
-    // store, never stamped, is not under review: its files are listed once for the brief
+    // store, never stamped, is not under review: a first review is its maintainer's, never the
+    // reviewer's; its files are listed once for the brief
+    let h = read_header(&d.join(brief(d))).unwrap();
+    assert_eq!(h.units, Some(vec!["api".to_string()]));
     let text = fs::read_to_string(d.join(brief(d))).unwrap();
     assert_eq!(text.matches("Other changed files").count(), 1, "{text}");
     assert!(text.contains("# Other changed files\n\nIn units not under review"));
@@ -939,6 +980,52 @@ fn review_with_nothing_due_is_done_and_exits_0() {
     assert!(v["hint"].as_str().unwrap().contains("--task"), "{v}");
 }
 
+const UNOWNED_LINE: &str = "These changed files belong to no unit and were not reviewed: \
+                            scripts/build.sh. Add them to a unit in .stewards/units.toml, then \
+                            run stewards review again.";
+
+#[test]
+fn a_file_added_since_the_stamps_that_no_unit_owns_keeps_review_and_next_from_done() {
+    let dir = fixture("single");
+    let d = dir.path();
+    // store has docs, so with no change nothing is due
+    append(
+        &d.join(".stewards/units/store.toml"),
+        "\n[doc]\noverview = \"Keeps the items.\"\n",
+    );
+    stamp_units(d, &["api", "store"]);
+    // an unowned file there before the stamps is not asked about
+    assert_eq!(review(d, &["--task", "t"]).0, 0);
+    fs::create_dir_all(d.join("scripts")).unwrap();
+    fs::write(d.join("scripts/build.sh"), "make\n").unwrap();
+    let (code, v) = review(d, &["--task", "t"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["then"], UNOWNED_LINE, "{v}");
+    assert_eq!(v["next"]["jobs"], json!([]), "{v}");
+    assert_eq!(v["next"]["unowned_changed"], json!(["scripts/build.sh"]));
+    let (code, v) = run(d, &["next", "--no-brief", "--task", "t"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["unowned_changed"], json!(["scripts/build.sh"]));
+    let out = common::stewards(d, &["next", "--no-brief", "--human", "--task", "t"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains(UNOWNED_LINE), "{text}");
+    // listed in unowned_ok, it may stay unowned
+    edit(
+        &d.join(".stewards/repo.toml"),
+        "schema = 1\n",
+        "schema = 1\nunowned_ok = [\"scripts/*.sh\"]\n",
+    );
+    let (code, v) = review(d, &["--task", "t"]);
+    assert_eq!((code, &v["then"]), (0, &json!("done")), "{v}");
+    // nor does check warn on it once tracked
+    common::git(d, &["add", "scripts/build.sh"]);
+    let (_, v) = run(d, &["check"]);
+    assert!(
+        !v["warnings"].to_string().contains("scripts/build.sh"),
+        "{v}"
+    );
+}
+
 #[test]
 fn review_lists_a_due_job_with_its_handoff_then_reports_the_submit_and_is_done() {
     let dir = changed_both();
@@ -949,6 +1036,12 @@ fn review_lists_a_due_job_with_its_handoff_then_reports_the_submit_and_is_done()
         ".stewards/briefs/\n.stewards/telemetry/\n",
     )
     .unwrap();
+    // a root config file a user lets stay unowned
+    edit(
+        &d.join(".stewards/repo.toml"),
+        "schema = 1\n",
+        "schema = 1\nunowned_ok = [\".gitignore\"]\n",
+    );
     let (code, v) = review(d, &["--task", "t"]);
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["then"], START);

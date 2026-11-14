@@ -1,11 +1,11 @@
 unit = "cli"
 
 [reviewed]
-commit = "0f569c2c9170d04e4f55bd3c68183e25778cdd1d"
-fingerprint = "sha256:d1b98fd6e03404cb38cb92c0758616b7508f5e9ed249a33785c173506ac7afbf"
-tree = "dd3b6a35ee23b211e8d6b83a2e374a597878d58c"
-tester = "dd3b6a35ee23b211e8d6b83a2e374a597878d58c"
-documenter = "dd3b6a35ee23b211e8d6b83a2e374a597878d58c"
+commit = "8f1830aabdf439b0e9581b490c46180bb773c51f"
+fingerprint = "sha256:c5011427056f93f1feda30fb89abda7e0ec1459d019d8e5c41c6bbe0b3e0f8de"
+tree = "8cd5fedf47888e990011f128287639f2b25a0567"
+tester = "8cd5fedf47888e990011f128287639f2b25a0567"
+documenter = "8cd5fedf47888e990011f128287639f2b25a0567"
 
 [[interface]]
 id = "json-envelope"
@@ -35,7 +35,7 @@ contract = "Unbuilt commands (completions, render, validate) and flags (review -
 [[interface]]
 id = "review-command"
 anchor = "src/review.rs::run"
-contract = "`review [--task] [--roles]` shows up to 20 untracked result files per call as reported (not verified), removing them once output is written; lists next's jobs with handoffs unless findings or files remain; --task kept until done; exit 0 only when done, else 1."
+contract = "`review [--task] [--roles]` shows up to 20 untracked result files per call as reported (not verified), removing them once written; lists next's jobs unless findings, files or unowned changed files remain; --task kept until done; exit 0 only when done."
 
 [[anchor]]
 path = "src/main.rs"

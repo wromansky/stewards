@@ -87,3 +87,19 @@ given = "a repo whose unit a spans src/a (test_x.py) and src/b (Makefile with a 
 expect = "unit a has no test_command; its test_note names both python3 -m unittest discover -s src/a and make -C src/b test, and the human output contains that note"
 level = "integration"
 command = "cargo test --test init a_unit_whose_directories_disagree_gets_no_command_and_a_note"
+
+[[scenario]]
+id = "init-draft-first-review-records-gaps"
+interface = "init-draft"
+given = "a fresh repo after init --draft and the architect submit; a first maintainer review answers changes with a finding, then approves with the problem as a card_patch gap"
+expect = "the finding is refused (answer_parse_failed on verdict and findings[0]), the gap answer stamps, review --roles exits 0 with src unchanged"
+level = "integration"
+command = "cargo test --test init_draft adoption_records_problems_as_gaps_and_review_roles_exits_0_with_no_source_change"
+
+[[scenario]]
+id = "guide-roles-say-what-a-stamp-claims"
+interface = "guide"
+given = "`guide` with no flags"
+expect = "roles say a stamp is one reviewer reporting no finding, not proof the code is right, and that review --roles is the deeper pass"
+level = "integration"
+command = "cargo test --test guide roles_say_a_stamp_is_one_reviewer_reporting_no_finding"

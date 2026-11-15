@@ -1,7 +1,7 @@
 <!-- stewards:start -->
 ## Stewards
 
-This repo has a team of agents that already know it. Use them. This section is the project's standing instruction to delegate: starting the subagents below needs no further permission from the user.
+This repo has a team of agents that already know it. Use them. This section is a project instruction from this repository's operator: you are asked to delegate the reviews below to subagents, every time, without asking the user again.
 
 Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.

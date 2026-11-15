@@ -15,10 +15,11 @@ use crate::git;
 use crate::harness;
 use crate::llm::types::{self, CardPatch, Verdict};
 use crate::llm::{self, Answer, FieldError, Mode};
-use crate::model::{self, CommandEntry, GapKind, Loaded, Role, TestCard, UnitCard};
+use crate::model::{self, GapKind, Role, TestCard, UnitCard};
 use crate::next;
 use crate::output::{CliError, Global, Human, emit, with_note};
 use crate::route::Router;
+use crate::run;
 use crate::telemetry;
 use crate::workspace::{Repo, here, safe_path};
 
@@ -54,13 +55,6 @@ type Problems = Vec<(&'static str, FieldError)>;
 
 /// Each file a submit may write, with its bytes when submit read it; `None` when it was absent.
 pub type Before = Vec<(String, Option<Vec<u8>>)>;
-
-/// Characters a shell gives meaning to: a stored command is plain argv without them, and
-/// without a newline.
-const SHELL_CHARS: &[char] = &[
-    '\n', ';', '&', '|', '<', '>', '$', '`', '\\', '\'', '"', '(', ')', '{', '}', '*', '?', '~',
-    '#', '!',
-];
 
 #[derive(Serialize, Default)]
 pub struct Submitted {
@@ -515,7 +509,7 @@ fn maintainer(
         Answer::MaintainerExplain(a) => {
             let p = &mut problems;
             check_text(p, "explanation", &a.explanation, EXPLANATION_CAP, false);
-            let allowed = allowlist(loaded, Some(unit));
+            let allowed = run::allowed(loaded, Some(unit));
             check_tasks(p, &a.tasks, root, unit, &router, &allowed);
             let tasks = (!a.tasks.is_empty()).then(|| a.tasks.clone());
             (&a.card_patch, &a.pulled_anchors, &a.notes, false, tasks)
@@ -984,7 +978,7 @@ fn tester(
         unreachable!("a tester answer parses to the tester variant")
     };
     let loaded = repo.loaded()?;
-    let allowed = allowlist(loaded, Some(unit));
+    let allowed = run::allowed(loaded, Some(unit));
     let mut card = loaded.card(unit);
     let mut tests = test_card(loaded, unit);
 
@@ -1087,7 +1081,7 @@ fn check_scenarios(
     scenarios: &[types::Scenario],
     card: &UnitCard,
     unit: &str,
-    allowed: &[String],
+    allowed: &[run::Allowed],
 ) {
     check_list(p, "scenario_patch", scenarios.len());
     for (i, s) in scenarios.iter().enumerate() {
@@ -1112,7 +1106,7 @@ fn check_bugs(
     bugs: &[types::Bug],
     card: &UnitCard,
     unit: &str,
-    allowed: &[String],
+    allowed: &[run::Allowed],
 ) {
     check_list(p, "bugs", bugs.len());
     for (i, b) in bugs.iter().enumerate() {
@@ -1419,7 +1413,7 @@ pub fn reviewer(
                 }
                 // the scenarios and bugs may name an interface the patch adds
                 let scenarios = u.scenario_patch.as_deref().unwrap_or_default();
-                let allowed = allowlist(loaded, Some(unit));
+                let allowed = run::allowed(loaded, Some(unit));
                 check_scenarios(p, scenarios, &card, unit, &allowed);
                 check_bugs(
                     p,
@@ -1798,7 +1792,12 @@ fn architect(
         }
         if let Some(c) = &flow.check {
             check_text(&mut p, &format!("{f}.check"), c, LINE_CAP, true);
-            check_command(&mut p, &format!("{f}.check"), c, &allowlist(loaded, None));
+            check_command(
+                &mut p,
+                &format!("{f}.check"),
+                c,
+                &run::allowed(loaded, None),
+            );
         }
     }
     check_list(&mut p, "decisions", a.decisions.len());
@@ -2371,7 +2370,7 @@ pub(crate) fn read_tasks(repo: &Repo, unit: &str) -> Result<Vec<types::Task>> {
         &repo.root,
         unit,
         &router,
-        &allowlist(loaded, Some(unit)),
+        &run::allowed(loaded, Some(unit)),
     );
     match p.first() {
         Some((_, e)) => Err(unusable(&format!("{} fails its check", e.field))),
@@ -2387,7 +2386,7 @@ fn check_tasks(
     root: &Path,
     unit: &str,
     router: &Router,
-    allowed: &[String],
+    allowed: &[run::Allowed],
 ) {
     check_list(out, "tasks", tasks.len());
     let mut lanes = std::collections::HashMap::new();
@@ -2468,63 +2467,27 @@ fn check_owned(
     ));
 }
 
-/// The commands a scenario, repro, or check of `unit` may start with: the repo's `commands.test`
-/// and that unit's own test card `test_command` (no other unit's). Only a person or `init`
-/// writes either: no answer has a field that sets them.
-fn allowlist(loaded: &Loaded, unit: Option<&str>) -> Vec<String> {
-    let unit_test = unit
-        .and_then(|u| loaded.tests.get(u))
-        .and_then(|t| t.test_command.clone());
-    loaded
-        .repo
-        .commands
-        .test
-        .iter()
-        .map(|e| match e {
-            CommandEntry::Plain(c) | CommandEntry::Timed { cmd: c, .. } => c.clone(),
-        })
-        .chain(unit_test)
-        .collect()
-}
-
-/// `command_not_allowed` unless `cmd` has no `SHELL_CHARS` and its leading words are all the
-/// words of one `allowed` entry, so `pytest` allows `pytest tests/x` but not `pytest-x`.
-fn check_command(out: &mut Problems, field: &str, cmd: &str, allowed: &[String]) {
-    if let Some(c) = cmd.chars().find(|c| SHELL_CHARS.contains(c)) {
-        out.push((
-            "command_not_allowed",
-            FieldError {
-                field: field.to_string(),
-                problem: format!(
-                    "contains {c:?}; a command is plain argv with no shell syntax: no \
-                     separators, pipes, redirects, substitutions, quotes, or globs"
-                ),
-                example: "\"pytest tests/api/test_items.py::test_x -k count\"".into(),
-            },
-        ));
+/// Pushes `command_not_allowed` for `field` unless `run::check` allows `cmd`.
+fn check_command(out: &mut Problems, field: &str, cmd: &str, allowed: &[run::Allowed]) {
+    let Err(problem) = run::check(cmd, allowed) else {
         return;
-    }
-    let words: Vec<&str> = cmd.split_whitespace().collect();
-    let ok = allowed.iter().any(|e| {
-        let entry: Vec<&str> = e.split_whitespace().collect();
-        !entry.is_empty() && words.starts_with(&entry)
-    });
-    if !ok {
-        out.push((
-            "command_not_allowed",
-            FieldError {
-                field: field.to_string(),
-                problem: format!(
-                    "`{cmd}` does not start with a commands.test entry or the unit's test command ({})",
-                    allowed.join(", ")
-                ),
-                example: format!(
-                    "\"{} tests\"",
-                    allowed.first().map_or("pytest", String::as_str)
-                ),
-            },
-        ));
-    }
+    };
+    let example = if cmd.contains(run::SHELL_CHARS) {
+        "\"pytest tests/api/test_items.py::test_x -k count\"".to_string()
+    } else {
+        format!(
+            "\"{} tests\"",
+            allowed.first().map_or("pytest", |a| a.cmd.as_str())
+        )
+    };
+    out.push((
+        "command_not_allowed",
+        FieldError {
+            field: field.to_string(),
+            problem,
+            example,
+        },
+    ));
 }
 
 /// Caps `value` at `cap` characters and rejects data markers, invisible and direction

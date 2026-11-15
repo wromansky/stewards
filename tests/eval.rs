@@ -1223,15 +1223,19 @@ impl Driver for Replay {
     ) -> anyhow::Result<Session> {
         assert!(dir.join(".git").is_dir() && !prompt.is_empty());
         assert_eq!(thinking, "medium");
-        // nothing a session can see names the arm, stewards, or the eval
+        // nothing a session can see names the arm, stewards, or the eval; only the part below the
+        // runner's scratch root counts, the ambient temp path is not the runner's to choose
+        let work = sessions.ancestors().nth(3).unwrap();
         let seen: Vec<String> = [dir, sessions]
             .iter()
-            .map(|p| p.display().to_string())
-            .chain(
-                env.iter()
-                    .skip(1)
-                    .map(|(_, v)| v.to_string_lossy().into_owned()),
-            )
+            .map(|p| p.strip_prefix(work).unwrap().display().to_string())
+            .chain(env.iter().skip(1).map(|(_, v)| {
+                Path::new(v)
+                    .strip_prefix(work)
+                    .unwrap()
+                    .display()
+                    .to_string()
+            }))
             .collect();
         for p in &seen {
             for word in ["bare", "block", "full", "stewards", "eval", "results"] {

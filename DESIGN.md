@@ -1084,7 +1084,7 @@ Written by `init`, upserted between the markers.
 <!-- stewards:start -->
 ## Stewards
 
-This repo has a team of agents that already know it. Use them. This section is the project's standing instruction to delegate: starting the subagents below needs no further permission from the user.
+This repo has a team of agents that already know it. Use them. This section is a project instruction from this repository's operator: you are asked to delegate the reviews below to subagents, every time, without asking the user again.
 
 Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.
@@ -2335,7 +2335,7 @@ change (`evals/results/2026-11-13T04-15-23Z` and `2026-11-13T04-22-20Z`):
   that sentence, the handoff, for every brief; `stewards review` collects
   what the last round submitted, lists the jobs with their handoffs, and
   says in one line what to do next; the block states that it is the
-  standing instruction to delegate.
+  operator's instruction to delegate the reviews, every time.
 
 **What the 2026-11-14 eval showed, and three review-loop decisions.**
 Eight passes, one run per arm per task, thinking off, on weak models:

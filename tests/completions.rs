@@ -194,3 +194,47 @@ fn install_sh_refuses_a_version_that_is_not_a_plain_version() {
     }
     assert_eq!(release.urls(), "");
 }
+
+#[test]
+fn bump_sh_rewrites_the_version_and_crate_hash_in_pkgbuild_and_srcinfo() {
+    let aur = Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/aur");
+    let dir = tempfile::TempDir::new().unwrap();
+    for f in ["bump.sh", "PKGBUILD", ".SRCINFO"] {
+        std::fs::copy(aur.join(f), dir.path().join(f)).unwrap();
+    }
+    let baml = "44ffbd33d0c3b3a79a228a815c657b47c3c0151258da9f62b24d62491467d8ac";
+    for (version, sha) in [("0.2.0", "a".repeat(64)), ("1.10.3", "b".repeat(64))] {
+        let out = std::process::Command::new("sh")
+            .args(["bump.sh", version, &sha])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let read = |f: &str| std::fs::read_to_string(dir.path().join(f)).unwrap();
+        let (pkgbuild, srcinfo) = (read("PKGBUILD"), read(".SRCINFO"));
+        for line in [
+            format!("pkgver={version}"),
+            "pkgrel=1".to_string(),
+            format!("sha256sums=('{sha}'"),
+            format!("            '{baml}')"),
+        ] {
+            assert!(pkgbuild.lines().any(|l| l == line), "{line}\n{pkgbuild}");
+        }
+        for line in [
+            format!("\tpkgver = {version}"),
+            "\tpkgrel = 1".to_string(),
+            format!(
+                "\tsource = stewards-{version}.tar.gz::https://static.crates.io/crates/stewards/stewards-{version}.crate"
+            ),
+            format!("\tsha256sums = {sha}"),
+            format!("\tsha256sums = {baml}"),
+        ] {
+            assert!(srcinfo.lines().any(|l| l == line), "{line}\n{srcinfo}");
+        }
+        assert!(!dir.path().join("PKGBUILD.bak").exists());
+    }
+}

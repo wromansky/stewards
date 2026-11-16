@@ -15,6 +15,7 @@
 - [setup](setup.md): Onboarding and generated files\: init proposes units and writes .stewards, the guide and AGENTS.md block, the per-harness facts table, and docs rendering from unit cards.
 - [eval](eval.md): The eval runner\: suites and their manifests, arm setup, the Pi driver and transcript parser, the ritual gate and overhead report, and the fixture, tasks and seeded-bug repros it runs on.
 - [run](run.md): The allowlisted command runner\: which commands may run (repo test commands and a unit's own test command), the check every agent-written command passes, and execution without a shell under a timeout with the whole process group killed.
+- [dist](dist.md): How stewards is shipped\: the release workflow, the install script, the AUR package, the release checklist, and the tests for completions, the man page and the install script.
 
 ## Flows
 

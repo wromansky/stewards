@@ -52,7 +52,8 @@ fi
 name=stewards-${tag#v}-$target
 base=https://github.com/$repo/releases/download/$tag
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
 
 echo "downloading $name.tar.gz"
 curl -fsSL -o "$tmp/$name.tar.gz" "$base/$name.tar.gz" || fail "could not download $base/$name.tar.gz"

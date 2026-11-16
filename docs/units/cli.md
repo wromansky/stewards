@@ -23,7 +23,7 @@ To add or change a command, start in src/main.rs: add the variant and its flags 
 | usage-errors | Clap parse failures (missing or unknown args) and a \`-C\` dir that cannot be entered are CliError code \`usage\`, exit 2, JSON unless --human appears in argv; --help and --version print clap's text and exit normally. | [src/main.rs\:\:main](../../src/main.rs#L173) |
 | global-flags | --human, --repo \<name\>, -C \<dir\> and --direct are accepted before or after any subcommand; -C changes the working directory before dispatch; --direct is also set by STEWARDS\_DIRECT=1. | [src/main.rs\:\:Cli](../../src/main.rs#L16) |
 | not-implemented | Unbuilt command validate and flags (review --pr, next --pr, init --ci) parse and then fail with CliError code \`not\_implemented\`, exit 2; render and the init --hooks flag no longer exist and are usage errors. | [src/output.rs\:\:not\_implemented](../../src/output.rs#L117) |
-| review-command | \`review \[--task\] \[--roles\] \[--answer ...\]\` records answers, shows up to 20 result files per call as reported (blocking findings, non-blocking notes), lists every due job unless findings, files or unowned changes remain; exit 0 only when done. | [src/review.rs\:\:run](../../src/review.rs#L415) |
+| review-command | \`review \[--task\] \[--roles\] \[--answer ...\]\` records answers, shows up to 20 result files per call as reported, lists due jobs unless findings, files or unowned changes remain; then line adds failing checks and open plans; exit 0 only when done. | [src/review.rs\:\:run](../../src/review.rs#L415) |
 | completions-man | \`completions \<bash\|zsh\|fish\|elvish\|powershell\>\` and \`man\` print the script or roff page raw on stdout (not enveloped; closed pipe dropped quietly) and a \`save it\: ...\` hint on stderr, exit 0; an unknown shell is a usage error. | [src/completions.rs\:\:run](../../src/completions.rs#L16) |
 
 ## Scenarios
@@ -37,6 +37,7 @@ To add or change a command, start in src/main.rs: add the variant and its flags 
 | review-answer-contested | review-command | a finding answered with \`review --answer\`, which the next reviewer contests | the finding comes back blocking with the contest, a second --answer for it is a usage error; an accepted answer lets the unit stamp | integration |
 | review-notes-do-not-block | review-command | a review approving a unit with only non-blocking findings | the notes are printed and recorded, the unit stamps, no fix task is written | integration |
 | completions-scripts | completions-man | stewards completions for each of the five shells, and stewards man | exit 0, script or \`.TH stewards 1\` page on stdout, \`save it\: stewards ... \> \` on stderr | integration |
+| review-open-plan-is-done | review-command | a repo with nothing due and one open plan | then starts \`done.\` and names the plan, exit 0; a failed step or flow check instead says to fix the failing checks, exit 1 | integration |
 
 ## Flows
 
@@ -51,4 +52,4 @@ _None._
 
 ## Last reviewed
 
-abb34dd4b9c58712b0fa3bd1faef9368847a5fce
+680708dc18906aa4b5574f58462a5f360d7ec66c

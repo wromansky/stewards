@@ -13,8 +13,9 @@ use crate::check::{
 use crate::debt::{DebtItem, is_debt_line};
 use crate::git;
 use crate::llm::Mode;
-use crate::model::{Anchor, GapKind, Interface, Role, UnitCard};
+use crate::model::{Anchor, GapKind, Interface, Role, StepResult, UnitCard};
 use crate::output::{Global, Human, emit, not_implemented};
+use crate::plan::{self, PlanReport};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, here};
 
@@ -55,6 +56,8 @@ pub struct NextReport {
     pub jobs: Vec<Job>,
     pub architect: bool,
     pub flow_checks: Vec<FlowCheck>,
+    /// The open plans, and those this call closed.
+    pub plans: Vec<PlanReport>,
     pub check: CheckReport,
     /// Files no unit owns that changed or were added since a stamp, outside `unowned_ok`: no
     /// reviewer is shown them, so `next` and `review` are not clean while any is left.
@@ -62,6 +65,16 @@ pub struct NextReport {
 }
 
 impl NextReport {
+    /// A flow check or a plan step check failed.
+    pub fn checks_failed(&self) -> bool {
+        self.flow_checks.iter().any(|f| !f.pass)
+            || self
+                .plans
+                .iter()
+                .flat_map(|p| &p.steps)
+                .any(|s| s.result == Some(StepResult::Fail))
+    }
+
     /// The guidance line for `unowned_changed`, when it has any.
     pub fn unowned_line(&self) -> Option<String> {
         (!self.unowned_changed.is_empty()).then(|| {
@@ -95,8 +108,15 @@ struct RoleJob<'a> {
 /// The jobs due. With `roles`, one job per unit and role as `next --roles` lists them; without,
 /// each repo's stamped units those jobs name are folded into reviewer jobs, one per review brief, and only a
 /// never-stamped unit keeps its own (maintainer) job. Unless `briefs` is `None`, writes each job's
-/// brief and fills its `brief_path` and `handoff`.
-pub fn next(ws: &Workspace, task: Option<&str>, briefs: Briefs, roles: bool) -> Result<NextReport> {
+/// brief and fills its `brief_path` and `handoff`. With `run_checks`, runs plan step and flow
+/// checks (`plan::plans_and_flows`).
+pub fn next(
+    ws: &Workspace,
+    task: Option<&str>,
+    briefs: Briefs,
+    roles: bool,
+    run_checks: bool,
+) -> Result<NextReport> {
     let (role_jobs, snapshots) = role_jobs(ws, task)?;
     let mut jobs = vec![];
     if roles {
@@ -135,14 +155,19 @@ pub fn next(ws: &Workspace, task: Option<&str>, briefs: Briefs, roles: bool) -> 
         jobs.extend(first_reviews);
     }
     let mut unowned_changed = vec![];
+    let (mut plans, mut flow_checks) = (vec![], vec![]);
     for ((repo, loaded), snapshot) in ws.loaded_repos()?.into_iter().zip(&snapshots) {
         let paths = changed_unowned(repo, loaded, snapshot)?;
         unowned_changed.extend(paths.iter().map(|p| ws.display_name(repo, p)));
+        let (p, f) = plan::plans_and_flows(ws, repo, loaded, snapshot, run_checks)?;
+        plans.extend(p);
+        flow_checks.extend(f);
     }
     Ok(NextReport {
         architect: jobs.iter().any(|j| j.role == Role::Architect),
         jobs,
-        flow_checks: vec![],
+        flow_checks,
+        plans,
         check: check_at(ws, None, &snapshots)?,
         unowned_changed,
     })
@@ -363,8 +388,8 @@ pub fn review_due(repo: &Repo, task: Option<&str>) -> Result<(String, String, Ve
 /// Every job `next --roles` lists, and each repo's snapshot.
 fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'a>>, Vec<String>)> {
     let mut jobs: Vec<RoleJob> = Vec::new();
-    // Stamped units changed since their stamps: (name, repo, task, snapshot, changed files).
-    let mut moved: Vec<(String, &Repo, String, String, Vec<String>)> = Vec::new();
+    // Stamped units changed since their stamps: (unit, repo, task, snapshot, changed files).
+    let mut moved: Vec<(&str, &Repo, String, String, Vec<String>)> = Vec::new();
     let mut snapshots = Vec::new();
     for (repo, loaded) in ws.loaded_repos()? {
         let root = &repo.root;
@@ -465,7 +490,7 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
                             }
                         })
                         .collect();
-                    moved.push((name.clone(), repo, task.clone(), snapshot.clone(), changed));
+                    moved.push((&def.name, repo, task.clone(), snapshot.clone(), changed));
                 }
                 unit_jobs.push(Job {
                     debt_added,
@@ -521,9 +546,20 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
         }
     }
 
-    // No plans exist yet, so no plan ever covers the moved units.
-    if moved.len() >= 2 {
-        let names: Vec<&str> = moved.iter().map(|(n, ..)| n.as_str()).collect();
+    // an open plan of the repo that names every moved unit covers them
+    let covered = match moved.first() {
+        Some((_, first, ..)) => first.loaded()?.plans.iter().any(|(_, plan)| {
+            moved.iter().all(|(unit, repo, ..)| {
+                std::ptr::eq(*repo, *first) && plan.steps.iter().any(|s| s.unit == *unit)
+            })
+        }),
+        None => false,
+    };
+    if moved.len() >= 2 && !covered {
+        let names: Vec<String> = moved
+            .iter()
+            .map(|(unit, repo, ..)| ws.display_name(repo, unit))
+            .collect();
         let (_, repo, task, snapshot, _) = &moved[0];
         let repo_name = &repo.name;
         let job = Job {
@@ -660,6 +696,42 @@ impl Human for NextReport {
                 format!("  - debt added {path}:{}: {}", d.line, one_line(&d.text))
             }));
         }
+        if !self.flow_checks.is_empty() {
+            out.push("\n## Flow checks\n".into());
+        }
+        for f in &self.flow_checks {
+            let verdict = if f.pass { "pass" } else { "fail" };
+            let (flow, cmd) = (one_line(&f.flow), one_line(&f.command));
+            out.push(format!("- {flow}: {verdict} (`{cmd}`)"));
+            if !f.pass {
+                out.push(crate::pack::fenced("text", &f.output).trim_end().into());
+            }
+        }
+        if !self.plans.is_empty() {
+            out.push("\n## Plans\n".into());
+        }
+        for p in &self.plans {
+            let closed = if p.closed { " (closed)" } else { "" };
+            out.push(format!(
+                "- {}: {}{closed}",
+                one_line(&p.id),
+                one_line(&p.title)
+            ));
+            for s in &p.steps {
+                let result = match s.result {
+                    Some(StepResult::Pass) => "pass",
+                    Some(StepResult::Fail) => "fail",
+                    None => "not run",
+                };
+                let fresh = if s.fresh { "fresh" } else { "stale" };
+                let (unit, change) = (one_line(&s.unit), one_line(&s.change));
+                out.push(format!("  - {unit} ({fresh}, {result}): {change}"));
+                if let Some(o) = s.output.as_ref().filter(|_| result == "fail") {
+                    out.push(crate::pack::fenced("text", o).trim_end().into());
+                }
+                out.extend(s.todo.as_ref().map(|t| format!("    {}", one_line(t))));
+            }
+        }
         out.extend(self.unowned_line().map(|l| format!("\n{}", one_line(&l))));
         out.push(String::new());
         out.push(self.check.render());
@@ -672,7 +744,7 @@ pub fn run(
     task: Option<&str>,
     no_brief: bool,
     roles: bool,
-    _no_run: bool,
+    no_run: bool,
     pr: Option<u64>,
 ) -> Result<ExitCode> {
     if pr.is_some() {
@@ -684,12 +756,13 @@ pub fn run(
     } else {
         Briefs::Write
     };
-    let report = next(&ws, task, briefs, roles)?;
+    let report = next(&ws, task, briefs, roles, !no_run)?;
     emit(&report, g.human);
     Ok(
         if report.jobs.is_empty()
             && report.check.failures.is_empty()
             && report.unowned_changed.is_empty()
+            && !report.checks_failed()
         {
             ExitCode::SUCCESS
         } else {

@@ -1647,7 +1647,8 @@ fn reviewer_briefs(d: &Path, jobs: &Value) -> Vec<(String, Vec<String>)> {
         .enumerate()
         .map(|(i, j)| {
             let rel = format!(".stewards/briefs/review-{}-{}.md", i + 1, &snapshot[..8]);
-            let path = d.join(&rel);
+            // canonical: on macOS a temp dir is reached through the /var symlink
+            let path = d.canonicalize().unwrap().join(&rel);
             assert_eq!(j["brief_path"], json!(path));
             assert_eq!(
                 j["handoff"],

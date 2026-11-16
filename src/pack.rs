@@ -618,7 +618,7 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
     t
 }
 
-fn fenced(lang: &str, body: &str) -> String {
+pub(crate) fn fenced(lang: &str, body: &str) -> String {
     // A fence longer than any backtick run in the body cannot be closed from inside it.
     let longest = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
     let fence = "`".repeat(longest.max(2) + 1);

@@ -19,8 +19,8 @@ Keep check the single gate: a new caller of run goes through run::run or run::ch
 | id | contract | anchor |
 |---|---|---|
 | run-allowed | The repo's commands.test entries (own timeout, else commands.timeout\_seconds) plus the named unit's test\_command only; never another unit's, never commands.lint. | [src/run.rs\:\:allowed](../../src/run.rs#L48) |
-| run-check | Err if cmd has a SHELL\_CHARS, control or invisible character, or does not start with all the words of an allowed entry; else the matching entry with the most words. | [src/run.rs\:\:check](../../src/run.rs#L13) |
-| run-run | Refused\: command\_not\_allowed error. Else runs argv, no shell, in its own process group, SIGKILLed at the timeout and after a normal exit; bare name via absolute PATH only. Returns pass, timed\_out, exit\_code, output tail. | [src/run.rs\:\:run](../../src/run.rs#L1) |
+| run-check | Err if cmd has a SHELL\_CHARS, control or invisible character, or does not start with all the words of an allowed entry; else the matching entry with the most words. | [src/run.rs\:\:check](../../src/run.rs#L80) |
+| run-run | Refused\: command\_not\_allowed error. Else runs argv, no shell, in its own process group, SIGKILLed at the timeout and after a normal exit; bare name via absolute PATH only. Returns pass, timed\_out, exit\_code, output tail. | [src/run.rs\:\:run](../../src/run.rs#L115) |
 | run-shell-chars | Characters a command may not contain; submit's command\_not\_allowed example uses it. | [src/run.rs\:\:SHELL\_CHARS](../../src/run.rs#L19) |
 
 ## Scenarios
@@ -41,4 +41,4 @@ _None._
 
 ## Last reviewed
 
-2ab1609b2d2dc9eca8d0a1982fd996c63c2fd7d2
+680708dc18906aa4b5574f58462a5f360d7ec66c

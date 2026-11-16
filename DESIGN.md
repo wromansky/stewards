@@ -305,9 +305,11 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Triggers:** before changing, `route` the files; a change the main agent
   cannot plan from the unit pages goes to the owning maintainer to explain
   and plan, or, for two or more units or no owner, to the architect. To change, `brief <unit> --role developer` writes one
-  brief per task of the maintainer's plan (or the unit's step of an open
-  architect plan) and prints one handoff each; a change with no plan
-  the main agent makes itself. Before reporting done, `review` lists what
+  brief per task of the maintainer's plan and prints one handoff each; a
+  change with no plan the main agent makes itself. A step of an open
+  architect plan that has not passed carries `todo` in `next.plans`: make
+  the change yourself, or run `stewards brief <unit> --role maintainer
+  --task "<change>"` to split it into developer tasks. Before reporting done, `review` lists what
   `next` finds: the units due, in the review briefs of one round, which
   together cover every stamped one, plus a maintainer first review for
   each never-stamped one; `review
@@ -395,9 +397,13 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   touch the unit. The architect's pack is every unit's purpose and interface
   ids plus all flows and decisions; no anchors, no source.
 - **Plans:** the architect's steps are state in `.stewards/plans/<id>.toml`;
-  `next` runs each stale unit's step check through the allowlist, marks pass
-  or fail, and closes the plan when all pass and every unit it names is
-  fresh again; a closed plan is deleted (git history keeps it).
+  `next` runs each stale unit's step check through the allowlist, and again
+  each step whose stored result is `fail` (so a step that failed and was then
+  stamped can still pass), marks pass or fail in the step's `result`, and
+  closes the plan when all pass and every unit it names is fresh again; a
+  closed plan is deleted (git history keeps it). An open plan does not hold
+  `review` back. A step whose unit never changes is never run, so its plan
+  stays open: delete the plan file by hand.
 - **Debt:** `simplified:` comments are computed on demand by `debt` and
   attached to the owning unit by route; never stored.
 - **Bugs:** a tester's or reviewer's `bugs[]` and `validate --report` both
@@ -613,8 +619,18 @@ created = "2026-10-21"
 unit = "api"
 change = "add priority to the item schema and endpoints"
 interfaces = ["create-item", "list-items"]
-check = "pytest tests/api -k priority"   # must start with a commands.test prefix
+check = "pytest tests/api -k priority"   # must pass the allowlist for the step's unit
+result = "pass"                          # pass | fail; written by next, absent until the check first runs
 ```
+
+`<id>` is `<created>-<slug>`: `created` is the UTC date the architect's
+answer was submitted, the slug the title lowercased with each run of
+characters other than `a-z0-9` as one `-`, at most 40 characters (`plan` when
+none is left), and `-2`, `-3`, ... on a clash. `submit` rejects a plan with
+no step, a step whose unit is not in `units.toml`, or a check the allowlist
+refuses; interface ids are not checked (a plan may name one the change adds).
+`load_repo` reads every `plans/*.toml` through no link; a parse failure or a
+step naming an unknown unit is `invalid_toml`.
 
 `stewards.toml` (workspace, in a parent folder)
 
@@ -662,7 +678,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | `brief [unit] --role <r> [--task t] [--stdout]` | writes an explain brief (the review briefs of the round for the reviewer, listed under `briefs`, a `usage` error when no stamped unit is due; one brief per task for the developer), prints its path, size, and handoff |
 | `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update and what it printed to `<job>.result.json`; an approving maintainer review, or a reviewer's approved unit, stamps |
 | `stamp <unit>` | records `[reviewed]` at the current snapshot; the human override |
-| `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check` and plan step checks, writes the review briefs of the round (with `--roles`, the per-role briefs), prints the jobs, each with its handoff and, for a reviewer job, the units it covers |
+| `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check` and (unless `--no-run`) plan step checks and flow checks, writes the review briefs of the round (with `--roles`, the per-role briefs), prints the jobs, each with its handoff and, for a reviewer job, the units it covers |
 | `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files (outside `unowned_ok`), `instruction_files` entries that do not point at `AGENTS.md` |
 | `validate [--report <f>] [--export]` | `--report` records a bug on its unit's card, runs the repro through the allowlist, writes the validator brief; `--export` files an issue for every judged bug that has none |
 | `review [--task t] [--roles] [--answer a]...` | records each `--answer` (`<unit>: <file>:<line>: <reason>`, a reason not to apply a finding of the last review, for a reviewer to accept or contest), then reports, as what subagents reported (not verified), and removes the result files the last round's submits wrote, at most 20 per call, then lists what `next` (`next --roles`) lists for the task in force (`--task`, else the one the last `--task` stored), each job with its handoff, and one `then` line; never starts a session; exit 0 only when no job is listed, no finding is reported, and no result file is left |
@@ -675,9 +691,10 @@ never routed, never reported as unowned, so no unit ever owns them.
 
 Global flags: `--human`, `--repo <name>`, `-C <dir>`, `--direct`. JSON by
 default, markdown with `--human`. Exit 0 ok, 1 work is due (`check`
-failures; for `next`, also any job, failed flow check, or unowned changed
-file; for `review`, any job listed, finding reported, result file left, or
-unowned changed file), 2 errors.
+failures; for `next`, also any job, failed flow or plan step check, or
+unowned changed file; for `review`, any job listed, finding reported, result
+file left, failed flow or plan step check, or unowned changed file), 2
+errors.
 
 ## Rules
 
@@ -818,16 +835,27 @@ from the stamp. The per-role jobs, which `next --roles` lists:
   mark they measure from the stamp, and a never-stamped unit gets none
   until its first review stamps it (a validator job does not wait)
 - 2+ units changed since their stamps (never-stamped units do not count)
-  and no plan naming all of them → architect
+  and no open plan of the repo naming all of them → architect
 - a bug gap with no `severity` → validator, one per unit per round
 - added lines in `git diff -U0 <stamped tree> <snapshot>` that match the debt
   rule → listed under the owning unit's maintainer job
-- a flow with a `check` and a stale unit → the command runs through the
-  allowlist (unless `--no-run`); a failure is reported against the flow
+- a flow with a `check` and a stale or never-stamped unit → the command
+  runs through the repo's allowlist (`commands.test` only; unless
+  `--no-run`) into `flow_checks[] {flow, command, pass, output}`; a timeout
+  or a command the allowlist refuses is a failure whose output says so
+- each open plan → `plans[] {id, title, closed, steps[] {unit, change,
+  check, result, fresh, output?, todo?}}`: a step runs its `check` through
+  the allowlist of its unit (unless `--no-run`) when the unit is stale or
+  never stamped, or the step's stored `result` is `fail`; the result is
+  written back to the plan file when it changed; `output` is there only for
+  a check run in this call. A plan whose every step is `pass` and whose every
+  step unit is fresh is deleted and reported `closed: true`. A step that is
+  not `pass` carries `todo` (see Triggers). With `--no-run` nothing runs and
+  no plan is written: the stored results are shown
 - `check` failures are included; `next` exits 0 only with no jobs, a green
-  `check`, passing flow checks, and no `unowned_changed` (files no unit
-  owns, outside `unowned_ok`, changed or added since the oldest stamp);
-  otherwise 1
+  `check`, no failed flow check or plan step `result`, and no
+  `unowned_changed` (files no unit owns, outside `unowned_ok`, changed or
+  added since the oldest stamp); otherwise 1
 
 Plain `next` lists, per repo, the `reviewer` jobs of one round, folding
 every stamped unit that has a maintainer (stale), tester, or documenter job
@@ -912,10 +940,15 @@ starts a session and never waits for one.
   files belong to no unit and were not reviewed: <paths>. Add them to a
   unit in .stewards/units.toml, then run stewards review again.`) follows
   the `then` line above, or is the whole `then` line when there is no
-  other. With nothing left: `done`.
+  other. A failed flow check or plan step adds `Fix the failing checks
+  listed under next.flow_checks and next.plans, then run stewards review
+  again.` after the lines above, or alone when there is no other (before
+  the unowned line). With nothing left: `done`; each open plan then adds
+  `Plan <id> has steps left; see next.plans.` (`done. Plan ...`), still
+  exit 0.
 - **Exit** 0 only when no job is listed, no finding is left, no result
-  file is left to read, and no `unowned_changed` file is left; 1
-  otherwise.
+  file is left to read, no flow check or plan step has failed, and no
+  `unowned_changed` file is left; 1 otherwise.
 - **Task.** `--task` is stored in `.stewards/briefs/review-task.txt`
   (git-ignored with the briefs, written through `Repo::write`, capped at
   20,000 characters) and used by every later `review` without `--task`; a
@@ -1017,12 +1050,22 @@ route; group per unit.
   shell characters. A timeout or a program that cannot start is
   a failed result, not an error; the result keeps the last 4,000
   characters of stdout and stderr with control characters replaced.
-  Nothing from an answer file, card, issue, or PR runs otherwise.
+  Nothing from an answer file, card, issue, or PR runs otherwise. A plan
+  step's check is checked against its unit's allowlist when `submit` stores
+  it and again when `next` runs it (a hand-edited plan or flow `check` the
+  allowlist refuses is a failed result); a flow check gets `commands.test`
+  only. The output is the command's text, attacker-controlled like card
+  text: `next` and `review` carry it as a JSON string, `--human` prints it
+  in a fence no backtick run inside it can close, and any brief that ever
+  quotes it must fence it as data. A step's `todo` never puts the step's
+  `change` on its command line.
 - **Writes.** The tool writes only `.stewards/**`, `docs/units/**`, the
   marked block in `AGENTS.md`, two appended `.gitignore` lines, and CI
   files when asked by flag. Never source or
   tests. Deletes only inside `.stewards/briefs` and `.stewards/telemetry`,
-  and closed plans. Snapshots add unreachable objects to `.git/objects`
+  and closed plans. `submit` writes a new plan; `next` (and so `review`)
+  writes each step result that changed and deletes a closed plan, unless
+  `--no-run`. Snapshots add unreachable objects to `.git/objects`
   (git prunes them) and never touch the index, HEAD, or any ref.
   Every write, append, and delete inside a repo goes through `Repo::write`,
   `append`, or `remove`: the path must be plain names, no existing
@@ -1342,7 +1385,8 @@ must name a key the card has and the patch does not also upsert, and a
 removed anchor need not resolve. A
 patch gap is `{kind, title, anchor?, note, repro?}`; severity and issue are
 the tool's. `scenario_patch` upserts scenarios by id. A plan is `{title,
-steps[] {unit, change, interfaces[], check}}`. A unit proposal is `{name,
+steps[] {unit, change, interfaces[], check}}`, stored as
+`plans/<id>.toml` (see Schemas). A unit proposal is `{name,
 purpose, paths[]}`. A validation error names the field path, or
 `(document)`, and carries an example value.
 
@@ -2344,7 +2388,8 @@ ran on this repository.
   role jobs over two rounds. Changed: they now trigger only when a hunk
   touches an interface's own lines (see next).
 - The architect job returns every round in which two stamped units
-  changed, until plans exist (stage 3).
+  changed, until plans exist (stage 3). Changed: an open plan naming every
+  moved unit now covers them (see next).
 - A model learns a length cap only by being rejected; the caps belong in
   the schema text.
 - Two roles can record one bug under two titles.

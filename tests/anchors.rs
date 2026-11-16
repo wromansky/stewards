@@ -1,5 +1,11 @@
-use std::path::Path;
+#[allow(dead_code)] // each test crate uses a subset of the helpers
+mod common;
 
+use std::path::Path;
+use std::process::Command;
+
+use common::{append, copy_dir, fixture, json, run_in};
+use serde_json::Value;
 use stewards::anchors::{Resolution, interface_lines, resolve, source_window};
 use stewards::model::Anchor;
 
@@ -559,5 +565,249 @@ fn a_trailing_comment_of_the_previous_item_is_not_in_the_span() {
     assert_eq!(
         interface_lines("f.rs", "let_x!(); // note\nfn f() {}\n", "f"),
         [2]
+    );
+}
+
+// Runtime grammars: `tests/fixtures/grammars/json` is tree-sitter-json's parser, compiled here
+// into a stewards home and exercised through the binary, which reads that home from the
+// environment. Needs `cc`.
+
+const JSON_GRAMMAR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/grammars/json");
+
+/// A stewards home whose `grammars/<lang>/` holds `c_file` compiled as the `<lang>` grammar (the
+/// fixture's `tree_sitter_json` renamed) and the fixture's `tags.scm`.
+fn grammar_home(lang: &str, c_file: &Path) -> tempfile::TempDir {
+    let home = tempfile::TempDir::new().unwrap();
+    let dir = home.path().join("grammars").join(lang);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (shared, lib) = if cfg!(target_os = "macos") {
+        ("-dynamiclib", "lib.dylib")
+    } else {
+        ("-shared", "lib.so")
+    };
+    let out = Command::new("cc")
+        .args([shared, "-fPIC", "-w"])
+        .arg(format!(
+            "-Dtree_sitter_json=tree_sitter_{}",
+            lang.replace('-', "_")
+        ))
+        .arg("-o")
+        .arg(dir.join(lib))
+        .arg(c_file)
+        .output()
+        .expect("these tests compile a grammar with `cc`: install a C compiler");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::copy(
+        Path::new(JSON_GRAMMAR).join("tags.scm"),
+        dir.join("tags.scm"),
+    )
+    .unwrap();
+    home
+}
+
+fn json_home() -> tempfile::TempDir {
+    grammar_home("json", &Path::new(JSON_GRAMMAR).join("parser.c"))
+}
+
+/// The `single` fixture with `files` added and `anchors` (path, name) on the api card.
+fn repo_anchoring(files: &[(&str, &str)], anchors: &[(&str, &str)]) -> tempfile::TempDir {
+    let repo = fixture("single");
+    for (path, text) in files {
+        std::fs::write(repo.path().join(path), text).unwrap();
+    }
+    for (path, name) in anchors {
+        append(
+            &repo.path().join(".stewards/units/api.toml"),
+            &format!("[[anchor]]\npath = \"{path}\"\nname = \"{name}\"\n"),
+        );
+    }
+    repo
+}
+
+/// The `src/api/data.*` anchors `check` calls dead.
+fn dead_data_anchors(repo: &Path, home: &Path) -> Vec<String> {
+    let (_, v) = json(run_in(repo, home, &["check"]));
+    let mut dead: Vec<String> = v["failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["kind"] == "dead_anchor")
+        .map(|f| f["anchor"].as_str().unwrap().to_string())
+        .filter(|a| a.starts_with("src/api/data."))
+        .collect();
+    dead.sort();
+    dead
+}
+
+/// The messages of `check`'s `grammar_unusable` warnings.
+fn unusable_grammars(repo: &Path, home: &Path) -> Vec<String> {
+    let (_, v) = json(run_in(repo, home, &["check"]));
+    v["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["kind"] == "grammar_unusable")
+        .map(|f| f["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn packed_anchor(repo: &Path, home: &Path, path: &str, name: &str) -> Value {
+    let (_, v) = json(run_in(repo, home, &["pack", "api", "--role", "maintainer"]));
+    v["anchors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["path"] == path && a["name"] == name)
+        .unwrap_or_else(|| panic!("no anchor {path}::{name} in {v}"))
+        .clone()
+}
+
+const DATA: &str = "{\n  \"name\": \"alpha\"\n}\n";
+
+#[test]
+fn a_runtime_grammar_finds_a_key_and_calls_the_same_text_as_a_value_dead() {
+    let home = json_home();
+    let repo = repo_anchoring(
+        &[("src/api/data.json", DATA)],
+        &[
+            ("src/api/data.json", "name"),
+            ("src/api/data.json", "alpha"),
+        ],
+    );
+    let key = packed_anchor(repo.path(), home.path(), "src/api/data.json", "name");
+    assert_eq!(key["line"], 2);
+    assert!(
+        key["source"]
+            .as_str()
+            .unwrap()
+            .contains("\"name\": \"alpha\"")
+    );
+    let value = packed_anchor(repo.path(), home.path(), "src/api/data.json", "alpha");
+    assert!(value["line"].is_null());
+    assert_eq!(
+        dead_data_anchors(repo.path(), home.path()),
+        ["src/api/data.json::alpha"]
+    );
+    assert!(unusable_grammars(repo.path(), home.path()).is_empty());
+}
+
+#[test]
+fn an_extensions_file_names_the_extensions_instead_of_the_directory() {
+    let home = json_home();
+    std::fs::write(home.path().join("grammars/json/extensions"), ".jsonc\n\n").unwrap();
+    let repo = repo_anchoring(
+        &[("src/api/data.json", DATA), ("src/api/data.jsonc", DATA)],
+        &[
+            ("src/api/data.json", "alpha"),
+            ("src/api/data.jsonc", "alpha"),
+        ],
+    );
+    // `.json` is no longer the grammar's, so the text rule finds the value
+    assert_eq!(
+        dead_data_anchors(repo.path(), home.path()),
+        ["src/api/data.jsonc::alpha"]
+    );
+}
+
+#[test]
+fn a_library_without_the_grammar_symbol_warns_and_the_extension_keeps_the_text_rule() {
+    let src = tempfile::TempDir::new().unwrap();
+    let c = src.path().join("other.c");
+    std::fs::write(&c, "int answer(void) { return 42; }\n").unwrap();
+    let home = grammar_home("json", &c);
+    let repo = repo_anchoring(
+        &[("src/api/data.json", DATA)],
+        &[("src/api/data.json", "alpha")],
+    );
+    let dir = home.path().join("grammars/json");
+    let warnings = unusable_grammars(repo.path(), home.path());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains(&format!("grammar {} is unusable", dir.display())));
+    assert!(warnings[0].contains("exports no `tree_sitter_json`"));
+    assert!(warnings[0].contains(&format!(
+        "rebuild it against tree-sitter ABI {}..{}, or remove {}",
+        tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION,
+        tree_sitter::LANGUAGE_VERSION,
+        dir.display()
+    )));
+    assert!(dead_data_anchors(repo.path(), home.path()).is_empty());
+}
+
+#[test]
+fn a_grammar_directory_without_tags_scm_warns_and_falls_back_to_text() {
+    let home = json_home();
+    std::fs::remove_file(home.path().join("grammars/json/tags.scm")).unwrap();
+    let repo = repo_anchoring(
+        &[("src/api/data.json", DATA)],
+        &[("src/api/data.json", "alpha")],
+    );
+    let warnings = unusable_grammars(repo.path(), home.path());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("tags.scm is not a regular file"));
+    assert!(dead_data_anchors(repo.path(), home.path()).is_empty());
+}
+
+#[test]
+fn a_tags_scm_that_does_not_compile_for_the_grammar_warns() {
+    let home = json_home();
+    std::fs::write(
+        home.path().join("grammars/json/tags.scm"),
+        "(no_such_node) @name\n",
+    )
+    .unwrap();
+    let repo = repo_anchoring(&[], &[]);
+    let warnings = unusable_grammars(repo.path(), home.path());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("does not compile for this grammar"));
+}
+
+#[test]
+fn a_library_built_for_an_abi_this_build_does_not_read_is_refused() {
+    let src = tempfile::TempDir::new().unwrap();
+    copy_dir(Path::new(JSON_GRAMMAR), src.path());
+    let c = src.path().join("parser.c");
+    let old = std::fs::read_to_string(&c).unwrap();
+    assert!(old.contains("#define LANGUAGE_VERSION 14"));
+    std::fs::write(
+        &c,
+        old.replace("#define LANGUAGE_VERSION 14", "#define LANGUAGE_VERSION 12"),
+    )
+    .unwrap();
+    let home = grammar_home("json", &c);
+    let repo = repo_anchoring(&[], &[]);
+    let warnings = unusable_grammars(repo.path(), home.path());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("has tree-sitter ABI 12"));
+}
+
+#[test]
+fn a_runtime_directory_never_overrides_a_static_extension() {
+    let home = grammar_home("rs", &Path::new(JSON_GRAMMAR).join("parser.c"));
+    let repo = repo_anchoring(
+        &[("src/api/data.rs", "fn name() {}\n")],
+        &[("src/api/data.rs", "name")],
+    );
+    assert!(dead_data_anchors(repo.path(), home.path()).is_empty());
+    assert!(unusable_grammars(repo.path(), home.path()).is_empty());
+}
+
+/// A relative stewards home would resolve inside the repo, whose `.stewards/grammars` could then
+/// hand `check` a native library: it counts as no home at all.
+#[test]
+fn a_relative_stewards_home_is_no_home_so_the_repos_own_grammars_are_never_read() {
+    let repo = repo_anchoring(
+        &[("src/api/data.rs", "fn name() {}\n")],
+        &[("src/api/data.rs", "name")],
+    );
+    std::fs::create_dir_all(repo.path().join(".stewards/grammars/json")).unwrap();
+    assert!(unusable_grammars(repo.path(), Path::new(".stewards")).is_empty());
+    // the same directory through an absolute home is read (and refused: it has no library)
+    assert_eq!(
+        unusable_grammars(repo.path(), &repo.path().join(".stewards")).len(),
+        1
     );
 }

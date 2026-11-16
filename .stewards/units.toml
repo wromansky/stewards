@@ -16,7 +16,7 @@ paths = ["src/git.rs", "tests/git.rs"]
 [[unit]]
 name = "analysis"
 purpose = "Read-only facts about the repo's files: path-to-unit routing, anchor resolution and source windows, unit fingerprints and review stamps (check, stamp), and simplified: debt scanning."
-paths = ["src/anchors.rs", "src/anchors/**", "src/route.rs", "src/check.rs", "src/debt.rs", "tests/anchors.rs", "tests/route.rs", "tests/route_workspace.rs", "tests/check.rs", "tests/debt.rs"]
+paths = ["src/anchors.rs", "src/anchors/**", "src/route.rs", "src/check.rs", "src/debt.rs", "tests/anchors.rs", "tests/route.rs", "tests/route_workspace.rs", "tests/check.rs", "tests/debt.rs", "tests/fixtures/grammars/**"]
 
 [[unit]]
 name = "pack"

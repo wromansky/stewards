@@ -387,8 +387,22 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   be a definition inside a definition named by the segment before it, or
   inside a Rust `impl` of that type (so `Router::owner` is alive and
   `Other::owner` dead), or under that YAML key; only the immediate
-  qualifier is checked. Runtime extras from `~/.stewards/grammars/<lang>/`
-  via `libloading` come with the runtime-grammar task; BAML, Markdown, TOML,
+  qualifier is checked. Runtime grammars: `<stewards home>/grammars/<lang>/`
+  holds `lib.so` (`lib.dylib` on macOS) exporting `tree_sitter_<lang>` (`-`
+  in the name read as `_`) and `tags.scm`, an optional `extensions` file
+  listing file extensions one per line (without it, the directory name is
+  the one extension). A static grammar wins over a runtime one for the same
+  extension; of two directories claiming one extension the first by name
+  wins. The library loads with `libloading` once per process, on the first
+  file with its extension (an unfiltered `check`, and so `next` and
+  `review`, loads every grammar directory to validate it), and stays loaded; it is refused, with a reason, when
+  its language ABI is outside the range the linked `tree-sitter` accepts,
+  it has no such symbol, `tags.scm` does not compile for it, or `lib.*` or
+  `tags.scm` is not a regular file (links are followed: it is the user's
+  own home). A runtime language then behaves as a static one; one that
+  failed to load leaves its extension on the text rule, and `check` warns
+  `grammar_unusable` (see Rules › check; `check <unit>` and `pack` do not
+  repeat the warning). BAML, Markdown, TOML,
   Java, Ruby and every other language keep the text rule. (simplified: Go
   methods and C++ out-of-line members are not scoped by their receiver or
   class; `Type.Method` is dead there until a supplement query names them.)
@@ -642,7 +656,8 @@ User-level files live in `$STEWARDS_HOME` when it is set, else `~/.stewards`:
 `config.toml` (`[models.<harness>] <role> = "<alias>"`, and `[models.direct]
 <role> = "<provider>/<model>"` for `--direct`, providers anthropic, openai,
 google-ai), `memory.toml` (`[[entry]] text, languages?,
-roles?`), `~/.stewards/grammars/<lang>/{lib.so|.dylib, tags.scm}`.
+roles?`), `grammars/<lang>/{lib.so|lib.dylib, tags.scm, extensions?}` (see
+Anchors).
 
 Anchor grammar: `path` is the text before the first `::`, `name` is the rest
 (Rust names contain `::`). A text match is an occurrence of `name` whose
@@ -679,7 +694,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update and what it printed to `<job>.result.json`; an approving maintainer review, or a reviewer's approved unit, stamps |
 | `stamp <unit>` | records `[reviewed]` at the current snapshot; the human override |
 | `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check` and (unless `--no-run`) plan step checks and flow checks, writes the review briefs of the round (with `--roles`, the per-role briefs), prints the jobs, each with its handoff and, for a reviewer job, the units it covers |
-| `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files (outside `unowned_ok`), `instruction_files` entries that do not point at `AGENTS.md` |
+| `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files (outside `unowned_ok`), `instruction_files` entries that do not point at `AGENTS.md`, `grammar_unusable`: a directory under the stewards home's `grammars/` that could not be used, naming it and the reason, with `rebuild it against tree-sitter ABI <min>..<max>, or remove <dir>` (never a failure; `next` and `review` carry it with the other warnings) |
 | `validate [--report <f>] [--export]` | `--report` records a bug on its unit's card, runs the repro through the allowlist, writes the validator brief; `--export` files an issue for every judged bug that has none |
 | `review [--task t] [--roles] [--answer a]...` | records each `--answer` (`<unit>: <file>:<line>: <reason>`, a reason not to apply a finding of the last review, for a reviewer to accept or contest), then reports, as what subagents reported (not verified), and removes the result files the last round's submits wrote, at most 20 per call, then lists what `next` (`next --roles`) lists for the task in force (`--task`, else the one the last `--task` stored), each job with its handoff, and one `then` line; never starts a session; exit 0 only when no job is listed, no finding is reported, and no result file is left |
 | `review --pr <n>` | maintainer review briefs on a PR or MR diff; findings posted as review comments |
@@ -1021,7 +1036,19 @@ route; group per unit.
   it is dead: an anchor can never read outside the repo or reach an
   excluded file through a link. An anchor is alive only when its path is a
   file in the repo's snapshot tree (tracked, modified, or untracked and not
-  ignored), so `.git/` and ignored files are dead and never inlined. No unit
+  ignored), so `.git/` and ignored files are dead and never inlined. Native
+  code is loaded only from the user's own stewards home (`grammars/<lang>/lib.*`,
+  Anchors), never from a repository: a library in a clone would run code
+  from it. The stewards home is `$STEWARDS_HOME` or `$HOME/.stewards` only
+  when that path is absolute; otherwise there is none (no config, memory or
+  grammars), so a relative path can never resolve into the repository.
+  Accepted limits: loading a library runs its initializers, as the user,
+  before the ABI, symbol and `tags.scm` checks, on every unfiltered `check`,
+  `next` and `review`; a grammar is native C parsing untrusted repo files,
+  so a memory bug in an installed grammar is reachable by a hostile repo;
+  `grammars/` is trusted like shell config (no owner or mode check, links
+  followed); a library is never unloaded; parsing has no time limit or file
+  size cap. No unit
   ever owns `.git/**` (any path with a `.git` component, in any ASCII case),
   so it is never in a lane, a fingerprint, or a patch anchor. Card text printed on one line has its
   control characters replaced; purpose and prose in a rendered pack sit in
@@ -1039,7 +1066,8 @@ route; group per unit.
   or check can pass flags that make the allowed program run any other
   program, as the user, with the inherited environment (tokens included),
   and with no sandbox. The allowlist limits which program starts, not what
-  it does. CI runs `check`, which runs nothing. One module (`run`) owns the
+  it does. CI runs `check`, which runs no repo command (it does load the user's
+  grammar libraries when the stewards home has any). One module (`run`) owns the
   allowlist and the execution: argv split, no shell, from the repo root, a
   bare program name found only through the absolute entries of `PATH`,
   stdin null, inheriting env, in its own process group, which is killed
@@ -2647,7 +2675,9 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   one ABI); they are dependencies because neither std nor the tree has a
   parser for these languages. No `tree-sitter-baml`; `tree-sitter-loader` compiles
   grammars from source at runtime (needs a C compiler); prebuilt grammar
-  libraries load with `libloading`.
+  libraries load with `libloading` 0.8.9 (already in the tree through
+  `baml-sys`); the runtime loader takes the `LanguageFn` from
+  `tree-sitter-language` 0.1.9, also already locked.
 - Drivers (verified 2026-10-20 on claude 2.1.305 and codex-cli 0.154.0; Pi
   and Claude Code 1.0.128 as dated below): Claude Code 2.1.305 `claude -p
   "<prompt>" --output-format stream-json

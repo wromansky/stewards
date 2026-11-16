@@ -20,7 +20,6 @@ exclude = [".env*", "*.pem", "*.key", "*secret*", "*credential*", "id_rsa*"]
 name = "create-item"
 units = ["api", "store"]
 entry = "src/api/items.py::create_item"
-check = "pytest tests -k create_item"
 [[decision]]
 title = "store has no HTTP knowledge"
 why = "api translates requests; store only persists"

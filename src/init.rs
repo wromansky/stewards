@@ -840,7 +840,7 @@ fn draft_jobs(g: &Global, is_workspace: bool, repo: &Repo, init: Option<Init>) -
         debt_added: vec![],
     }];
     jobs.extend(
-        next::next(&ws, None, next::Briefs::None, true)?
+        next::next(&ws, None, next::Briefs::None, true, false)?
             .jobs
             .into_iter()
             .filter(|j| j.role == Role::Maintainer && j.reasons == ["never reviewed"])

@@ -6,8 +6,9 @@ use anyhow::Result;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use tree_sitter::{LANGUAGE_VERSION, MIN_COMPATIBLE_LANGUAGE_VERSION};
 
-use crate::anchors::{Resolution, resolve};
+use crate::anchors::{Resolution, resolve, runtime};
 use crate::git;
 use crate::model::{Anchor, RepoConfig, Reviewed, UnitCard};
 use crate::output::{CliError, Global, Human, emit};
@@ -385,6 +386,22 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
                     "{} tracked file(s) have no owner: {}",
                     unowned.len(),
                     listed(&paths)
+                ),
+            });
+        }
+    }
+    // Grammars belong to the user, not to a repo or unit.
+    if filter.is_none() {
+        let abi = format!("{MIN_COMPATIBLE_LANGUAGE_VERSION}..{LANGUAGE_VERSION}");
+        for (dir, reason) in runtime::unusable() {
+            let dir = dir.display();
+            report.warnings.push(Finding {
+                kind: "grammar_unusable",
+                unit: None,
+                path: None,
+                anchor: None,
+                message: format!(
+                    "grammar {dir} is unusable: {reason}; rebuild it against tree-sitter ABI {abi}, or remove {dir}"
                 ),
             });
         }

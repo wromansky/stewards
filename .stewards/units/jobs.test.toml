@@ -319,3 +319,11 @@ given = "a plan with an unknown unit, a disallowed check, or no step"
 expect = "answer_parse_failed on the unit or steps, command_not_allowed on the check, and no plan file"
 level = "integration"
 command = "cargo test --test submit_roles architect_plan_with_an_unknown_unit_a_disallowed_check_or_no_step_is_rejected"
+
+[[scenario]]
+id = "validator-brief-runs-repro"
+interface = "validator-repro"
+given = "a unit card with an unjudged bug whose repro fails, then the same through next --roles and a plain brief"
+expect = "the written validator brief carries repro_result with reproduced true; a bug with no repro runs nothing"
+level = "integration"
+command = "cargo test --test validate next_roles_runs_the_repro_into_the_brief_and_no_brief_runs_nothing"

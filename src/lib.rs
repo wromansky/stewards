@@ -22,6 +22,7 @@ pub mod run;
 pub mod status;
 pub mod submit;
 pub mod telemetry;
+pub mod tracker;
 pub mod user;
 pub mod validate;
 pub mod workspace;

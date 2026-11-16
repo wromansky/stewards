@@ -79,3 +79,11 @@ given = "a fake gh with a marked comment by the logged-in user on a later page, 
 expect = "its own comment is PATCHed in place, the other is never edited, every call carries --hostname from origin"
 level = "integration"
 command = "cargo test --test forge edits_its_own_comment_in_place_across_pages"
+
+[[scenario]]
+id = "validate-export-files-once"
+interface = "validate-export"
+given = "a fake gh and a repo with [tracker] github and a judged bug without an issue"
+expect = "the issue is filed through gh api, its URL is written to the gap, and a second export files nothing"
+level = "integration"
+command = "cargo test --test tracker github_files_through_gh_api_and_records_the_url_once"

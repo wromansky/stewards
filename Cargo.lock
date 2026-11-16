@@ -1082,6 +1082,7 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "tree-sitter-yaml",
+ "ureq",
 ]
 
 [[package]]

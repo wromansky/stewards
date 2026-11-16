@@ -482,7 +482,32 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   Jira, or Linear (`repo.toml` `[tracker]`; auth from `gh`, `glab`,
   `JIRA_URL` and `JIRA_TOKEN`, `LINEAR_API_KEY`; Jira and Linear through
   their REST and GraphQL APIs), once per bug: the issue URL is recorded on
-  the gap.
+  the gap. It files every bug gap with a `severity` and no `issue`, in
+  units.toml then card order, and writes each issue's URL to its gap as
+  soon as the issue exists (lost-update checked), so a later failure never
+  loses a filed issue; it stops at the first failure. GitHub and GitLab go
+  through `gh api` / `glab api` (`POST repos/<owner>/<repo>/issues`,
+  `POST projects/<id>/issues`, the body as JSON on stdin, `--hostname` the
+  `origin` host when origin is that forge and its path is the `[tracker]`
+  project, else `github.com`/`gitlab.com`).
+  Jira: `POST <JIRA_URL>/rest/api/2/issue` (issue type `Bug`), the URL
+  `<JIRA_URL>/browse/<key>`; `JIRA_EMAIL` set → Basic `email:token`, else
+  Bearer `JIRA_TOKEN`; `JIRA_URL` must be https with no user info, `?`,
+  `#` or `\`. Linear:
+  `POST https://api.linear.app/graphql`, the team by key, then
+  `issueCreate`, values only as GraphQL variables. HTTP has a 30 s timeout
+  and follows no redirect. A returned URL is stored only when it is
+  printable ASCII with no space, at most 300 characters, and under the
+  tracker's own issue address (`https://<host>/<owner>/<repo>/issues/`,
+  `https://<host>/<path>/-/issues/`, `<JIRA_URL>/browse/`,
+  `https://linear.app/`). The URL is written to the first bug gap with the
+  same title, a `severity` and no `issue`. A missing login or variable, or
+  HTTP 401/403, is `tracker_auth`; any other tracker failure is
+  `tracker_failed`; a local failure keeps its own code. A failure after the
+  issue exists names its URL and says to set it on the gap by hand.
+  Prints `{exported[] {unit, title, url}, then}`; `then` is `done`, or,
+  when bugs without a severity exist, says to judge them with
+  `review --roles` first.
 - **Git and PR:** (`init --hooks`, a pre-push hook running `check`, is cut
   from 0.1.0; see Build order.) `next --pr <n>` posts the report (the `--human` text, in a code fence
   longer than any backtick run in it, so card and file text cannot ping,
@@ -1159,7 +1184,27 @@ route; group per unit.
   GitLab token in a CI variable is readable by every branch pipeline that can
   see the variable. A posting failure is reported in `pr_comment_error` and
   does not change the exit code. Telemetry stores
-  sizes and counts. Tracker export sends only fields the tool composed.
+  sizes and counts. Tracker export sends only fields the tool composed:
+  the title (the gap title, one line, capped at 120 characters) and a body
+  of `Unit <unit>, severity <severity>.`, the anchor, repro and note (each
+  in a code fence longer than any backtick run in it, every line indented
+  one space, invisible characters shown; for Jira plain text in
+  `{noformat}` blocks with every `{noformat...}` macro in the text
+  removed), and `Filed by stewards from .stewards/units/<unit>.toml.`
+  Nothing else from the repo is sent. Issues go to the `[tracker]` project
+  the repo names, as the logged-in user, with a title and text taken from
+  the card: check `[tracker]` before exporting from a repo you did not
+  write. No token, header, or request body reaches output, an error,
+  telemetry, or a file; a tracker error has the token and the whole
+  `Authorization` value blanked out. An issue can be filed twice: after a
+  crash, a timeout, or a dropped connection after the server created it;
+  after a 2xx reply with no key or URL; or after a failed card write (the
+  error names the URL to record by hand). Jira and Linear calls ignore
+  `HTTPS_PROXY` (`gh` and `glab` honour it) and trust the bundled web
+  roots, not the system store, so a Jira behind a required proxy or a
+  private CA fails closed. Tracker replies are untrusted: error text is
+  shown as one escaped line of at most 300 characters, and the returned
+  URL must be ASCII and under the tracker's own address.
   No secrets in any stewards file; tracker auth from CLIs and env.
 - **Sessions and results.** stewards never starts a session or a
   subagent and holds no harness's command line; the agent starts each
@@ -1227,7 +1272,8 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `workspace_repo_missing` | `stewards.toml` lists a path that doesn't exist | fix `repos` in `<path>` |
 | `baml_runtime_unavailable` | `--direct` and the native lib is not found | set `BAML_LIBRARY_PATH` to the library, or set `STEWARDS_BAML_DOWNLOAD=1` to let stewards download it |
 | `no_api_key` | `--direct` and the configured provider's key is unset or blank | export the variable named (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`) |
-| `tracker_auth` | `gh`/`glab` not logged in, or Jira or Linear env missing | `gh auth login` / `glab auth login` / set `JIRA_URL`, `JIRA_TOKEN` / set `LINEAR_API_KEY` |
+| `tracker_auth` | `gh`/`glab` not logged in, Jira or Linear env missing, `JIRA_URL` not https or with user info, or the tracker refused the credentials (HTTP 401/403) | `gh auth login` / `glab auth login` / set `JIRA_URL`, `JIRA_TOKEN` (and `JIRA_EMAIL` for Jira Cloud) / set `LINEAR_API_KEY` |
+| `tracker_failed` | `validate --export`: any other tracker failure; the message gives the kind, the HTTP status, the tracker's error on one line (at most 300 characters), and how many issues this call already filed and recorded | check [tracker] project and the tracker, then run stewards validate --export again; filed issues are recorded on the cards |
 | `harness_unknown` | unsupported harness name | one of the listed harnesses |
 | `usage` | bad arguments, a bad `-C`, or a role given with or without a unit wrongly | run `stewards <command> --help` |
 | `not_in_repo` | the current directory is in no repo of the workspace | run inside a repo or pass `--repo <name>` |

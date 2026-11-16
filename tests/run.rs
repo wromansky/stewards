@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use common::{edit, fixture};
 use stewards::model::load_repo;
 use stewards::output::CliError;
-use stewards::run::{RunResult, allowed, run};
+use stewards::run::{RunResult, allowed, check, run};
 
 const REPO_TOML: &str = ".stewards/repo.toml";
 
@@ -130,4 +130,28 @@ fn a_missing_program_is_a_failed_result() {
     let r = run_ok(dir.path(), None, "no-such-program-stewards x");
     assert!(!r.pass && !r.timed_out && r.exit_code.is_none(), "{r:?}");
     assert!(r.output.contains("no-such-program-stewards"), "{r:?}");
+}
+
+#[test]
+fn the_longest_matching_entry_sets_the_timeout_and_plain_entries_and_unit_commands_get_the_default()
+{
+    let dir = repo(
+        "[\"sh\", { cmd = \"sh s.sh\", timeout_seconds = 7 }]",
+        "sleep 30\n",
+    );
+    let d = dir.path();
+    edit(
+        &d.join(".stewards/units/api.test.toml"),
+        "test_command = \"pytest tests/api\"",
+        "test_command = \"make api\"",
+    );
+    let loaded = load_repo(d).unwrap();
+    let list = allowed(&loaded, Some("api"));
+    let default = loaded.repo.commands.timeout_seconds;
+    assert_eq!(check("sh s.sh", &list).unwrap().timeout_seconds, 7);
+    assert_eq!(
+        check("sh other.sh", &list).unwrap().timeout_seconds,
+        default
+    );
+    assert_eq!(check("make api x", &list).unwrap().timeout_seconds, default);
 }

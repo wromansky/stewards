@@ -434,19 +434,100 @@ fn a_second_init_refuses_and_changes_nothing() {
     assert_eq!(after, before[1..]);
 }
 
+/// The proposed unit owns `**`, which owns the CI file; narrow it so the file has no owner.
+fn own_src_only(dir: &Path) {
+    let path = dir.join(".stewards/units.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("\"**\""), "{text}");
+    std::fs::write(path, text.replace("\"**\"", "\"src/**\"")).unwrap();
+}
+
 #[test]
-fn ci_is_not_implemented_and_the_cut_hooks_and_render_are_gone() {
+fn ci_writes_the_origins_template_once_and_the_cut_hooks_and_render_are_gone() {
     let (_tmp, dir) = build(&s(&["main.py"]), &[]);
-    let out = stewards(&dir, &["init", "--ci"]);
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["error"]["code"], "not_implemented");
+    init(&dir);
+    own_src_only(&dir);
+    let ci =
+        |args: &[&str]| -> Value { serde_json::from_slice(&stewards(&dir, args).stdout).unwrap() };
+    // no origin: usage
+    assert_eq!(ci(&["init", "--ci"])["error"]["code"], "usage");
+    // an unknown host would ask the real `gh` and `glab`; forge.rs tests it with fakes
+    git(&dir, &["remote", "add", "origin", "git@github.com:a/b.git"]);
+    let v = ci(&["init", "--ci"]);
+    let path = ".github/workflows/stewards.yml";
+    assert_eq!(v["written"], serde_json::json!([path]), "{v}");
+    assert_eq!(v["unowned_ok_added"], serde_json::json!([path]));
+    let version = env!("CARGO_PKG_VERSION");
+    let yml = std::fs::read_to_string(dir.join(path)).unwrap();
+    assert!(yml.contains("run: stewards check"), "{yml}");
+    assert!(
+        yml.contains(&format!(
+            "curl -fsSL https://github.com/wromansky/stewards/releases/download/v{version}/install.sh | sh -s v{version}"
+        )),
+        "{yml}"
+    );
+    assert!(yml.contains("GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}"));
+    assert!(yml.contains("persist-credentials: false"), "{yml}");
+    // the PR number goes through env, never inline in the run line
+    assert!(yml.contains("--pr \"$PR_NUMBER\""), "{yml}");
+    assert!(
+        !yml.lines().any(|l| l.contains("run:") && l.contains("${{")),
+        "{yml}"
+    );
+    let repo = std::fs::read_to_string(dir.join(".stewards/repo.toml")).unwrap();
+    assert!(repo.contains(path), "{repo}");
+    assert!(v["then"].as_str().unwrap().starts_with(
+        "Commit .github/workflows/stewards.yml and .stewards/repo.toml. CI runs stewards check"
+    ));
+    // again: nothing written, nothing added
+    let again = ci(&["init", "--ci"]);
+    assert_eq!(again["written"], serde_json::json!([]), "{again}");
+    assert_eq!(again["unowned_ok_added"], serde_json::json!([]));
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".stewards/repo.toml")).unwrap(),
+        repo
+    );
+    // a different file is not overwritten
+    std::fs::write(dir.join(path), "mine\n").unwrap();
+    let v = ci(&["init", "--ci"]);
+    assert_eq!(v["error"]["code"], "usage", "{v}");
+    assert!(v["error"]["fix"].as_str().unwrap().contains("remove"));
+    assert_eq!(std::fs::read_to_string(dir.join(path)).unwrap(), "mine\n");
     // cut from 0.1.0: no such flag or command
     for args in [&["init", "--hooks"][..], &["render", "--harness", "pi"]] {
         let out = stewards(&dir, args);
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(v["error"]["code"], "usage", "{args:?}");
     }
-    assert!(!dir.join(".stewards").exists());
+}
+
+#[test]
+fn ci_on_gitlab_writes_its_own_file_and_leaves_gitlab_ci_yml_alone() {
+    let (_tmp, dir) = build(&s(&["main.py"]), &[]);
+    init(&dir);
+    git(
+        &dir,
+        &["remote", "add", "origin", "https://gitlab.com/g/p.git"],
+    );
+    let v: Value = serde_json::from_slice(&stewards(&dir, &["init", "--ci"]).stdout).unwrap();
+    assert_eq!(
+        v["written"],
+        serde_json::json!([".gitlab/stewards.yml"]),
+        "{v}"
+    );
+    let yml = std::fs::read_to_string(dir.join(".gitlab/stewards.yml")).unwrap();
+    assert!(yml.contains("- stewards check"), "{yml}");
+    assert!(yml.contains(&format!("sh -s v{}", env!("CARGO_PKG_VERSION"))));
+    assert!(!dir.join(".gitlab-ci.yml").exists());
+    assert!(yml.contains("$CI_OPEN_MERGE_REQUESTS"), "{yml}");
+    assert!(!yml.contains("glab auth") && !yml.contains("install glab"));
+    let then = v["then"].as_str().unwrap();
+    assert!(
+        then.contains("local: .gitlab/stewards.yml")
+            && then.contains("GITLAB_TOKEN")
+            && then.contains("project access token (Reporter role"),
+        "{then}"
+    );
 }
 
 #[test]

@@ -71,3 +71,11 @@ given = "a report with a failing allowlisted repro"
 expect = "bug recorded on the card without severity, repro_result and reproduced true, a validator brief written"
 level = "integration"
 command = "cargo test --test validate a_failing_repro_is_recorded_without_severity_and_proven_in_the_brief"
+
+[[scenario]]
+id = "forge-comment-edits-own"
+interface = "forge-comment"
+given = "a fake gh with a marked comment by the logged-in user on a later page, and one by another user"
+expect = "its own comment is PATCHed in place, the other is never edited, every call carries --hostname from origin"
+level = "integration"
+command = "cargo test --test forge edits_its_own_comment_in_place_across_pages"

@@ -168,3 +168,53 @@ pub fn answer(dir: &Path, stem: &str) -> String {
 pub fn result(dir: &Path, stem: &str) -> String {
     brief(dir, stem).replace(".md", ".result.json")
 }
+
+/// A directory holding a fake `gh` that logs each call's arguments to `log`, its stdin to `body`,
+/// answers `auth status` (exit 1 when `logged_in` is false), `api user` as `me`, and a comment
+/// listing of `comments` (JSON). Never reaches the network.
+pub fn fake_gh(comments: &str, logged_in: bool) -> TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = TempDir::new().unwrap();
+    std::fs::write(bin.path().join("comments.json"), comments).unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+d=$(dirname "$0")
+echo "$*" >> "$d/log"
+case "$*" in
+"auth status"*) exit {} ;;
+"api user"*) echo '{{"login":"me"}}' ;;
+*--paginate*) cat "$d/comments.json" ;;
+*"--input -"*) cat >> "$d/body"; echo '{{"html_url":"https://github.com/o/r/pull/3#issuecomment-9"}}' ;;
+esac
+"#,
+        if logged_in { 0 } else { 1 }
+    );
+    let path = bin.path().join("gh");
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// `git remote add origin <url>` in `dir`.
+pub fn set_origin(dir: &Path, url: &str) {
+    git(dir, &["remote", "add", "origin", url]);
+}
+
+/// Runs the binary in `dir` with `bin` first on PATH (for `fake_gh`).
+pub fn run_with_path(dir: &Path, bin: &Path, args: &[&str]) -> (i32, serde_json::Value) {
+    let home = TempDir::new().unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    json(
+        Command::new(env!("CARGO_BIN_EXE_stewards"))
+            .args(args)
+            .current_dir(dir)
+            .env("STEWARDS_HOME", home.path())
+            .env("PATH", path)
+            .output()
+            .unwrap(),
+    )
+}

@@ -421,7 +421,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **Debt:** `simplified:` comments are computed on demand by `debt` and
   attached to the owning unit by route; never stored.
 - **Bugs:** a tester's or reviewer's `bugs[]` and `validate --report` both
-  land on the owning card as `[[gap]] kind = "bug"` with the repro, keyed by title; a
+  land on the owning card as `[[gap]] kind = "bug"` with the repro, keyed by title
+  (`validate --report` writes through the lost-update check); a
   tester's bug that names an interface takes that interface's anchor as its
   `anchor`, and one that names none keeps the anchor it had. The tester's
   and reviewer's packs list the unit's bug gaps under `Known bugs` (title,
@@ -465,9 +466,19 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 ### Verification and operations
 
 - **Validation:** a bug report must carry a repro command; `validate` runs
-  it through the allowlist; a failing run is proof; the validator assigns
+  it through the allowlist; a failing run (the command exited non-zero) is
+  proof, a timeout or a command that could not start is not (`reproduced:
+  false` with a `reason`); the validator assigns
   severity from evidence, and judges `real` by reasoning only when no
-  runnable repro exists. `--export` creates an issue on GitHub, GitLab,
+  runnable repro exists. `validate --report <file>` takes one strict JSON
+  object (`{"unit", "title", "repro", "evidence", "interface"?}`, unknown or
+  duplicate fields rejected, the answer size cap), checks it as a tester's bug
+  (`unknown_unit`; `answer_parse_failed` with `errors[]` and the shape as the fix),
+  records it, runs the repro, and writes the validator brief for that bug,
+  printing `{recorded, duplicate?, repro_result, reproduced, brief_path,
+  handoff, then}`; a probable duplicate is not added and writes no brief.
+  Every validator brief that `next --roles` or `brief` writes runs the repro
+  first; `next --no-brief` and `pack` run nothing. `--export` creates an issue on GitHub, GitLab,
   Jira, or Linear (`repo.toml` `[tracker]`; auth from `gh`, `glab`,
   `JIRA_URL` and `JIRA_TOKEN`, `LINEAR_API_KEY`; Jira and Linear through
   their REST and GraphQL APIs), once per bug: the issue URL is recorded on
@@ -695,7 +706,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | `stamp <unit>` | records `[reviewed]` at the current snapshot; the human override |
 | `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check` and (unless `--no-run`) plan step checks and flow checks, writes the review briefs of the round (with `--roles`, the per-role briefs), prints the jobs, each with its handoff and, for a reviewer job, the units it covers |
 | `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files (outside `unowned_ok`), `instruction_files` entries that do not point at `AGENTS.md`, `grammar_unusable`: a directory under the stewards home's `grammars/` that could not be used, naming it and the reason, with `rebuild it against tree-sitter ABI <min>..<max>, or remove <dir>` (never a failure; `next` and `review` carry it with the other warnings) |
-| `validate [--report <f>] [--export]` | `--report` records a bug on its unit's card, runs the repro through the allowlist, writes the validator brief; `--export` files an issue for every judged bug that has none |
+| `validate [--report <f>] [--export]` | `--report` takes one JSON object `{unit, title, repro, evidence, interface?}`, records the bug on its unit's card, runs the repro through the allowlist, writes the validator brief (neither flag: `usage`); `--export` files an issue for every judged bug that has none |
 | `review [--task t] [--roles] [--answer a]...` | records each `--answer` (`<unit>: <file>:<line>: <reason>`, a reason not to apply a finding of the last review, for a reviewer to accept or contest), then reports, as what subagents reported (not verified), and removes the result files the last round's submits wrote, at most 20 per call, then lists what `next` (`next --roles`) lists for the task in force (`--task`, else the one the last `--task` stored), each job with its handoff, and one `then` line; never starts a session; exit 0 only when no job is listed, no finding is reported, and no result file is left |
 | `review --pr <n>` | maintainer review briefs on a PR or MR diff; findings posted as review comments |
 | `debt` | `simplified:` comments attached to units |
@@ -722,6 +733,9 @@ Pack { unit, role, task, budget, bytes, over_budget, purpose, paths[],
        decisions[], units[{name, purpose, interface_ids, paths, files}], doc,
        changed_files[], hunks[{path, diff}], other_changed_files[], memory[],
        bug, dev_task, repro_result, dropped[] }
+repro_result (validator only): the run's {command, exit_code, pass, timed_out, output}
+  plus reproduced (exit_code non-zero) and, when not reproduced, reason; null = not run
+  (`pack`, `next --no-brief`), rendered as "not run".
 ```
 
 Absent sections are `null`. `--diff` sets `changed_files` the way `next`
@@ -1062,7 +1076,9 @@ route; group per unit.
   plan step checks, flow checks, scenario commands. `commands.lint` is
   never run. No answer has a
   field that sets `test_command`, so only `init` or a person writes it, as
-  for `repo.toml`. The words after an allowed prefix are not checked: a repro
+  for `repo.toml`. A validator brief runs the bug's repro through the same
+  allowlist when it is written (`validate --report`, `next --roles`, `brief`).
+  The words after an allowed prefix are not checked: a repro
   or check can pass flags that make the allowed program run any other
   program, as the user, with the inherited environment (tokens included),
   and with no sandbox. The allowlist limits which program starts, not what

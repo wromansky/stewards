@@ -1,11 +1,11 @@
 unit = "pack"
 
 [reviewed]
-commit = "680708dc18906aa4b5574f58462a5f360d7ec66c"
-fingerprint = "sha256:fddce7f750fa0f29a8e7203bdce34a3baa08605c3567e93c8e8ecf4595e4d7fe"
-tree = "85a095ea43f013ed7e8840d1e5f50c9b994cdc8e"
-tester = "85a095ea43f013ed7e8840d1e5f50c9b994cdc8e"
-documenter = "85a095ea43f013ed7e8840d1e5f50c9b994cdc8e"
+commit = "5769e552e9546605c433d98e7f0424ad226b3645"
+fingerprint = "sha256:68741f00901e3e202f9dfacba2d1eabba23faf305d70f14b12496174ed7cc132"
+tree = "52089467187dfa91c940947f44f5d696cd927541"
+tester = "52089467187dfa91c940947f44f5d696cd927541"
+documenter = "52089467187dfa91c940947f44f5d696cd927541"
 
 [[interface]]
 id = "pack"
@@ -36,6 +36,11 @@ contract = "`stewards pack [unit] --role <role> [--diff] [--task <text>]` emits 
 id = "review"
 anchor = "src/pack.rs::review"
 contract = "review(repo, due, task, snapshot) returns a ReviewRound: each due unit's reviewer section, in order, grouped so a group fits REVIEW_BUDGET; one that does not starts the next group, none deferred. A lone oversize unit is squeezed."
+
+[[interface]]
+id = "validator"
+anchor = "src/pack.rs::validator"
+contract = "validator(repo, unit, task, snapshot, bug, repro) builds the validator pack for the bug titled `bug` (first unjudged when None) carrying repro_result, rendered as a Repro result section (`not run` when None)."
 
 [[anchor]]
 path = "src/pack.rs"

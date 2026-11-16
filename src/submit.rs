@@ -51,7 +51,7 @@ const ERRORS_SHOWN: usize = 20;
 const UNITS_TOML: &str = ".stewards/units.toml";
 
 /// Each field error with the error code its kind of problem maps to.
-type Problems = Vec<(&'static str, FieldError)>;
+pub(crate) type Problems = Vec<(&'static str, FieldError)>;
 
 /// Each file a submit may write, with its bytes when submit read it; `None` when it was absent.
 pub type Before = Vec<(String, Option<Vec<u8>>)>;
@@ -428,7 +428,7 @@ fn check_header(
 }
 
 /// The answer file's text; `usage` unless it is a regular file of at most `ANSWER_BYTES`.
-fn read_answer(file: &Path) -> Result<String> {
+pub(crate) fn read_answer(file: &Path) -> Result<String> {
     let usage = |why: String| {
         CliError::new(
             "usage",
@@ -1101,7 +1101,7 @@ fn check_scenarios(
 
 /// Checks the `bugs` reported for `card`: caps, an allowed repro, a known interface id, and a
 /// title no gap of another kind has.
-fn check_bugs(
+pub(crate) fn check_bugs(
     p: &mut Problems,
     bugs: &[types::Bug],
     card: &UnitCard,
@@ -1155,7 +1155,7 @@ fn apply_scenarios(tests: &mut TestCard, scenarios: &[types::Scenario]) {
 /// Upserts each bug onto the card as a bug gap, by title. A bug with a new title on the anchor
 /// of a bug the card already has is a probable duplicate: it is not added, and the summary line
 /// saying so is returned, one per such bug.
-fn apply_bugs(card: &mut UnitCard, bugs: &[types::Bug]) -> Vec<String> {
+pub(crate) fn apply_bugs(card: &mut UnitCard, bugs: &[types::Bug]) -> Vec<String> {
     let mut duplicates = vec![];
     for b in bugs {
         // the named interface's anchor shows the validator where the bug is; a known bug keeps
@@ -2076,7 +2076,7 @@ fn read_if_present(root: &Path, rel: &str) -> Result<Option<Vec<u8>>> {
 
 /// `card_changed` unless each of `rels` still has the bytes `before` recorded for it: another
 /// submit wrote it since, and writing now would erase that submit's change.
-fn check_unchanged(root: &Path, before: &Before, rels: &[&str]) -> Result<()> {
+pub(crate) fn check_unchanged(root: &Path, before: &Before, rels: &[&str]) -> Result<()> {
     for rel in rels {
         let then = before
             .iter()
@@ -2156,7 +2156,7 @@ fn after_writes(e: anyhow::Error, written: &[&str]) -> anyhow::Error {
 }
 
 /// The failed-submit error; its code names the problem when there is only one kind.
-fn rejected(problems: Problems) -> anyhow::Error {
+pub(crate) fn rejected(problems: Problems) -> anyhow::Error {
     let first = problems.first().map_or("answer_parse_failed", |p| p.0);
     let code = if problems.iter().all(|p| p.0 == first) {
         first

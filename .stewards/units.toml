@@ -1,7 +1,7 @@
 [[unit]]
 name = "cli"
 purpose = "The stewards binary: clap command parsing and dispatch, global flags (--human, --repo, -C, --direct), the JSON envelope and markdown output, CLI errors, and the shared test helpers."
-paths = ["src/main.rs", "src/lib.rs", "src/output.rs", "src/completions.rs", "src/render.rs", "src/review.rs", "src/validate.rs", "tests/skeleton.rs", "tests/common/**"]
+paths = ["src/main.rs", "src/lib.rs", "src/output.rs", "src/completions.rs", "src/render.rs", "src/review.rs", "src/validate.rs", "tests/validate.rs", "tests/skeleton.rs", "tests/common/**"]
 
 [[unit]]
 name = "model"

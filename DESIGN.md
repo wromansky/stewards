@@ -1531,7 +1531,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   does), `AGENTS.md` and the driver's context file added to `unowned_ok`
   (both newer than every stamp, so `next` would ask for a unit for them),
   and committed, and no adoption session; the runner checks
-  `stewards next --no-brief` exits 0 there before any run (else
+  `stewards next --no-brief --no-run` exits 0 there before any run (else
   `eval_setup_incomplete`). `bare` is the tree without `.stewards/`,
   `docs/units/`, and `AGENTS.md`; `block-only` adds an `AGENTS.md` holding
   only the block. Every arm's history is one root commit, `initial`, on
@@ -1748,8 +1748,10 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   its system prompt, as above), `reviewer_submit` (`stewards submit ...
   --role reviewer` in a child session), and `check_green`, which comes
   from the runner: after each `full` (and `full-no-developers`) session it
-  runs `stewards next --no-brief` in the run directory and records the
-  exit code and job count; green is exit 0. The runner also records
+  runs `stewards next --no-brief --no-run` in the run directory (since
+  `next` runs flow and step checks, and the session's own `review` already
+  ran them, the gate measures review coverage, not test results) and
+  records the exit code and job count; green is exit 0. The runner also records
   whether the session `changed` the run directory: any path that differs
   from the session's starting commit (`git diff --name-only <start>`, so
   committed changes count) or is untracked and not ignored, outside
@@ -1981,7 +1983,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   the runner saw it change the run directory, a `stewards review` command
   ran in the session, a subagent was started whose task holds the handoff
   of a brief under `.stewards/briefs/` (`handoff`), and the runner's own
-  `stewards next --no-brief` exits 0 after the session (which proves the
+  `stewards next --no-brief --no-run` exits 0 after the session (which proves the
   review covered the final state: a stamp matches only the snapshot it
   was made at). `status`, `route`, `next`, `handoff_exact`, and
   `reviewer_submit` are recorded, not gated. The task passes when every
@@ -2002,9 +2004,16 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   counting rung failures, untraced lines, missing checks; pass when `full`
   has 0 untraced lines, ≤ 1 rung failure, ≥ 1 runnable check, and is ≤
   `bare` on every count. Docs accuracy: no claim in `docs/units/api.md`
-  contradicted by code after task 1. Bug tasks: the tester's repro
-  reproduces and the validator's severity equals the seeded one. Task 5: a
-  plan exists and closes. The suite fails when any task fails, is
+  contradicted by code after task 1. Bug fixed (report-only, every
+  arm): a task naming `repro = "<dir under evals/repros>"` (fixture task 2:
+  `medium-api-pagination`) has that `repro.sh` run after each run, from the
+  checkout with `FIXTURE_ROOT=<run dir>` and a 60 s timeout; `bug_fixed` is
+  true when it exits 0, and the summary shows `k/n` per arm. Plan
+  (report-only, `full` runs of a task with `expects_plan = true`, fixture
+  task 5): `plan: {stored, closed}`, `stored` when a child's `stewards
+  submit --role architect` printed `plan <id> stored`, `closed` when stored
+  and no `.stewards/plans/*.toml` is left after the session; the summary
+  shows `plan stored k/n, closed k/n`. Neither changes a verdict. The suite fails when any task fails, is
   incomplete when any task is, and passes otherwise: every edit task's
   gate passed and no run is incomplete (exit code 0 only then).
 - **Cadence:** on demand and in CI on release tags; `--max-cost` ceiling.

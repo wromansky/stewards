@@ -6,7 +6,7 @@ use std::fmt::Display;
 use std::hash::BuildHasher;
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, ExitCode, Output};
+use std::process::{Child, Command, ExitCode, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -37,7 +37,7 @@ pub const ADOPT_PROMPT: &str = "Adopt stewards in this repository: run `stewards
 pub const FAILED_STOPS: [&str; 3] = ["error", "aborted", "length"];
 
 /// What the summary says about the ritual gate and the transcript-derived steps.
-pub const RITUAL_NOTE: &str = "The gate, on each full run of an edit task (read-only tasks are n/a): the runner saw a change (`changed`: outside .stewards/ and docs/units/, against the run's starting commit, untracked files included), a `stewards review` command ran somewhere in the session tree (`review`), a subagent was started whose task contains the handoff sentence for a brief under .stewards/briefs/ (`handoff`), and the runner's own `stewards next --no-brief` exits 0 afterwards (`check_green`). `status`, `route`, `next`, whether every subagent launch holding a handoff gave each child exactly that sentence as its task (`handoff_exact`), and whether a child ran `stewards submit --role reviewer` (`reviewer_submit`) are recorded, not gated. Steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, and backticks are misread or missed.";
+pub const RITUAL_NOTE: &str = "The gate, on each full run of an edit task (read-only tasks are n/a): the runner saw a change (`changed`: outside .stewards/ and docs/units/, against the run's starting commit, untracked files included), a `stewards review` command ran somewhere in the session tree (`review`), a subagent was started whose task contains the handoff sentence for a brief under .stewards/briefs/ (`handoff`), and the runner's own `stewards next --no-brief --no-run` exits 0 afterwards (`check_green`). `status`, `route`, `next`, whether every subagent launch holding a handoff gave each child exactly that sentence as its task (`handoff_exact`), and whether a child ran `stewards submit --role reviewer` (`reviewer_submit`) are recorded, not gated. Steps are best-effort from the transcripts: a `stewards` command is seen only as the program of a `;`, `&`, `|`, `(`, `)`, or newline separated segment (after `VAR=value` words), so `timeout`/`env`/`time` prefixes, `if stewards ...`, `{ ...; }`, `bash -c '...'`, and backticks are misread or missed.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -187,6 +187,8 @@ pub struct Run {
     pub uncounted_sessions: Vec<String>,
     /// Each successful `stewards submit --role reviewer` a child ran, in order.
     pub reviews: Vec<ReviewSubmit>,
+    /// A child's `stewards submit --role architect` printed a summary with `plan <id> stored`.
+    pub plan_stored: bool,
     /// Shell commands anywhere in the tree that read git history (see `reads_git_history`).
     pub git_history_commands: Vec<String>,
     /// The stop reason of the main session's last response.
@@ -301,8 +303,26 @@ pub fn answers_given(shell_commands: &[String]) -> usize {
 
 /// Whether a `stewards` command (see `stewards_commands`) is `submit --role reviewer`.
 pub fn is_reviewer_submit(cmd: &[&str]) -> bool {
+    is_submit_as(cmd, "reviewer")
+}
+
+/// Whether a `stewards` command is `submit --role architect`.
+pub fn is_architect_submit(cmd: &[&str]) -> bool {
+    is_submit_as(cmd, "architect")
+}
+
+fn is_submit_as(cmd: &[&str], role: &str) -> bool {
     cmd.first() == Some(&"submit")
-        && (cmd.contains(&"--role=reviewer") || cmd.windows(2).any(|w| w == ["--role", "reviewer"]))
+        && (cmd.iter().any(|w| w.strip_prefix("--role=") == Some(role))
+            || cmd.windows(2).any(|w| w == ["--role", role]))
+}
+
+/// Whether an architect `submit`'s output says it stored a plan (`plan <id> stored`).
+pub fn plan_stored(output: &str) -> bool {
+    output.split("plan ").skip(1).any(|rest| {
+        rest.split_once(' ')
+            .is_some_and(|(id, after)| !id.is_empty() && after.starts_with("stored"))
+    })
 }
 
 /// The transcript-derived ritual steps: `status`, `route`, `next`, `review` are shell commands,
@@ -901,7 +921,7 @@ pub fn fresh_session_env(cmd: &mut Command, env: &[(&str, OsString)]) {
     }
 }
 
-/// The runner's own `stewards next --no-brief` in a `full` run's directory after its session.
+/// The runner's own `stewards next --no-brief --no-run` in a `full` run's directory after its session.
 #[derive(Debug, Clone, Serialize)]
 pub struct NextCheck {
     pub exit_code: Option<i32>,
@@ -948,6 +968,11 @@ pub struct RunRecord {
     /// Whether the run's directory differs from its starting commit after the session, outside
     /// `.stewards/` and `docs/units/` (see `changed_paths`): the gate's first fact.
     pub changed: bool,
+    /// Report-only: whether the task's `repro` exits 0 in the run directory after the session;
+    /// `None` when the task names none.
+    pub bug_fixed: Option<bool>,
+    /// Report-only, `full` runs of a task that `expects_plan`.
+    pub plan: Option<PlanOutcome>,
     /// `full` arms: each unit of each reviewer `submit`, in order (report-only).
     pub reviews: Vec<UnitReview>,
     /// `full` arms: findings answered with `stewards review --answer` (report-only).
@@ -955,6 +980,37 @@ pub struct RunRecord {
     pub result: Option<Run>,
     /// Why `result` is missing when the transcript could not be parsed.
     pub error: Option<String>,
+}
+
+/// What a run did with a plan: an architect `submit` stored one, and none was left open.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PlanOutcome {
+    pub stored: bool,
+    /// Stored and no `.stewards/plans/*.toml` is left in the run directory.
+    pub closed: bool,
+}
+
+/// `stored`, and whether the plan closed: no `.stewards/plans/*.toml` is left in `dir`.
+pub fn plan_outcome(dir: &Path, stored: bool) -> PlanOutcome {
+    let left = std::fs::read_dir(dir.join(crate::model::PLANS_DIR)).is_ok_and(|d| {
+        d.flatten()
+            .any(|e| e.path().extension() == Some("toml".as_ref()))
+    });
+    PlanOutcome {
+        stored,
+        closed: stored && !left,
+    }
+}
+
+/// Runs `evals/repros/<repro>/repro.sh` with `FIXTURE_ROOT=<dir>`; true when it exits 0 within 60 s.
+fn bug_fixed(evals: &Path, repro: &str, dir: &Path) -> Result<bool> {
+    let mut cmd = Command::new("bash");
+    cmd.arg(evals.join("repros").join(repro).join("repro.sh"))
+        .env("FIXTURE_ROOT", dir)
+        .current_dir(evals.parent().unwrap_or(evals))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(run_session(&mut cmd, Duration::from_secs(60))?.0 == Status::Ok)
 }
 
 /// One unit of one reviewer `submit` in a `full` run.
@@ -1080,6 +1136,15 @@ impl Runner<'_> {
         let changed = changed_paths(&s.dir, start.trim())?
             .iter()
             .any(|p| !p.starts_with(".stewards/") && !p.starts_with("docs/units/"));
+        let facts = s
+            .task
+            .filter(|_| s.role == RunRole::Task)
+            .and_then(|t| self.plan.suite.task(t));
+        let bug_fixed = match facts.and_then(|f| f.repro.as_deref()) {
+            Some(repro) => Some(bug_fixed(&self.plan.evals, repro, &s.dir)?),
+            None => None,
+        };
+        let expects_plan = s.arm.is_full() && facts.is_some_and(|f| f.expects_plan);
         let next_check = if s.arm.is_full() {
             Some(next_check(&self.plan.stewards, &s.dir)?)
         } else {
@@ -1147,6 +1212,8 @@ impl Runner<'_> {
             .model
             .clone()
             .or_else(|| result.as_ref().and_then(|r| r.model.clone()));
+        let plan = expects_plan
+            .then(|| plan_outcome(&s.dir, result.as_ref().is_some_and(|r| r.plan_stored)));
         let record = RunRecord {
             label: label.clone(),
             task: s.task,
@@ -1168,6 +1235,8 @@ impl Runner<'_> {
             leftovers,
             next_check,
             changed,
+            bug_fixed,
+            plan,
             reviews,
             answers: result
                 .as_ref()
@@ -1749,10 +1818,10 @@ fn review_outcomes(
     out
 }
 
-/// `stewards next --no-brief` in `dir`: its exit code and job count; writes no briefs.
+/// `stewards next --no-brief --no-run` in `dir`: its exit code and job count; writes no briefs.
 pub fn next_check(stewards: &Path, dir: &Path) -> Result<NextCheck> {
     let out = Command::new(stewards)
-        .args(["next", "--no-brief"])
+        .args(["next", "--no-brief", "--no-run"])
         .current_dir(dir)
         .env_remove("STEWARDS_DIRECT")
         .output()

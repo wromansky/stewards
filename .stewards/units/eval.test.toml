@@ -95,3 +95,27 @@ given = "Pi, Claude Code and Hermes credential files with long and short secret 
 expect = "every long secret value is [redacted] in every kept file, short and non-secret values stay"
 level = "integration"
 command = "cargo test --test eval every_drivers_credential_secrets_are_redacted_in_its_kept_session_files"
+
+[[scenario]]
+id = "eval-pagination-repro-fixture-root"
+interface = "eval_bug_fixed"
+given = "the medium-api-pagination repro run with FIXTURE_ROOT on a fixture copy, before and after fix.patch"
+expect = "it fails on the unfixed copy and passes once the fix is applied"
+level = "integration"
+command = "cargo test --test eval the_pagination_repro_fails_on_the_fixture_and_passes_with_the_fix_applied"
+
+[[scenario]]
+id = "eval-plan-closed"
+interface = "eval_plan_outcome"
+given = "a stored plan with and without a .stewards/plans/*.toml left in the dir"
+expect = "closed only when stored and no plan file is left"
+level = "integration"
+command = "cargo test --test eval a_plan_is_closed_when_stored_and_no_plan_file_is_left"
+
+[[scenario]]
+id = "eval-report-only-graders"
+interface = "grade_task"
+given = "runs with bug_fixed and plan outcomes varying"
+expect = "the summary reports bug fixed and plan counts and no verdict changes"
+level = "integration"
+command = "cargo test --test eval the_summary_reports_bug_fixed_and_plan_and_no_verdict_changes"

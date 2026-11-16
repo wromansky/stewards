@@ -23,6 +23,7 @@ number = 1
 
 [[task]]
 number = 2
+repro = "medium-api-pagination"
 
 [[task]]
 number = 3
@@ -33,6 +34,7 @@ read_only = true
 
 [[task]]
 number = 5
+expects_plan = true
 
 [[task]]
 number = 6

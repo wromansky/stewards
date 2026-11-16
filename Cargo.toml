@@ -6,7 +6,7 @@ description = "A team of agents that already knows your repo, for any coding-age
 license = "MIT"
 repository = "https://github.com/wromansky/stewards"
 readme = "README.md"
-include = ["/src/", "/baml_src/", "/Cargo.toml", "/Cargo.lock", "/LICENSE", "/README.md"]
+include = ["/src/", "/baml_src/", "/Cargo.toml", "/Cargo.lock", "/LICENSE", "/licenses/", "/README.md"]
 
 [dependencies]
 anyhow = "1.0.104"

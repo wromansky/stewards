@@ -64,6 +64,9 @@ impl FakeRelease {
             ("bin/stewards", "#!/bin/sh\necho fake stewards\n"),
             ("lib/stewards/libbaml_cffi.so", "lib"),
             ("share/man/man1/stewards.1", ".TH stewards 1\n"),
+            ("licenses/baml/LICENSE", "apache"),
+            ("LICENSE", "mit"),
+            ("THIRD-PARTY-LICENSES.html", "<html>"),
         ] {
             std::fs::create_dir_all(top.join(path).parent().unwrap()).unwrap();
             std::fs::write(top.join(path), text).unwrap();
@@ -90,6 +93,7 @@ impl FakeRelease {
         // The shim serves files from the release directory in place of GitHub's download URLs.
         let curl = format!(
             r#"#!/bin/sh
+echo "$*" >> {root}/curl-args
 out=
 for a in "$@"; do url=$a; done
 while [ "$#" -gt 1 ]; do
@@ -107,6 +111,7 @@ esac
         );
         for (name, body) in [
             ("curl", curl.as_str()),
+            ("id", "#!/bin/sh\necho ${FAKE_UID:-1000}\n"),
             (
                 "uname",
                 "#!/bin/sh\nif [ \"$1\" = -s ]; then echo Linux; else echo x86_64; fi\n",
@@ -120,8 +125,13 @@ esac
         Self { dir }
     }
 
-    /// Runs `sh install.sh <args>` with the shims first on PATH; returns the output and the prefix.
-    fn install(&self, args: &[&str]) -> (std::process::Output, tempfile::TempDir) {
+    /// Runs `sh install.sh <args>` with the shims first on PATH and `envs` set; returns the output
+    /// and the prefix, which is `STEWARDS_PREFIX` unless `envs` sets it.
+    fn install_with(
+        &self,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> (std::process::Output, tempfile::TempDir) {
         let prefix = tempfile::TempDir::new().unwrap();
         let path = format!(
             "{}:{}",
@@ -133,9 +143,18 @@ esac
             .args(args)
             .env("PATH", path)
             .env("STEWARDS_PREFIX", prefix.path())
+            .envs(envs.iter().copied())
             .output()
             .unwrap();
         (out, prefix)
+    }
+
+    fn install(&self, args: &[&str]) -> (std::process::Output, tempfile::TempDir) {
+        self.install_with(args, &[])
+    }
+
+    fn curl_args(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("curl-args")).unwrap_or_default()
     }
 
     fn urls(&self) -> String {
@@ -157,8 +176,139 @@ fn install_sh_installs_a_verified_release_and_says_what_to_do_next() {
     assert!(p.join("bin/stewards").is_file());
     assert!(p.join("lib/stewards/libbaml_cffi.so").is_file());
     assert!(p.join("share/man/man1/stewards.1").is_file());
+    for f in ["LICENSE", "THIRD-PARTY-LICENSES.html", "baml/LICENSE"] {
+        assert!(p.join("share/licenses/stewards").join(f).is_file(), "{f}");
+    }
+    // Installed by rename: no temp file is left, and the files are not writable by others.
+    for dir in ["bin", "lib/stewards"] {
+        let names: Vec<_> = std::fs::read_dir(p.join(dir))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().all(|n| !n.contains('.') || n.ends_with(".so")),
+            "{names:?}"
+        );
+    }
+    let mode = std::os::unix::fs::PermissionsExt::mode(
+        &std::fs::metadata(p.join("lib/stewards/libbaml_cffi.so"))
+            .unwrap()
+            .permissions(),
+    );
+    assert_eq!(mode & 0o777, 0o755);
     assert!(stdout.contains("export PATH="), "{stdout}");
     assert!(stdout.contains("zsh:"), "{stdout}");
+}
+
+#[test]
+fn install_sh_replaces_a_symlink_at_the_destination_instead_of_writing_through_it() {
+    let release = FakeRelease::new(None);
+    let victim = tempfile::TempDir::new().unwrap();
+    let target = victim.path().join("target");
+    std::fs::write(&target, "keep").unwrap();
+    let prefix = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(prefix.path().join("bin")).unwrap();
+    std::os::unix::fs::symlink(&target, prefix.path().join("bin/stewards")).unwrap();
+    let (out, _) = release.install_with(
+        &["v0.0.1"],
+        &[("STEWARDS_PREFIX", prefix.path().to_str().unwrap())],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+    assert!(!prefix.path().join("bin/stewards").is_symlink());
+}
+
+#[test]
+fn install_sh_fetches_over_https_only() {
+    let release = FakeRelease::new(None);
+    let (out, _prefix) = release.install(&[]);
+    assert!(out.status.success());
+    let calls = release.curl_args();
+    // The latest-release lookup, the archive, and SHA256SUMS.
+    assert_eq!(calls.lines().count(), 3, "{calls}");
+    for line in calls.lines() {
+        assert!(
+            line.contains("--proto =https") && line.contains("--tlsv1.2"),
+            "{line}"
+        );
+        assert!(line.contains("--proto-redir =https"), "{line}");
+    }
+}
+
+#[test]
+fn install_sh_needs_an_absolute_prefix() {
+    let release = FakeRelease::new(None);
+    let home = tempfile::TempDir::new().unwrap();
+    for prefix in ["relative/dir", "."] {
+        let (out, _) = release.install_with(&["v0.0.1"], &[("STEWARDS_PREFIX", prefix)]);
+        assert!(!out.status.success(), "{prefix}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("absolute"),
+            "{prefix}"
+        );
+    }
+    // No prefix: $HOME/.local, which must itself be absolute.
+    let (out, _) = release.install_with(&["v0.0.1"], &[("STEWARDS_PREFIX", ""), ("HOME", "rel")]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("absolute"));
+    let (out, _) = release.install_with(
+        &["v0.0.1"],
+        &[
+            ("STEWARDS_PREFIX", ""),
+            ("HOME", home.path().to_str().unwrap()),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(home.path().join(".local/bin/stewards").is_file());
+    assert_eq!(
+        release
+            .urls()
+            .lines()
+            .filter(|l| l.ends_with(".tar.gz"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn install_sh_refuses_root_unless_a_prefix_is_set() {
+    let release = FakeRelease::new(None);
+    let home = tempfile::TempDir::new().unwrap();
+    let (out, _) = release.install_with(
+        &["v0.0.1"],
+        &[
+            ("STEWARDS_PREFIX", ""),
+            ("FAKE_UID", "0"),
+            ("HOME", home.path().to_str().unwrap()),
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("STEWARDS_PREFIX"));
+    assert!(!home.path().join(".local").exists());
+    assert_eq!(release.urls(), "");
+    let (out, prefix) = release.install_with(&["v0.0.1"], &[("FAKE_UID", "0")]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(prefix.path().join("bin/stewards").is_file());
+}
+
+#[test]
+fn install_sh_runs_nothing_until_its_last_line() {
+    let script =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh")).unwrap();
+    assert_eq!(script.lines().last(), Some("main \"$@\""));
+    assert_eq!(script.lines().filter(|l| l.starts_with("main ")).count(), 1);
 }
 
 #[test]

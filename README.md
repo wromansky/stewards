@@ -10,6 +10,10 @@ that reads `AGENTS.md`.
 
 Status: design complete, build in progress. See [DESIGN.md](DESIGN.md).
 
+## Licences
+
+stewards is MIT-licensed. Release archives bundle the BAML runtime library (`libbaml_cffi`) under the Apache-2.0 licence; its notices are under `licenses/`, and `THIRD-PARTY-LICENSES.html` lists the licences of the crates linked into the binary.
+
 ## Harnesses that do not read AGENTS.md
 
 stewards writes its block to `AGENTS.md` only, and does not know which

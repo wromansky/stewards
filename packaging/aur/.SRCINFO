@@ -5,6 +5,7 @@ pkgbase = stewards
 	url = https://github.com/wromansky/stewards
 	arch = x86_64
 	license = MIT
+	license = Apache-2.0
 	makedepends = cargo
 	makedepends = protobuf
 	depends = gcc-libs

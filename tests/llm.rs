@@ -593,6 +593,16 @@ fn generated_client_and_rendered_text_match_baml_src() {
 /// no BAML library on the search path, downloads off, and any HTTP sent to a closed port.
 /// `envs` are set and `remove` unset after those defaults.
 fn child(name: &str, envs: &[(&str, &str)], remove: &[&str]) -> std::process::Output {
+    child_at(&std::env::current_exe().unwrap(), name, envs, remove)
+}
+
+/// `child`, running the copy of this binary at `exe`.
+fn child_at(
+    exe: &std::path::Path,
+    name: &str,
+    envs: &[(&str, &str)],
+    remove: &[&str],
+) -> std::process::Output {
     for dir in ["/usr/lib", "/usr/local/lib"] {
         let found = std::fs::read_dir(dir).into_iter().flatten().any(|e| {
             e.unwrap()
@@ -606,7 +616,7 @@ fn child(name: &str, envs: &[(&str, &str)], remove: &[&str]) -> std::process::Ou
         );
     }
     let cache = TempDir::new().unwrap();
-    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    let mut cmd = Command::new(exe);
     cmd.args([name, "--exact", "--nocapture", "--test-threads=1"]);
     for var in [
         "ANTHROPIC_API_KEY",
@@ -824,28 +834,36 @@ fn child_bundled_library() {
     }
 }
 
-/// Removes the planted directory even when an assertion fails.
-struct Planted(std::path::PathBuf);
-
-impl Drop for Planted {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
+/// A copy of this test binary at `<root>/<dir>/stewards-test`, for the bundled-library lookup,
+/// which goes by where the executable lives.
+struct Installed {
+    _root: TempDir,
+    exe: std::path::PathBuf,
+    lib: std::path::PathBuf,
 }
 
-#[test]
-fn prepare_baml_env_finds_the_library_beside_the_executable_only_when_it_exists() {
-    // The child is this test binary: target/debug/deps/<test>, so `../lib/stewards` is target/debug/lib/stewards.
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("lib/stewards");
-    assert!(
-        !dir.exists(),
-        "{} is left over from a failed run",
-        dir.display()
-    );
-    let lib = dir.join(format!("libbaml_cffi.{}", std::env::consts::DLL_EXTENSION));
-    let path_of = |envs: &[(&str, &str)]| {
-        let out = child("child_bundled_library", envs, &[]);
+impl Installed {
+    fn new(dir: &str) -> Self {
+        let root = TempDir::new().unwrap();
+        // Canonical, so the expected path matches what the child resolves (/tmp may be a symlink).
+        let top = root.path().canonicalize().unwrap();
+        std::fs::create_dir_all(top.join(dir)).unwrap();
+        let exe = top.join(dir).join("stewards-test");
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+        let lib = top.join(format!(
+            "lib/stewards/libbaml_cffi.{}",
+            std::env::consts::DLL_EXTENSION
+        ));
+        Self {
+            _root: root,
+            exe,
+            lib,
+        }
+    }
+
+    /// `BAML_LIBRARY_PATH` as the child's `prepare_baml_env` leaves it, in `{:?}` form.
+    fn path_of(&self, envs: &[(&str, &str)]) -> String {
+        let out = child_at(&self.exe, "child_bundled_library", envs, &[]);
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         stdout
             .lines()
@@ -854,21 +872,58 @@ fn prepare_baml_env_finds_the_library_beside_the_executable_only_when_it_exists(
                     .map(|(_, v)| v.to_string())
             })
             .unwrap_or_else(|| panic!("{stdout}"))
-    };
+    }
 
-    assert_eq!(path_of(&[]), "None");
-    let _planted = Planted(dir.clone());
-    std::fs::create_dir_all(&dir).unwrap();
-    assert_eq!(path_of(&[]), "None", "a directory is not the library");
-    std::fs::write(&lib, "").unwrap();
+    fn write_lib(&self, mode: u32) {
+        std::fs::create_dir_all(self.lib.parent().unwrap()).unwrap();
+        std::fs::write(&self.lib, "").unwrap();
+        std::fs::set_permissions(
+            &self.lib,
+            std::os::unix::fs::PermissionsExt::from_mode(mode),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn prepare_baml_env_uses_the_library_beside_a_bin_executable() {
+    let it = Installed::new("bin");
+    assert_eq!(it.path_of(&[]), "None", "no library yet");
+    std::fs::create_dir_all(&it.lib).unwrap();
+    assert_eq!(it.path_of(&[]), "None", "a directory is not the library");
+    std::fs::remove_dir(&it.lib).unwrap();
+    it.write_lib(0o755);
     assert_eq!(
-        path_of(&[]),
-        format!("Some({:?})", lib.display().to_string())
+        it.path_of(&[]),
+        format!("Some({:?})", it.lib.display().to_string())
+    );
+    it.write_lib(0o644);
+    assert_eq!(
+        it.path_of(&[]),
+        format!("Some({:?})", it.lib.display().to_string())
     );
     assert_eq!(
-        path_of(&[("BAML_LIBRARY_PATH", "/elsewhere/lib.so")]),
+        it.path_of(&[("BAML_LIBRARY_PATH", "/elsewhere/lib.so")]),
         "Some(\"/elsewhere/lib.so\")"
     );
+}
+
+#[test]
+fn prepare_baml_env_ignores_a_library_that_others_can_write() {
+    let it = Installed::new("bin");
+    for mode in [0o664, 0o646, 0o666, 0o775] {
+        it.write_lib(mode);
+        assert_eq!(it.path_of(&[]), "None", "mode {mode:o}");
+    }
+}
+
+#[test]
+fn prepare_baml_env_ignores_a_library_when_the_executable_is_not_in_a_bin_directory() {
+    for dir in ["sbin", "x"] {
+        let it = Installed::new(dir);
+        it.write_lib(0o755);
+        assert_eq!(it.path_of(&[]), "None", "{dir:?}");
+    }
 }
 
 #[test]

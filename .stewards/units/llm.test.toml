@@ -75,7 +75,23 @@ command = "cargo test --test llm every_role_schema_states_the_caps_submit_enforc
 [[scenario]]
 id = "prepare-env-finds-bundled-library"
 interface = "prepare-baml-env"
-given = "a child calling prepare_baml_env with libbaml_cffi planted at <exe dir>/../lib/stewards, then absent, a directory, or BAML_LIBRARY_PATH already set"
-expect = "BAML_LIBRARY_PATH is the planted file only when unset and the file exists; otherwise unchanged"
+given = "a copy of the test binary in <root>/bin, a child calling prepare_baml_env with libbaml_cffi absent, a directory, mode 755 or 644 at <root>/lib/stewards, or BAML_LIBRARY_PATH already set"
+expect = "BAML_LIBRARY_PATH is the library only when unset and it is a regular file; otherwise unchanged"
 level = "integration"
-command = "cargo test --test llm prepare_baml_env_finds_the_library_beside_the_executable_only_when_it_exists"
+command = "cargo test --test llm prepare_baml_env_uses_the_library_beside_a_bin_executable"
+
+[[scenario]]
+id = "prepare-env-ignores-writable-library"
+interface = "prepare-baml-env"
+given = "a library in <root>/bin's lib/stewards with mode 664, 646, 666 or 775"
+expect = "BAML_LIBRARY_PATH stays unset"
+level = "integration"
+command = "cargo test --test llm prepare_baml_env_ignores_a_library_that_others_can_write"
+
+[[scenario]]
+id = "prepare-env-ignores-non-bin-executable"
+interface = "prepare-baml-env"
+given = "the executable in a directory named sbin or x, with a valid library at ../lib/stewards"
+expect = "BAML_LIBRARY_PATH stays unset"
+level = "integration"
+command = "cargo test --test llm prepare_baml_env_ignores_a_library_when_the_executable_is_not_in_a_bin_directory"

@@ -281,18 +281,30 @@ fn example(role: Role, mode: Mode) -> Value {
     v
 }
 
-/// The library of the release archive, install script, and AUR package: `<exe dir>/../lib/stewards/`.
+/// The library of the release archive, install script, and AUR package: `<prefix>/lib/stewards/`
+/// for an executable in `<prefix>/bin/`. It is loaded with `dlopen`, so it is used only from a
+/// directory named `bin` and only when it is a regular file that no group or other user can write.
 fn bundled_library() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let lib = exe
-        .parent()?
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let bin = exe.parent()?;
+    if bin.file_name()? != "bin" {
+        return None;
+    }
+    let lib = bin
         .parent()?
         .join("lib/stewards")
-        .join(format!("libbaml_cffi.{}", std::env::consts::DLL_EXTENSION));
-    lib.is_file().then_some(lib)
+        .join(format!("libbaml_cffi.{}", std::env::consts::DLL_EXTENSION))
+        .canonicalize()
+        .ok()?;
+    let meta = std::fs::metadata(&lib).ok()?;
+    #[cfg(unix)]
+    if std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o022 != 0 {
+        return None;
+    }
+    meta.is_file().then_some(lib)
 }
 
-/// Points `BAML_LIBRARY_PATH` at the bundled library when it is unset and the file exists, makes
+/// Points `BAML_LIBRARY_PATH` at the bundled library when it is unset and `bundled_library` accepts it, makes
 /// the BAML library download opt-in (`STEWARDS_BAML_DOWNLOAD`), keeps BAML from logging
 /// prompts and replies to stderr unless `BAML_LOG` is set, and drops `BOUNDARY_*` variables so
 /// nothing is sent to Boundary's cloud.

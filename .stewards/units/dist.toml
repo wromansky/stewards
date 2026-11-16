@@ -1,11 +1,11 @@
 unit = "dist"
 
 [reviewed]
-commit = "9b59164cc2a4e3360ceedfa6a7a20349362f39f4"
+commit = "3b8cbbc8884aac89d624a65ae07dd955ff1578c4"
 fingerprint = "sha256:42795a1d218b0381ca5637d080fa50b19388811b70289f4fef0ce7d4fc6c3d4e"
-tree = "0a37eaeebf7a63734c2912f3399a10ebb45498a3"
-tester = "0a37eaeebf7a63734c2912f3399a10ebb45498a3"
-documenter = "0a37eaeebf7a63734c2912f3399a10ebb45498a3"
+tree = "e434203859ea94fe2f4d2a9291898fa3bc4c2fd2"
+tester = "e434203859ea94fe2f4d2a9291898fa3bc4c2fd2"
+documenter = "e434203859ea94fe2f4d2a9291898fa3bc4c2fd2"
 
 [[interface]]
 id = "release-workflow"
@@ -19,7 +19,7 @@ contract = "sh install.sh [v<version>]: https only; absolute ${STEWARDS_PREFIX:-
 
 [[interface]]
 id = "aur-bump"
-anchor = "packaging/aur/bump.sh::bump"
+anchor = "tests/completions.rs::bump_sh_rewrites_the_version_and_crate_hash_in_pkgbuild_and_srcinfo"
 contract = "sh bump.sh <version> <64-hex sha256 of the .crate> rewrites pkgver, pkgrel=1 and the first sha256sums entry in PKGBUILD and the same lines in .SRCINFO; rejects a malformed version or hash."
 
 [[interface]]
@@ -44,10 +44,6 @@ name = "release"
 [[anchor]]
 path = "install.sh"
 name = "sha256"
-
-[[anchor]]
-path = "packaging/aur/bump.sh"
-name = "bump"
 
 [[anchor]]
 path = "packaging/aur/PKGBUILD"
@@ -83,7 +79,7 @@ note = "The uname shim fakes Linux x86_64, but install.sh then runs ls /lib/ld-m
 [[gap]]
 kind = "gap"
 title = "AUR job resets pkgrel and the repo PKGBUILD never advances"
-anchor = "packaging/aur/bump.sh::bump"
+anchor = "tests/completions.rs::bump_sh_rewrites_the_version_and_crate_hash_in_pkgbuild_and_srcinfo"
 note = "bump.sh always writes pkgrel=1 and the job pushes only to the AUR, so main keeps the old pkgver. A manual pkgrel bump on the AUR is overwritten by the next release, and a re-run of the AUR job for the same tag is a no-op only if nothing else changed."
 
 [[gap]]

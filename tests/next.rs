@@ -356,36 +356,55 @@ fn tab_indented_body_under_a_space_indented_method_is_due() {
 }
 
 #[test]
-fn doc_comment_detached_by_blank_lines_is_due() {
-    let before = "/// This is the doc.\n\n\n/// More doc.\npub fn save() {}\n";
-    let after = before.replace("the doc.", "the doc, changed.");
-    assert_due(
-        &interface_jobs("f.rs", "save", before, &after),
-        "f.rs",
-        "save",
-    );
+fn doc_comment_and_attribute_detached_by_blank_lines_are_not_the_interface() {
+    let before =
+        "/// This is the doc.\n\n#[inline]\n\n/// More doc.\n#[must_use]\npub fn save() {}\n";
+    for (from, to) in [
+        ("the doc.", "the doc, changed."),
+        ("#[inline]", "#[inline(always)]"),
+    ] {
+        let jobs = interface_jobs("f.rs", "save", before, &before.replace(from, to));
+        assert_eq!(roles(&jobs), ["maintainer"], "{jobs:?}");
+    }
+    let jobs = interface_jobs("f.rs", "save", before, &before.replace("More", "Some"));
+    assert_due(&jobs, "f.rs", "save");
 }
 
 #[test]
-fn attribute_detached_by_blank_lines_is_due() {
-    let before = "#[inline]\n\n\n#[must_use]\npub fn save() -> u8 {\n    1\n}\n";
-    let after = before.replace("#[inline]", "#[inline(always)]");
-    assert_due(
-        &interface_jobs("f.rs", "save", before, &after),
-        "f.rs",
-        "save",
-    );
-}
-
-#[test]
-fn renamed_definition_whose_old_name_survives_in_its_comment_is_due() {
+fn renamed_definition_whose_old_name_survives_in_its_comment_falls_back_to_the_file() {
+    // a mention is no definition: the name is gone from the new file, so the file triggers
     let before = "def save_entry(item):\n    # save is the old name\n    return item\n";
     let after = before.replace("return item", "return item + 1");
-    assert_due(
-        &interface_jobs("f.py", "save", before, &after),
-        "f.py",
-        "save",
-    );
+    let jobs = interface_jobs("f.py", "save", before, &after);
+    assert_eq!(roles(&jobs), ["maintainer", "tester", "documenter"]);
+    assert_eq!(jobs[1].1, ["interface file changed: src/store/f.py"]);
+}
+
+#[test]
+fn edit_to_a_line_that_only_mentions_the_name_gives_no_tester_or_documenter_job() {
+    let rust = "pub fn save() {}\n\nfn caller() {\n    // save it\n    save();\n}\n";
+    for (file, before, from, to) in [
+        ("f.rs", rust, "save();", "save(); save();"),
+        ("f.rs", rust, "// save it", "// save it twice"),
+        (
+            "f.py",
+            "def save():\n    pass\n\n\ndef caller():\n    # save it\n    save()\n",
+            "save()\n",
+            "save(); save()\n",
+        ),
+    ] {
+        let jobs = interface_jobs(file, "save", before, &before.replace(from, to));
+        assert_eq!(roles(&jobs), ["maintainer"], "{file}: {jobs:?}");
+    }
+}
+
+#[test]
+fn edit_inside_a_python_docstring_with_a_blank_line_then_column_zero_text_is_due() {
+    let before = "def save():\n    \"\"\"Saves.\n\ncol0 text\n    \"\"\"\n    return 1\n\n\ndef other():\n    pass\n";
+    for (from, to) in [("col0 text", "col0 more text"), ("return 1", "return 2")] {
+        let jobs = interface_jobs("f.py", "save", before, &before.replace(from, to));
+        assert_due(&jobs, "f.py", "save");
+    }
 }
 
 #[test]
@@ -421,14 +440,12 @@ fn multi_line_decorator_edit_is_due() {
 }
 
 #[test]
-fn definition_deleted_while_its_name_survives_in_a_caller_is_due() {
+fn definition_deleted_while_its_name_survives_in_a_caller_falls_back_to_the_file() {
     let before = "def save(item):\n    return item\n\n\ndef caller():\n    return save(1)\n";
     let after = "\n\ndef caller():\n    return save(1)\n";
-    assert_due(
-        &interface_jobs("f.py", "save", before, after),
-        "f.py",
-        "save",
-    );
+    let jobs = interface_jobs("f.py", "save", before, after);
+    assert_eq!(roles(&jobs), ["maintainer", "tester", "documenter"]);
+    assert_eq!(jobs[1].1, ["interface file changed: src/store/f.py"]);
 }
 
 #[test]
@@ -491,17 +508,15 @@ fn next_items_doc_comment_after_a_blank_line_ends_the_block_in_rust_and_python()
 }
 
 #[test]
-fn closing_brace_at_column_zero_in_a_raw_string_then_a_blank_line_ends_the_block_early() {
-    // known limit: brackets are counted as plain characters, so the string's `}` closes the
-    // body and the edit below the string is missed until tree-sitter
+fn edit_below_a_raw_string_holding_a_lone_brace_and_a_blank_line_is_due() {
     let before =
         "pub fn save() -> u8 {\n    let s = r#\"\n}\n\ntail\n\"#;\n    let x = 1;\n    x\n}\n";
     let jobs = interface_jobs("f.rs", "save", before, &before.replace("x = 1", "x = 2"));
-    assert_eq!(roles(&jobs), ["maintainer"], "{jobs:?}");
+    assert_due(&jobs, "f.rs", "save");
 }
 
 #[test]
-fn interface_outside_a_block_language_triggers_on_its_file() {
+fn interface_in_a_language_without_a_grammar_or_block_rule_triggers_on_its_file() {
     for (file, before, from, to) in [
         (
             "docs.md",
@@ -510,10 +525,10 @@ fn interface_outside_a_block_language_triggers_on_its_file() {
             "Second paragraph, changed.",
         ),
         (
-            "f.yaml",
-            "save:\n  a: 1\n\n# note\n  b: 2\n",
-            "b: 2",
-            "b: 3",
+            "f.toml",
+            "save = 1\n\nother = 2\n",
+            "other = 2",
+            "other = 3",
         ),
     ] {
         let name = if file == "docs.md" { "Usage" } else { "save" };
@@ -527,6 +542,60 @@ fn interface_outside_a_block_language_triggers_on_its_file() {
         assert_eq!(jobs[1].1, [reason.as_str()]);
         assert_eq!(jobs[2].1, [reason.as_str()]);
     }
+}
+
+#[test]
+fn yaml_edit_inside_the_interface_key_is_due_and_one_in_a_sibling_key_is_not() {
+    let before = "save:\n  a: 1\n\n# note\n  b: 2\nother:\n  c: 3\n";
+    let jobs = interface_jobs("f.yaml", "save", before, &before.replace("b: 2", "b: 3"));
+    assert_due(&jobs, "f.yaml", "save");
+    let jobs = interface_jobs("f.yaml", "save", before, &before.replace("c: 3", "c: 4"));
+    assert_eq!(roles(&jobs), ["maintainer"], "{jobs:?}");
+}
+
+/// The fixture with a card `[[anchor]]` on a mention: `save_item` is only imported and called in
+/// `src/api/items.py`. Both units are stamped.
+fn stamped_with_a_mention_anchor() -> TempDir {
+    let repo = fixture("single");
+    append(
+        &repo.path().join(".stewards/units/api.toml"),
+        "\n[[anchor]]\npath = \"src/api/items.py\"\nname = \"save_item\"\n",
+    );
+    stamp_units(repo.path(), &["api", "store"]);
+    repo
+}
+
+#[test]
+fn a_stamped_unchanged_unit_anchoring_a_mention_is_due_for_review_until_the_card_is_fixed() {
+    let repo = stamped_with_a_mention_anchor();
+    let (code, v) = run(repo.path(), &["next"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(jobs(&v), pairs(&[("", "reviewer")]));
+    let reason = "api: dead anchor: src/api/items.py::save_item";
+    assert_eq!(strings(&v["jobs"][0]["reasons"]), [reason]);
+    // the unit has no hunks, and the reviewer's pack says why it is due
+    let brief = fs::read_to_string(v["jobs"][0]["brief_path"].as_str().unwrap()).unwrap();
+    assert!(
+        brief.contains("dead anchor: src/api/items.py::save_item"),
+        "{brief}"
+    );
+    let (_, v) = run(repo.path(), &["next", "--roles", "--no-brief"]);
+    assert_eq!(jobs(&v), pairs(&[("api", "maintainer")]));
+    assert_eq!(
+        strings(&v["jobs"][0]["reasons"]),
+        ["dead anchor: src/api/items.py::save_item"]
+    );
+
+    // the reviewer's card patch, then its stamp
+    edit(
+        &repo.path().join(".stewards/units/api.toml"),
+        "name = \"save_item\"",
+        "name = \"list_items\"",
+    );
+    stamp_units(repo.path(), &["api"]);
+    let (code, v) = run(repo.path(), &["next"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(jobs(&v).is_empty());
 }
 
 #[test]
@@ -625,7 +694,7 @@ fn documenter_mark_after_the_change_suppresses_the_documenter_job() {
 }
 
 #[test]
-fn dead_anchor_on_a_fresh_unit_has_no_jobs_but_next_exits_1() {
+fn dead_interface_anchor_on_a_fresh_unit_gives_a_maintainer_job_and_next_exits_1() {
     let repo = fixture("single");
     stamp_units(repo.path(), &["api", "store"]);
     edit(
@@ -633,9 +702,13 @@ fn dead_anchor_on_a_fresh_unit_has_no_jobs_but_next_exits_1() {
         "count_items",
         "gone",
     );
-    let (code, v) = run(repo.path(), &["next", "--roles"]);
+    let (code, v) = run(repo.path(), &["next", "--roles", "--no-brief"]);
     assert_eq!(code, 1, "{v}");
-    assert!(jobs(&v).is_empty(), "{v}");
+    assert_eq!(jobs(&v), pairs(&[("store", "maintainer")]));
+    assert_eq!(
+        strings(&v["jobs"][0]["reasons"]),
+        ["dead anchor: src/store/db.py::gone"]
+    );
     assert_eq!(v["check"]["failures"][0]["kind"], "dead_anchor");
 }
 

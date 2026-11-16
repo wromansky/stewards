@@ -311,7 +311,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   `next` finds: the units due, in the review briefs of one round, which
   together cover every stamped one, plus a maintainer first review for
   each never-stamped one; `review
-  --roles` lists the per-role jobs of `next --roles` instead: maintainer review for every stale unit; tester when a
+  --roles` lists the per-role jobs of `next --roles` instead: maintainer review for every stale unit and every stamped one with a dead
+  anchor; tester when a
   change since its mark touched an interface's lines or a file under
   `test_roots`; documenter when a change since its mark touched an
   interface's lines (a change only in a private helper an interface calls
@@ -366,11 +367,29 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   `check` warning said so.)
 - **Anchors:** `path::name`. Resolved by text in stage 1 (file exists, whole
   word match). With tree-sitter (stage 3), `name` must be a definition per
-  the grammar's `tags.scm`; a mere mention is dead. Static grammars for rust,
-  python, typescript, javascript, go, bash, c, cpp, c-sharp, hcl, yaml;
-  runtime extras from `~/.stewards/grammars/<lang>/` via `libloading`;
-  custom queries for YAML keys, HCL blocks, Bash functions; text fallback
-  for BAML and unknown languages.
+  the grammar's `tags.scm`; a mere mention is dead. Static grammars (stage 3),
+  by extension: rust `rs`; python `py`; typescript `ts mts cts`, tsx `tsx`;
+  javascript `js jsx mjs cjs`; go `go`; bash `sh bash`; c `c h` (a C++
+  header is parsed as C); cpp `cc cpp cxx hpp hh`; c-sharp `cs`; hcl `tf
+  hcl`; yaml `yml yaml`. A definition is each `@name` capture inside a
+  `@definition.*` capture of the grammar's own tags query (TypeScript adds
+  its crate's query to JavaScript's), plus `src/anchors/*.scm`: Rust
+  `const`, `static`, enum variants and struct fields (tags.scm omits them),
+  YAML mapping keys, Bash functions, and HCL blocks named by their labels
+  joined with `.` (`resource "aws_s3_bucket" "logs"` is
+  `aws_s3_bucket.logs`, `variable "region"` is `region`). A definition's
+  span is its node (a C declarator widened to its function, a decorated or
+  exported item to the wrapper) and the comments and attributes directly
+  above it. A qualified name (`a::b`, `a.b`) matches a definition named
+  as a whole first (HCL, YAML keys with dots); else its last segment must
+  be a definition inside a definition named by the segment before it, or
+  inside a Rust `impl` of that type (so `Router::owner` is alive and
+  `Other::owner` dead), or under that YAML key; only the immediate
+  qualifier is checked. Runtime extras from `~/.stewards/grammars/<lang>/`
+  via `libloading` come with the runtime-grammar task; BAML, Markdown, TOML,
+  Java, Ruby and every other language keep the text rule. (simplified: Go
+  methods and C++ out-of-line members are not scoped by their receiver or
+  class; `Type.Method` is dead there until a supplement query names them.)
 - **Repo-level knowledge, no oracle agent:** `repo.toml` holds `[[flow]]`
   and `[[decision]]` next to repo-wide facts. `pack` includes the flows that
   touch the unit. The architect's pack is every unit's purpose and interface
@@ -666,7 +685,7 @@ unowned changed file), 2 errors.
 
 ```
 Pack { unit, role, task, budget, bytes, over_budget, purpose, paths[],
-       interface[], anchors[{path, name, line, source}], scenarios[],
+       interface[], anchors[{path, name, line, source, source_start}], scenarios[],
        test_command, primary_paths[], test_commands[], gaps[], known_bugs[], flows[],
        decisions[], units[{name, purpose, interface_ids, paths, files}], doc,
        changed_files[], hunks[{path, diff}], other_changed_files[], memory[],
@@ -714,9 +733,12 @@ answered, accepted, or contested), which is never dropped. Its hunks run from th
 documenter mark whose tree exists (a tree has no time, so the oldest is the
 one the most of its files changed since), so a unit due only because a
 mark is behind its stamp shows the change that mark has not seen.
-Source windows are 20 lines before and after the match (the definition span
-with tree-sitter). Budget is bytes of the `--human` rendering. Shrink order:
-halve every source window once; drop windows last-listed first; drop gaps; drop known bugs;
+A source window is, in a grammar language, the definition's span (the node,
+the comments and attributes directly above it) cut at 41 lines then one line
+`… (<n> more lines)`; in any other file, 20 lines before and after the match.
+`line` is the match's line and `source_start` the file line the source
+begins at. Budget is bytes of the `--human` rendering. Shrink order:
+halve every source window once (the match line stays, with ten lines above and below); drop windows last-listed first; drop gaps; drop known bugs;
 drop flows; truncate hunks to their first 40 lines each. Purpose, interface,
 scenarios, and `other_changed_files` are never dropped (but for the review
 pack's last cuts above). If still over,
@@ -753,41 +775,45 @@ file counts as changed and the pack has no hunks. There is no base ref:
 committed, staged, unstaged, and untracked changes are all just distance
 from the stamp. The per-role jobs, which `next --roles` lists:
 
-- every stale unit → maintainer review
+- every stale unit → maintainer review; so is a stamped unit, stale or not,
+  whose card has an anchor `check` calls dead (reason `dead anchor:
+  <path::name>`, one per anchor, after `stale` when both hold): only a
+  reviewer's card patch fixes it, and the text rule's mentions die when the
+  grammar judges them in code that did not change
 - a change since the tester's mark touches an interface's lines, or a file
   owned by the unit and under `test_roots` changed → tester
 - a change since the documenter's mark touches an interface's lines →
   documenter
-- an interface's lines in a file: a block around every whole-word match of
-  the anchor's name, and of its last segment when the name holds `::` or
-  `.`. Down, the block runs from the match's line until a line whose
-  previous line is blank, whose indent is at most the match line's (a tab
-  is 8 columns), and before which every `(`, `[`, `{` opened since the
-  match line is closed. Such a line that is a comment (it starts with `#`,
-  `//`, `/*`, `*` or `--`) ends the block only if the next line that is
-  neither blank nor a comment would too, or the file ends first: a column-0
-  comment inside a Python or Ruby body stays in, the next item's doc
-  comment ends the block. Trailing blanks are dropped. Up, it takes the
-  non-blank lines directly above, then, if the nearest non-blank line above
-  their blank lines starts with `/`, `*`, `#` or `@` (a detached doc
-  comment or attribute), those blanks and the run above them, once. Items
-  not parted by a blank line merge into one block. The rule applies only
-  to files in the languages it was written for (extensions `rs py ts tsx
-  js jsx mjs cjs go java kt c h cc cpp hpp cs rb php swift scala sh`).
+- an interface's lines in a file: in a grammar language (see Anchors), the
+  lines of every span of a definition the anchor's name resolves to (the
+  definition's node and the comments and attributes directly above it, no
+  blank line between); a mention gives none. In the languages
+  `java kt rb php swift scala` the text rule: a block around every
+  whole-word match of the anchor's name, and of its last segment when the
+  name holds `::` or `.`. Down, the block runs from the match's line until
+  a line whose previous line is blank, whose indent is at most the match
+  line's (a tab is 8 columns), and before which every `(`, `[`, `{` opened
+  since the match line is closed. Such a line that is a comment (it starts
+  with `#`, `//`, `/*`, `*` or `--`) ends the block only if the next line
+  that is neither blank nor a comment would too, or the file ends first.
+  Trailing blanks are dropped. Up, it takes the non-blank lines directly
+  above, then, if the nearest non-blank line above their blank lines starts
+  with `/`, `*`, `#` or `@`, those blanks and the run above them, once.
+  Items not parted by a blank line merge into one block. (simplified: this
+  text rule can end a block early, at a blank line then a column-0 line
+  inside a triple-quoted string; the upgrade is the language's grammar.)
 - a hunk of `git diff -U0 <mark> <snapshot>` touches an interface when its
   new-side range or the line just before or after it is one of the
   interface's lines in the snapshot's file, or its old-side range or a
   neighbour is one of them in the file at the mark. The reason is
   `interface changed: <anchor>`. When the lines can't be found (a file in
-  another language such as Markdown, YAML or TOML, name absent, file gone,
+  a language with no grammar or text rule such as Markdown or TOML, name
+  not defined, file gone,
   no hunks for it, mark tree pruned, a blob unreadable, as for a file added
   since the mark) the file changing is enough:
-  `interface file changed: <path>`. A change only in a private helper set
-  apart from every match by blank lines touches no interface, even when an
-  interface calls it; the maintainer's `tester_needed` covers that. The
-  block can still end early: a blank line then a column-0 line inside a
-  Python triple-quoted string, or a lone `}` at column 0 inside a Rust raw
-  string then a blank line. Exact spans come with tree-sitter.
+  `interface file changed: <path>`. A change only in a private helper outside
+  every span touches no interface, even when an interface calls it; the
+  maintainer's `tester_needed` covers that.
 - tester and documenter jobs do not need the unit to be stale; with no
   mark they measure from the stamp, and a never-stamped unit gets none
   until its first review stamps it (a validator job does not wait)
@@ -2568,9 +2594,13 @@ tree; Hermes takes only the first matching context file; ZeroClaw reads
   to stderr unless `BAML_LOG=off`. BAML rejects lowercase enum values, so
   enums carry aliases and the generator hook adds a serde rename; the hook
   also rewrites the client's crate path so it can live inside `llm.rs`.
-- tree-sitter crates (2026-10-20): `tree-sitter` 0.27.1 and grammars for
-  rust, python, typescript, javascript, go, bash, c, cpp, c-sharp, hcl, yaml
-  exist on crates.io; no `tree-sitter-baml`; `tree-sitter-loader` compiles
+- tree-sitter crates (2026-11-15): `tree-sitter` 0.27.2 with
+  `tree-sitter-rust` 0.24.2, `-python` 0.25.0, `-typescript` 0.23.2,
+  `-javascript` 0.25.0, `-go` 0.25.0, `-bash` 0.25.1, `-c` 0.24.2, `-cpp`
+  0.23.4, `-c-sharp` 0.23.5, `-hcl` 1.1.0, `-yaml` 0.7.2 build together
+  (each grammar hands over a `tree-sitter-language` 0.1.9 `LanguageFn`, so
+  one ABI); they are dependencies because neither std nor the tree has a
+  parser for these languages. No `tree-sitter-baml`; `tree-sitter-loader` compiles
   grammars from source at runtime (needs a C compiler); prebuilt grammar
   libraries load with `libloading`.
 - Drivers (verified 2026-10-20 on claude 2.1.305 and codex-cli 0.154.0; Pi

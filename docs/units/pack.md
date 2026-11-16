@@ -18,12 +18,12 @@ Start in src/pack.rs: pack for what a role receives, developer for the developer
 
 | id | contract | anchor |
 |---|---|---|
-| pack | Builds the role's pack fitted to its repo.toml budget. Architect\: no unit, all unit summaries, flows, decisions. Others need a unit; developer is a usage error naming brief. --diff after a live stamp\: changed files and hunks; with none\: all owned files. \[pack\] exclude files are named, never inlined. | [src/pack.rs\:\:pack](../../src/pack.rs#L1) |
-| developer | developer(repo, unit, task, n, dev\_task, snapshot) builds the developer pack for task n\: purpose, paths, interface, gaps, the unit's flows, the task (n, title, change, files, check), and only the card anchors whose path is in the task's files. | [src/pack.rs\:\:developer](../../src/pack.rs#L144) |
-| render | Pack\:\:render returns the --human markdown whose byte length the budget measures. Free text is one\_line'd, table-escaped, or fenced longer than its longest backtick run, so it cannot open a block. A first review lists at most 200 owned files plus a count; JSON keeps all. | [src/pack.rs\:\:render](../../src/pack.rs#L540) |
-| fit | Pack\:\:fit shrinks until render fits\: halve source windows, drop sources last-first, gaps, known bugs, flows, first review's owned files, cut hunks to 40 lines; logged in dropped. Never dropped\: purpose, interface, task, scenarios, bug, answered, hunk paths. | [src/pack.rs\:\:fit](../../src/pack.rs#L276) |
-| run | \`stewards pack \[unit\] --role \<role\> \[--diff\] \[--task \<text\>\]\` emits the pack (JSON, or --human markdown) at the snapshot. --role reviewer takes no unit (usage error) and emits the round of review packs for the units due. | [src/pack.rs\:\:run](../../src/pack.rs#L143) |
-| review | review(repo, due, task, snapshot) returns a ReviewRound\: each due unit's reviewer section, in order, grouped so a group fits REVIEW\_BUDGET; one that does not starts the next group, none deferred. A lone oversize unit is squeezed. | [src/pack.rs\:\:review](../../src/pack.rs#L27) |
+| pack | Builds the role's pack fitted to its repo.toml budget. Architect\: no unit, all unit summaries, flows, decisions. Others need a unit; developer is a usage error naming brief. --diff after a live stamp\: changed files and hunks; with none\: all owned files. \[pack\] exclude files are named, never inlined. | [src/pack.rs\:\:pack](../../src/pack.rs#L148) |
+| developer | developer(repo, unit, task, n, dev\_task, snapshot) builds the developer pack for task n\: purpose, paths, interface, gaps, the unit's flows, the task (n, title, change, files, check), and only the card anchors whose path is in the task's files. | [src/pack.rs\:\:developer](../../src/pack.rs#L160) |
+| render | Pack\:\:render returns the --human markdown the budget measures; an anchor header shows \`source from line N\`. Free text is one\_line'd, table-escaped or fenced longer than its backtick run. A first review lists at most 200 owned files plus a count; JSON keeps all. | [src/pack.rs\:\:render](../../src/pack.rs#L570) |
+| fit | Pack\:\:fit shrinks until render fits\: halve source windows, drop sources last-first, gaps, known bugs, flows, first review's owned files, cut hunks to 40 lines; logged in dropped. Never dropped\: purpose, interface, task, scenarios, bug, answered, hunk paths. | [src/pack.rs\:\:fit](../../src/pack.rs#L906) |
+| run | \`stewards pack \[unit\] --role \<role\> \[--diff\] \[--task \<text\>\]\` emits the pack (JSON, or --human markdown) at the snapshot. --role reviewer takes no unit (usage error) and emits the round of review packs for the units due. | [src/pack.rs\:\:run](../../src/pack.rs#L1013) |
+| review | review(repo, due, task, snapshot) returns a ReviewRound\: each due unit's reviewer section, in order, grouped so a group fits REVIEW\_BUDGET; one that does not starts the next group, none deferred. A lone oversize unit is squeezed. | [src/pack.rs\:\:review](../../src/pack.rs#L530) |
 
 ## Scenarios
 
@@ -39,4 +39,4 @@ _None._
 
 ## Last reviewed
 
-8b41f486851a23b5cb84c49253be3626e3082a83
+3b8cbbc8884aac89d624a65ae07dd955ff1578c4

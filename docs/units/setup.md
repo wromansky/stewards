@@ -18,14 +18,14 @@ Start from the file for the command: src/init.rs for proposing units, test comma
 
 | id | contract | anchor |
 |---|---|---|
-| init | Plain \`init\` refuses (already\_initialized) if units.toml or repo.toml exists; else proposes units, writes both files (root-only repo test commands), a test card per unit whose own dirs give one command (else says why), appends missing .gitignore lines, upserts the AGENTS.md block, reports. | [src/init.rs\:\:propose](../../src/init.rs#L1) |
-| init-draft | \`init --draft\` runs step 1 only on an uninitialized repo, briefs the architect and a first review per never-reviewed unit (problems recorded as gaps, existing code unchanged), each with a handoff, then says to run \`review --roles\`; with --direct it checks model guards, then submits each job. | [src/init.rs\:\:draft\_jobs](../../src/init.rs#L567) |
+| init | Plain \`init\` refuses (already\_initialized) if units.toml or repo.toml exists; else proposes units, writes both files (root-only repo test commands), a test card per unit whose own dirs give one command (else says why), appends missing .gitignore lines, upserts the AGENTS.md block, reports. | [src/init.rs\:\:propose](../../src/init.rs#L579) |
+| init-draft | \`init --draft\` runs step 1 only on an uninitialized repo, briefs the architect and a first review per never-reviewed unit (problems recorded as gaps, existing code unchanged), each with a handoff, then says to run \`review --roles\`; with --direct it checks model guards, then submits each job. | [src/init.rs\:\:draft\_jobs](../../src/init.rs#L808) |
 | agents-block | Writes the stewards block at the top of AGENTS.md (creating the file), or replaces the text between existing start/end markers; returns whether the file changed, so a rerun is a no-op. | [src/guide.rs\:\:upsert\_block](../../src/guide.rs#L50) |
-| guide | \`guide\` prints the block's ritual, handoff, editing and hygiene paragraphs, roles (saying a stamp is one reviewer's no-finding report), adoption, the AGENTS.md-only note, one delegation text for every harness; --all, --errors, --glossary add every harness, the error table, the glossary. | [src/guide.rs\:\:run](../../src/guide.rs#L20) |
+| guide | \`guide\` prints the block's ritual, handoff, editing and hygiene paragraphs, roles (saying a stamp is one reviewer's no-finding report), adoption, the AGENTS.md-only note, one delegation text for every harness; --all, --errors, --glossary add every harness, the error table, the glossary. | [src/guide.rs\:\:run](../../src/guide.rs#L145) |
 | harness-detect | Returns the first harness whose env var prefix matches the current environment; harnesses with an unverified env rule are never detected. | [src/harness.rs\:\:detect](../../src/harness.rs#L145) |
 | harness-by-name | Looks up a harness case-insensitively; an unknown name is harness\_unknown listing the valid names. | [src/harness.rs\:\:by\_name](../../src/harness.rs#L155) |
-| docs | \`docs \[unit\]\` renders docs\_path/\<unit\>.md for one or every unit plus README.md from cards, tests and repo.toml, escaping card text and linking live anchors; rejects a docs\_path that is empty or escapes the repo and an unknown unit; writes only changed files. | [src/docs.rs\:\:pages](../../src/docs.rs#L41) |
-| init-ci | \`init --ci\` returns not\_implemented; \`init --hooks\` and \`render\` are cut from 0.1.0, so they are usage errors. | [src/init.rs\:\:not\_implemented](../../src/init.rs#L14) |
+| docs | \`docs \[unit\]\` renders docs\_path/\<unit\>.md for one or every unit plus README.md from cards, tests and repo.toml, escaping card text and linking live anchors; rejects a docs\_path that is empty or escapes the repo and an unknown unit; writes only changed files. | [src/docs.rs\:\:pages](../../src/docs.rs#L53) |
+| init-ci | \`init --ci\` returns not\_implemented; \`init --hooks\` and \`render\` are cut from 0.1.0, so they are usage errors. | [src/init.rs\:\:run](../../src/init.rs#L550) |
 
 ## Scenarios
 
@@ -60,4 +60,4 @@ Start from the file for the command: src/init.rs for proposing units, test comma
 
 ## Last reviewed
 
-65320c2d69de7a962f750b69b572e05b1d599474
+3b8cbbc8884aac89d624a65ae07dd955ff1578c4

@@ -1,11 +1,11 @@
 unit = "setup"
 
 [reviewed]
-commit = "65320c2d69de7a962f750b69b572e05b1d599474"
+commit = "3b8cbbc8884aac89d624a65ae07dd955ff1578c4"
 fingerprint = "sha256:b01946e56272f34688d94c2a0436ca7f109e7ee8a8f3d9df7e33e4c8cc939107"
-tree = "6532dea9ec7ab5543c86c1f9f21098b199069131"
-tester = "6532dea9ec7ab5543c86c1f9f21098b199069131"
-documenter = "6532dea9ec7ab5543c86c1f9f21098b199069131"
+tree = "63f6b2fe819b5b262aa6fed3593573942fdb640b"
+tester = "63f6b2fe819b5b262aa6fed3593573942fdb640b"
+documenter = "63f6b2fe819b5b262aa6fed3593573942fdb640b"
 
 [[interface]]
 id = "init"
@@ -44,7 +44,7 @@ contract = "`docs [unit]` renders docs_path/<unit>.md for one or every unit plus
 
 [[interface]]
 id = "init-ci"
-anchor = "src/init.rs::not_implemented"
+anchor = "src/init.rs::run"
 contract = "`init --ci` returns not_implemented; `init --hooks` and `render` are cut from 0.1.0, so they are usage errors."
 
 [[anchor]]
@@ -124,7 +124,7 @@ note = "esc assumes a tool-written prefix, but unit_page writes reviewed.commit 
 [[gap]]
 kind = "future"
 title = "init --ci is not implemented"
-anchor = "src/init.rs::not_implemented"
+anchor = "src/init.rs::run"
 note = "The flag is parsed but returns not_implemented."
 
 [doc]

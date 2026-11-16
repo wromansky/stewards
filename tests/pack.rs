@@ -847,7 +847,24 @@ fn halving_keeps_the_match_line_of_a_span_and_of_a_text_window() {
     };
     assert_eq!(shown(&p, 1), (42, "def spanned():".into())); // 41 lines and the "more lines" marker
     assert_eq!(shown(&p, 2), (41, "needle".into()));
+    let header = |p: &stewards::pack::Pack, i: usize| {
+        let a = &p.anchors.as_ref().unwrap()[i];
+        format!(
+            "### `{}::{}` (line {}, source from line {})",
+            a.path,
+            a.name,
+            a.line.unwrap(),
+            a.source_start.unwrap()
+        )
+    };
+    let before = [header(&p, 1), header(&p, 2)];
+    let human = p.render();
+    assert!(before.iter().all(|h| human.contains(h)), "{human}");
     p.fit(p.bytes - 1);
+    let after = [header(&p, 1), header(&p, 2)];
+    assert_ne!(before, after);
+    let human = p.render();
+    assert!(after.iter().all(|h| human.contains(h)), "{human}");
     assert_eq!(shown(&p, 1), (21, "def spanned():".into()));
     assert_eq!(shown(&p, 2), (21, "needle".into()));
 }

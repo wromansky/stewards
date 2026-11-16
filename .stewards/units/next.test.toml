@@ -71,3 +71,11 @@ given = "three stamped units each grown past half the review budget; review --ta
 expect = "three reviewer jobs, briefs review-1..3 each under the budget, every unit in exactly one in units.toml order, no 'next round' text; run again leaves them all waiting"
 level = "integration"
 command = "cargo test --test review every_due_unit_is_listed_in_one_round_in_as_many_briefs_as_the_budget_needs"
+
+[[scenario]]
+id = "stamped-unit-with-a-dead-anchor-is-due-for-review"
+interface = "next"
+given = "both units stamped and unchanged; the api card has an [[anchor]] on a name only mentioned in src/api/items.py"
+expect = "next lists a reviewer job with reason 'api: dead anchor: src/api/items.py::save_item'; --roles gives an api maintainer job; once the card anchor is fixed and stamped, next exits 0"
+level = "integration"
+command = "cargo test --test next a_stamped_unchanged_unit_anchoring_a_mention_is_due_for_review_until_the_card_is_fixed"

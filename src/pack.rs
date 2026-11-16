@@ -693,7 +693,10 @@ impl Pack {
         if let Some(list) = &self.anchors {
             let mut body = String::new();
             for a in list {
-                let line = a.line.map_or("dead".into(), |l| format!("line {l}"));
+                let mut line = a.line.map_or("dead".into(), |l| format!("line {l}"));
+                if let (Some(_), Some(start)) = (&a.source, a.source_start) {
+                    line += &format!(", source from line {start}");
+                }
                 body += &format!(
                     "### `{}::{}` ({line})\n\n",
                     one_line(&a.path),

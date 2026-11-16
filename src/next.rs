@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::anchors;
 use crate::brief;
 use crate::check::{
-    CheckReport, changed_since, check_at, in_snapshot, one_line, stale_files, unowned_ok,
+    CheckReport, changed_since, check_at, dead_anchors, one_line, stale_files, unowned_ok,
 };
 use crate::debt::{DebtItem, is_debt_line};
 use crate::git;
@@ -428,23 +428,10 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
             // An anchor `check` calls dead keeps a stamped unit due though no file changed (the
             // text rule's mentions die when tree-sitter judges them): only a reviewer's card
             // patch fixes it.
-            let dead_anchors: Vec<String> = match (reviewed, card) {
-                (Some(_), Some(c)) => c
-                    .interface
-                    .iter()
-                    .map(|i| i.anchor.clone())
-                    .chain(c.anchors.iter().map(|a| format!("{}::{}", a.path, a.name)))
-                    .filter(|text| {
-                        Anchor::parse(text).ok().is_none_or(|a| {
-                            !in_snapshot(&entries, &a.path)
-                                || !matches!(
-                                    anchors::resolve(root, &a),
-                                    anchors::Resolution::Found { .. }
-                                )
-                        })
-                    })
-                    .collect(),
-                _ => vec![],
+            let dead_anchors = if reviewed.is_some() {
+                dead_anchors(root, &entries, card)
+            } else {
+                vec![]
             };
             if stale.is_some() || !dead_anchors.is_empty() {
                 let changed = stale.clone().unwrap_or_default();

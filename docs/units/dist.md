@@ -18,9 +18,9 @@ Follow RELEASING.md in order; the one-time repository setup (release environment
 
 | id | contract | anchor |
 |---|---|---|
-| release-workflow | On a v\<x\>.\<y\>.\<z\> tag\: check versions, pins, library sha256s; build four archives with licenses; release job (tag on main) attests and releases; publish (--no-verify) and AUR jobs need release-environment approval. | [.github/workflows/release.yml\:\:release](../../.github/workflows/release.yml#L1) |
+| release-workflow | On a v\<x\>.\<y\>.\<z\> tag\: check versions, pins, library sha256s; build four archives with licenses; release job (tag on main) attests and releases; publish (--no-verify) and AUR jobs need release-environment approval. | [.github/workflows/release.yml\:\:release](../../.github/workflows/release.yml#L129) |
 | install-sh | sh install.sh \[v\<version\>\]\: https only; absolute \${STEWARDS\_PREFIX\:-\$HOME/.local} (root needs a prefix); installs only if the tarball matches SHA256SUMS; bin and lib by write-then-rename; refuses musl and odd versions. | [install.sh\:\:sha256](../../install.sh#L72) |
-| aur-bump | sh bump.sh \<version\> \<64-hex sha256 of the .crate\> rewrites pkgver, pkgrel=1 and the first sha256sums entry in PKGBUILD and the same lines in .SRCINFO; rejects a malformed version or hash. | [packaging/aur/bump.sh\:\:bump](../../packaging/aur/bump.sh#L2) |
+| aur-bump | sh bump.sh \<version\> \<64-hex sha256 of the .crate\> rewrites pkgver, pkgrel=1 and the first sha256sums entry in PKGBUILD and the same lines in .SRCINFO; rejects a malformed version or hash. | [tests/completions.rs\:\:bump\_sh\_rewrites\_the\_version\_and\_crate\_hash\_in\_pkgbuild\_and\_srcinfo](../../tests/completions.rs#L349) |
 | aur-pkgbuild | Builds the crates.io crate and installs binary, libbaml\_cffi in /usr/lib/stewards, completions for bash, zsh and fish, the man page, LICENSE and BAML's licenses/baml files; the build fails if stewards cannot generate a completion or the man page. | [packaging/aur/PKGBUILD\:\:package](../../packaging/aur/PKGBUILD#L34) |
 | release-checklist | Ordered maintainer steps from version bump to post-release verification, plus known limits. | [RELEASING.md\:\:Releasing](../../RELEASING.md#L1) |
 | completions-tests | Tests stewards completions (five shells, save hint on stderr), stewards man, install.sh against a fake release served by curl and uname shims with no network, and bump.sh on a temp copy of PKGBUILD and .SRCINFO over two successive bumps. | [tests/completions.rs\:\:FakeRelease](../../tests/completions.rs#L50) |
@@ -46,4 +46,4 @@ _None._
 
 ## Last reviewed
 
-9b59164cc2a4e3360ceedfa6a7a20349362f39f4
+3b8cbbc8884aac89d624a65ae07dd955ff1578c4

@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::anchors::{Resolution, resolve};
 use crate::git;
-use crate::model::{Anchor, RepoConfig, Reviewed};
+use crate::model::{Anchor, RepoConfig, Reviewed, UnitCard};
 use crate::output::{CliError, Global, Human, emit};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, here};
@@ -200,6 +200,34 @@ pub fn stale_files(
     ))
 }
 
+/// Texts of a card's interface anchors and `[[anchor]]`s that do not resolve in the snapshot.
+pub fn dead_anchors(
+    root: &Path,
+    entries: &[(String, String)],
+    card: Option<&UnitCard>,
+) -> Vec<String> {
+    let Some(card) = card else { return vec![] };
+    // Only an interface's anchor is text; a card `[[anchor]]` is already parsed.
+    let targets = card
+        .interface
+        .iter()
+        .map(|i| (i.anchor.clone(), Anchor::parse(&i.anchor).ok()))
+        .chain(
+            card.anchors
+                .iter()
+                .map(|a| (format!("{}::{}", a.path, a.name), Some(a.clone()))),
+        );
+    targets
+        .filter(|(_, anchor)| {
+            anchor.as_ref().is_none_or(|a| {
+                !in_snapshot(entries, &a.path)
+                    || !matches!(resolve(root, a), Resolution::Found { .. })
+            })
+        })
+        .map(|(text, _)| text)
+        .collect()
+}
+
 /// Stamps, anchors, and scenario ids across the workspace; `filter` keeps one unit's findings
 /// (by plain or display name).
 pub fn check(ws: &Workspace, filter: Option<&str>) -> Result<CheckReport> {
@@ -260,29 +288,13 @@ pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> R
             }
 
             let interfaces = card.map_or(&[][..], |c| &c.interface);
-            let anchors = card.map_or(&[][..], |c| &c.anchors);
-            // Only an interface's anchor is text; a card `[[anchor]]` is already parsed.
-            let targets = interfaces
-                .iter()
-                .map(|i| (i.anchor.clone(), Anchor::parse(&i.anchor).ok()))
-                .chain(
-                    anchors
-                        .iter()
-                        .map(|a| (format!("{}::{}", a.path, a.name), Some(a.clone()))),
-                );
-            for (text, anchor) in targets {
-                let dead = anchor.is_none_or(|a| {
-                    !in_snapshot(&entries, &a.path)
-                        || !matches!(resolve(root, &a), Resolution::Found { .. })
-                });
-                if dead {
-                    report.failures.push(finding(
-                        "dead_anchor",
-                        None,
-                        Some(&text),
-                        format!("{name}: anchor `{text}` does not resolve"),
-                    ));
-                }
+            for text in dead_anchors(root, &entries, card) {
+                report.failures.push(finding(
+                    "dead_anchor",
+                    None,
+                    Some(&text),
+                    format!("{name}: anchor `{text}` does not resolve"),
+                ));
             }
 
             let scenarios = loaded

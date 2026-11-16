@@ -1321,7 +1321,11 @@ fn every_fix_line_names_the_command_in_use() {
     let dir = fixture("single");
     let d = dir.path();
     stamp_units(d, &["api", "store"]);
-    edit(&d.join(".stewards/units/store.toml"), "count_items", "gone");
+    edit(
+        &d.join(".stewards/units/store.test.toml"),
+        "interface = \"save-item\"",
+        "interface = \"no-such-interface\"",
+    );
     // store's docs, so it has no documenter job
     append(
         &d.join(".stewards/units/store.toml"),

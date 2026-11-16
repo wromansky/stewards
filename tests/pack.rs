@@ -459,10 +459,24 @@ fn fit_shrinks_in_the_fixed_order() {
         if stamped {
             assert_eq!(run(dir, &["stamp", "api"]).0, 0);
         }
+        // `router` long enough that dropping its source shrinks the pack
+        let routes: String = (0..20).map(|i| format!("    \"/route/{i}\",\n")).collect();
+        edit(
+            &dir.join("src/api/items.py"),
+            "router = []",
+            &format!("router = [\n{routes}]"),
+        );
+        // inside `list_items`, so its span (not a ±20 line window) is long and the hunk too
         let extra: String = (0..60)
-            .map(|i| format!("EXTRA_{i} = \"a padded line to make the window and hunk long\"\n"))
+            .map(|i| {
+                format!("    extra_{i} = \"a padded line to make the window and hunk long\"\n")
+            })
             .collect();
-        append(&dir.join("src/api/items.py"), &extra);
+        edit(
+            &dir.join("src/api/items.py"),
+            "    return []\n",
+            &format!("{extra}    return []\n"),
+        );
 
         let ws = discover(dir, None).unwrap();
         let mut p = pack(
@@ -749,8 +763,12 @@ fn halving_shortens_every_source_window() {
         &dir.join(".stewards/units/api.toml"),
         "[[anchor]]\npath = \"src/api/items.py\"\nname = \"list_items\"\n",
     );
-    let extra: String = (0..60).map(|i| format!("EXTRA_{i} = {i}\n")).collect();
-    append(&dir.join("src/api/items.py"), &extra);
+    let extra: String = (0..60).map(|i| format!("    extra_{i} = {i}\n")).collect();
+    edit(
+        &dir.join("src/api/items.py"),
+        "    return []\n",
+        &format!("{extra}    return []\n"),
+    );
     let ws = discover(dir, None).unwrap();
     let mut p = pack(
         &ws.repos[0],
@@ -773,12 +791,65 @@ fn halving_shortens_every_source_window() {
     assert_eq!(p.dropped, ["source windows halved"]);
     let after = lines(&p);
     assert_eq!(before.len(), 2);
-    for (b, a) in before.iter().zip(&after) {
-        assert!(a < b, "{before:?} -> {after:?}");
-    }
+    // `router` is one line and stays; the 62-line `list_items` span (41 shown) is cut to its match
+    // line and ten below
+    assert_eq!((before[0], after[0]), (1, 1));
+    assert_eq!((before[1], after[1]), (42, 11));
     for a in p.anchors.iter().flatten() {
         assert!(a.source.as_ref().unwrap().contains(&a.name), "{a:?}");
     }
+}
+
+#[test]
+fn halving_keeps_the_match_line_of_a_span_and_of_a_text_window() {
+    let repo = fixture("single");
+    let dir = repo.path();
+    // a span led by 30 comment lines, so its match line is the 31st; a text window mid-file
+    let comments: String = (0..30).map(|i| format!("# note {i}\n")).collect();
+    let body: String = (0..30).map(|i| format!("    y_{i} = {i}\n")).collect();
+    fs::write(
+        dir.join("src/api/spans.py"),
+        format!("{comments}def spanned():\n{body}"),
+    )
+    .unwrap();
+    let text: String = (1..=100)
+        .map(|i| {
+            if i == 50 {
+                "needle\n".into()
+            } else {
+                format!("filler {i}\n")
+            }
+        })
+        .collect();
+    fs::write(dir.join("src/api/notes.md"), text).unwrap();
+    append(
+        &dir.join(".stewards/units/api.toml"),
+        "[[anchor]]\npath = \"src/api/spans.py\"\nname = \"spanned\"\n[[anchor]]\npath = \"src/api/notes.md\"\nname = \"needle\"\n",
+    );
+    let ws = discover(dir, None).unwrap();
+    let mut p = pack(
+        &ws.repos[0],
+        Some("api"),
+        Role::Maintainer,
+        "t",
+        false,
+        &snap(&ws),
+    )
+    .unwrap();
+    let shown = |p: &stewards::pack::Pack, i: usize| {
+        let a = &p.anchors.as_ref().unwrap()[i];
+        let source = a.source.clone().unwrap();
+        let at = a.line.unwrap() - a.source_start.unwrap();
+        (
+            source.lines().count(),
+            source.lines().nth(at as usize).unwrap().to_string(),
+        )
+    };
+    assert_eq!(shown(&p, 1), (42, "def spanned():".into())); // 41 lines and the "more lines" marker
+    assert_eq!(shown(&p, 2), (41, "needle".into()));
+    p.fit(p.bytes - 1);
+    assert_eq!(shown(&p, 1), (21, "def spanned():".into()));
+    assert_eq!(shown(&p, 2), (21, "needle".into()));
 }
 
 #[test]

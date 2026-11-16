@@ -7,7 +7,9 @@ use serde::Serialize;
 
 use crate::anchors;
 use crate::brief;
-use crate::check::{CheckReport, changed_since, check_at, one_line, stale_files, unowned_ok};
+use crate::check::{
+    CheckReport, changed_since, check_at, in_snapshot, one_line, stale_files, unowned_ok,
+};
 use crate::debt::{DebtItem, is_debt_line};
 use crate::git;
 use crate::llm::Mode;
@@ -422,9 +424,30 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
             let reviewed = card.and_then(|c| c.reviewed.as_ref());
             let stamp = reviewed.map(|r| &r.tree);
 
-            if let Some(changed) =
-                stale_files(root, &snapshot, &entries, &router, &def.name, reviewed)?
-            {
+            let stale = stale_files(root, &snapshot, &entries, &router, &def.name, reviewed)?;
+            // An anchor `check` calls dead keeps a stamped unit due though no file changed (the
+            // text rule's mentions die when tree-sitter judges them): only a reviewer's card
+            // patch fixes it.
+            let dead_anchors: Vec<String> = match (reviewed, card) {
+                (Some(_), Some(c)) => c
+                    .interface
+                    .iter()
+                    .map(|i| i.anchor.clone())
+                    .chain(c.anchors.iter().map(|a| format!("{}::{}", a.path, a.name)))
+                    .filter(|text| {
+                        Anchor::parse(text).ok().is_none_or(|a| {
+                            !in_snapshot(&entries, &a.path)
+                                || !matches!(
+                                    anchors::resolve(root, &a),
+                                    anchors::Resolution::Found { .. }
+                                )
+                        })
+                    })
+                    .collect(),
+                _ => vec![],
+            };
+            if stale.is_some() || !dead_anchors.is_empty() {
+                let changed = stale.clone().unwrap_or_default();
                 let debt_added = match stamp.filter(|t| git::has_object(root, t)) {
                     Some(t) => git::diff_added_lines(root, t, &snapshot)?
                         .into_iter()
@@ -437,12 +460,13 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
                         .collect(),
                     None => vec![],
                 };
-                let reason = if reviewed.is_some() {
-                    "stale"
-                } else {
-                    NEVER_REVIEWED
+                let mut reasons = match (&stale, reviewed) {
+                    (None, _) => vec![],
+                    (Some(_), Some(_)) => vec!["stale".to_string()],
+                    (Some(_), None) => vec![NEVER_REVIEWED.to_string()],
                 };
-                if reviewed.is_some() {
+                reasons.extend(dead_anchors.iter().map(|t| format!("dead anchor: {t}")));
+                if reviewed.is_some() && stale.is_some() {
                     // paths of several repos share the architect's list, so name the repo
                     let changed = changed
                         .iter()
@@ -458,7 +482,7 @@ fn role_jobs<'a>(ws: &'a Workspace, task: Option<&str>) -> Result<(Vec<RoleJob<'
                 }
                 unit_jobs.push(Job {
                     debt_added,
-                    ..job(Role::Maintainer, vec![reason.into()], changed)
+                    ..job(Role::Maintainer, reasons, changed)
                 });
             }
 
@@ -558,18 +582,12 @@ pub(crate) fn needs_docs(card: &UnitCard) -> bool {
         })
 }
 
-/// Extensions of the languages `anchors::interface_lines`'s block rule was written for.
-const BLOCK_LANGUAGES: &[&str] = &[
-    "rs", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "java", "kt", "c", "h", "cc", "cpp",
-    "hpp", "cs", "rb", "php", "swift", "scala", "sh",
-];
-
 /// `(reasons, files)` for the interfaces a change since `mark` touched, in card order: a hunk
 /// (`mark` -> `snapshot`) whose range or the line just before or after it, on the old side or
 /// the new, is one of the interface's lines in that side's file. `changed` is the files changed
-/// since `mark`. An interface whose lines can't be found (a file not in `BLOCK_LANGUAGES`, no
-/// mark tree, file gone or without hunks, name absent, a blob unreadable) counts when its file
-/// changed.
+/// since `mark`. An interface whose lines can't be found (`anchors::interface_lines` gives none:
+/// another language, name not defined; no mark tree, file gone or without hunks, a blob
+/// unreadable) counts when its file changed.
 fn interfaces_touched(
     root: &Path,
     snapshot: &str,
@@ -597,14 +615,13 @@ fn interfaces_touched(
         let file_hunks: Vec<_> = hunks.iter().filter(|(p, ..)| *p == a.path).collect();
         // (old, new) lines; `None` when they can't be found
         let sides = || {
-            let ext = Path::new(&a.path).extension()?.to_str()?;
-            if file_hunks.is_empty() || !BLOCK_LANGUAGES.contains(&ext) {
+            if file_hunks.is_empty() {
                 return None;
             }
             let (_, sha) = entries.iter().find(|(p, _)| *p == a.path)?;
-            let new = anchors::interface_lines(&git::blob_text(root, sha).ok()?, &a.name);
+            let new = anchors::interface_lines(&a.path, &git::blob_text(root, sha).ok()?, &a.name);
             let old = git::blob_text(root, &format!("{}:{}", mark?, a.path)).ok()?;
-            let old = anchors::interface_lines(&old, &a.name);
+            let old = anchors::interface_lines(&a.path, &old, &a.name);
             (!new.is_empty()).then_some((old, new))
         };
         // a side's range `(start, count)` plus the line just before and after it

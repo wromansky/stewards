@@ -76,6 +76,8 @@ pub struct PackAnchor {
     /// None = the anchor is dead.
     pub line: Option<u32>,
     pub source: Option<String>,
+    /// The file line `source` starts at.
+    pub source_start: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,7 +125,7 @@ fn window(
         Resolution::Found { line } => Some(line),
         Resolution::DeadPath | Resolution::DeadName => None,
     };
-    let source = if is_excluded(exclude, &a.path) {
+    let shown = if is_excluded(exclude, &a.path) {
         dropped.push(format!(
             "source {}::{} (excluded by [pack] exclude)",
             a.path, a.name
@@ -136,7 +138,8 @@ fn window(
         path: a.path,
         name: a.name,
         line,
-        source,
+        source_start: shown.as_ref().map(|(start, _)| *start),
+        source: shown.map(|(_, source)| source),
     }
 }
 
@@ -583,15 +586,17 @@ impl Human for ReviewRound {
     }
 }
 
-/// The window around the match at file line `line`, cut to half its reach on each side.
-fn halve(source: &str, line: u32) -> String {
+/// The part of `source` (starting at file line `start`) within half the window's reach of the
+/// match at file line `line`, and where it starts; the match line stays.
+fn halve(source: &str, start: u32, line: u32) -> (u32, String) {
     let lines: Vec<&str> = source.lines().collect();
-    // source_window starts WINDOW lines above the match, or at the file's top.
-    let at = (line as usize).saturating_sub(1).min(WINDOW);
+    let at = (line.saturating_sub(start) as usize).min(lines.len().saturating_sub(1));
+    let from = at.saturating_sub(WINDOW / 2);
     let end = (at + WINDOW / 2).min(lines.len().saturating_sub(1));
-    lines
-        .get(at.saturating_sub(WINDOW / 2)..=end)
-        .map_or_else(|| source.to_string(), |l| l.join("\n"))
+    let kept = lines
+        .get(from..=end)
+        .map_or_else(|| source.to_string(), |l| l.join("\n"));
+    (start + from as u32, kept)
 }
 
 fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
@@ -901,8 +906,10 @@ impl Pack {
         let has_source = |p: &Pack| p.anchors.iter().flatten().any(|a| a.source.is_some());
         if !fits(self) && has_source(self) && !self.dropped.iter().any(|d| d == HALVED) {
             for a in self.anchors.iter_mut().flatten() {
-                if let (Some(source), Some(line)) = (&a.source, a.line) {
-                    a.source = Some(halve(source, line));
+                if let (Some(source), Some(start), Some(line)) = (&a.source, a.source_start, a.line)
+                {
+                    let (start, source) = halve(source, start, line);
+                    (a.source_start, a.source) = (Some(start), Some(source));
                 }
             }
             self.dropped.push(HALVED.into());

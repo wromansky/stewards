@@ -402,7 +402,8 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   stamped can still pass), marks pass or fail in the step's `result`, and
   closes the plan when all pass and every unit it names is fresh again; a
   closed plan is deleted (git history keeps it). An open plan does not hold
-  `review` back.
+  `review` back. A step whose unit never changes is never run, so its plan
+  stays open: delete the plan file by hand.
 - **Debt:** `simplified:` comments are computed on demand by `debt` and
   attached to the owning unit by route; never stored.
 - **Bugs:** a tester's or reviewer's `bugs[]` and `validate --report` both
@@ -677,7 +678,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | `brief [unit] --role <r> [--task t] [--stdout]` | writes an explain brief (the review briefs of the round for the reviewer, listed under `briefs`, a `usage` error when no stamped unit is due; one brief per task for the developer), prints its path, size, and handoff |
 | `submit [unit] --role <r> --file <f>` | validates a typed answer strictly (the BAML-generated types through serde) against the job's brief header, writes the update and what it printed to `<job>.result.json`; an approving maintainer review, or a reviewer's approved unit, stamps |
 | `stamp <unit>` | records `[reviewed]` at the current snapshot; the human override |
-| `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check`, plan step checks and flow checks (not with `--no-run`), writes the review briefs of the round (with `--roles`, the per-role briefs), prints the jobs, each with its handoff and, for a reviewer job, the units it covers |
+| `next [--task t] [--no-brief] [--roles] [--no-run] [--pr n]` | finds the units due, runs `check` and (unless `--no-run`) plan step checks and flow checks, writes the review briefs of the round (with `--roles`, the per-role briefs), prints the jobs, each with its handoff and, for a reviewer job, the units it covers |
 | `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files (outside `unowned_ok`), `instruction_files` entries that do not point at `AGENTS.md` |
 | `validate [--report <f>] [--export]` | `--report` records a bug on its unit's card, runs the repro through the allowlist, writes the validator brief; `--export` files an issue for every judged bug that has none |
 | `review [--task t] [--roles] [--answer a]...` | records each `--answer` (`<unit>: <file>:<line>: <reason>`, a reason not to apply a finding of the last review, for a reviewer to accept or contest), then reports, as what subagents reported (not verified), and removes the result files the last round's submits wrote, at most 20 per call, then lists what `next` (`next --roles`) lists for the task in force (`--task`, else the one the last `--task` stored), each job with its handoff, and one `then` line; never starts a session; exit 0 only when no job is listed, no finding is reported, and no result file is left |
@@ -850,7 +851,7 @@ from the stamp. The per-role jobs, which `next --roles` lists:
   a check run in this call. A plan whose every step is `pass` and whose every
   step unit is fresh is deleted and reported `closed: true`. A step that is
   not `pass` carries `todo` (see Triggers). With `--no-run` nothing runs and
-  nothing is written: the stored results are shown
+  no plan is written: the stored results are shown
 - `check` failures are included; `next` exits 0 only with no jobs, a green
   `check`, no failed flow check or plan step `result`, and no
   `unowned_changed` (files no unit owns, outside `unowned_ok`, changed or

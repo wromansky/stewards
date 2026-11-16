@@ -368,6 +368,13 @@ title = "Hermes files_opened does not follow a cd across terminal calls"
 anchor = "src/eval/hermes.rs::files_opened"
 note = "simplified: only a call's workdir and a leading cd are followed; upgrade if files_opened disagrees with the transcripts."
 
+[[gap]]
+kind = "bug"
+title = "Eval tests fail off Linux"
+anchor = "src/eval/mod.rs::kill_leftovers"
+note = "macOS Darwin 25.5.0, working tree of this change: 9 of 86 tests in tests/eval.rs fail (list in check). The listed note says 4 of 86 with a cp flag hunk; no such hunk is in the diff (git diff touches only src/next.rs, src/pack.rs, and card and doc files), and src/eval/** is unchanged. So the failures are not caused by this change; the card note is wrong on count and on the hunk."
+repro = "cargo test --test eval"
+
 [doc]
 overview = "The eval unit is the runner behind `stewards eval`. It measures whether coding agents do better with stewards than without: it drives a harness (Pi, Claude Code or Hermes Agent) over a suite of tasks in several arms, parses every session transcript into a run record, checks that the full arm followed the ritual, and reports cost and token overhead. The graders never branch on the harness. It also holds the material it runs on under evals/: the fixture, task prompts, suite manifests, arms.sh, and one reproduction per seeded bug."
 how_it_works = "run (src/eval/mod.rs) accepts pi, claude-code and hermes, picks the arms, loads the suite (suite.rs) and checks task numbers. pi.rs writes an isolated Pi agent dir; claude.rs an isolated CLAUDE_CONFIG_DIR; hermes.rs a template home (config lifting the one-shot cap of two subagents, .env linked, installs/ built) from which each session gets a fresh HERMES_HOME, and kills its gateway daemon after every session. Only pi takes --max-cost. execute reads every task prompt first, prepares the full arm once, then runs each task per run in every arm in a fresh copy. Each Driver starts a session (run_session, killing its group on timeout or on the runner's one SIGINT/SIGTERM handler) and parses its transcript into a Run: tokens (null when unmeasurable, timed out or interrupted), cost, files opened (content read or searched; a listing never), stewards commands, subagent launches (a refused Hermes delegate is none), reviewer submits, models and thinking. After each session the runner runs `stewards next --no-brief` and kills leftovers by cwd or HERMES_HOME. After the session, redact_secrets (mod.rs) reads each driver's credential_files (Pi auth.json, Claude Code .credentials.json, Hermes .env) and replaces their secret values (8+ characters) with [redacted] in every kept session file and the run record. grade.rs grades each task on gate misses only; overhead ratios are report-only."

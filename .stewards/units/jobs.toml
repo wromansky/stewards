@@ -1,11 +1,11 @@
 unit = "jobs"
 
 [reviewed]
-commit = "3b8cbbc8884aac89d624a65ae07dd955ff1578c4"
-fingerprint = "sha256:bd7d4c9612a935e4297d9e2c9ffba99de88648bde9f9b8b46ed2d81235e68a5d"
-tree = "63f6b2fe819b5b262aa6fed3593573942fdb640b"
-tester = "63f6b2fe819b5b262aa6fed3593573942fdb640b"
-documenter = "63f6b2fe819b5b262aa6fed3593573942fdb640b"
+commit = "680708dc18906aa4b5574f58462a5f360d7ec66c"
+fingerprint = "sha256:59ba26e9bf32b8535c7e94f9a06d1ee51702e55d024b871f03e0bd58d1c25531"
+tree = "ebd06c68798cf0b601137b9588f401d4df034b34"
+tester = "ebd06c68798cf0b601137b9588f401d4df034b34"
+documenter = "ebd06c68798cf0b601137b9588f401d4df034b34"
 
 [[interface]]
 id = "brief-header"
@@ -90,7 +90,7 @@ contract = "Reads unit, role, task n and snap back from a brief, answer or resul
 [[interface]]
 id = "command-allowlist"
 anchor = "src/submit.rs::check_command"
-contract = "A scenario command, repro or task check must pass run::check against run::allowed: start with a commands.test entry or the unit's own test card test_command, never another unit's; an architect flow check gets commands.test only. check_command reports a refusal as command_not_allowed."
+contract = "A scenario command, repro or task check must pass run::check against run::allowed: start with a commands.test entry or the unit's own test card test_command, never another unit's; a plan step check gets its unit's list; an architect flow check gets commands.test only. Refusal is command_not_allowed."
 
 [[interface]]
 id = "answer-too-long"
@@ -106,6 +106,11 @@ contract = "A maintainer review of a never-stamped unit (no reviewed block) is r
 id = "finding-answer"
 anchor = "src/submit.rs::answer_finding"
 contract = "`review --answer '<unit>: <file>:<line>: <reason>'` records one reason on a finding of the last review, once; the next reviewer accepts it or contests it (blocking, unanswerable). No such finding, bad reason or already answered is `usage`."
+
+[[interface]]
+id = "architect-plan"
+anchor = "src/submit.rs::plan_id"
+contract = "An architect plan needs at least one step, each step a known unit and a check that passes the allowlist; it is stored at .stewards/plans/<yyyy-mm-dd>-<slug>.toml, with -2, -3 on a taken id; card_changed if another submit takes the id first."
 
 [[anchor]]
 path = "src/brief.rs"

@@ -55,3 +55,11 @@ given = "stewards completions for each of the five shells, and stewards man"
 expect = "exit 0, script or `.TH stewards 1` page on stdout, `save it: stewards ... > ` on stderr"
 level = "integration"
 command = "cargo test --test completions every_shell_prints_a_script_naming_review_and_a_save_hint"
+
+[[scenario]]
+id = "review-open-plan-is-done"
+interface = "review-command"
+given = "a repo with nothing due and one open plan"
+expect = "then starts `done.` and names the plan, exit 0; a failed step or flow check instead says to fix the failing checks, exit 1"
+level = "integration"
+command = "cargo test --test plans review_is_done_with_an_open_plan_and_names_it"

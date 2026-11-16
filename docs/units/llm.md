@@ -19,11 +19,11 @@ Start in baml_src: change a prompt or an answer shape there, never in src/llm_sc
 | id | contract | anchor |
 |---|---|---|
 | role-text | Returns the role's prompt text rendered from baml\_src (src/llm\_schema/\<role\>.role.txt), with \`\<unit\>\` left for the caller to fill; only the maintainer distinguishes Review/Explain modes. | [src/llm.rs\:\:role\_text](../../src/llm.rs#L50) |
-| output-format | Returns BAML's ctx.output\_format text for the role's answer shape (src/llm\_schema/\<role\>.schema.txt), with a \`max N\` comment on every capped field matching the cap submit enforces; non-maintainer roles ignore the mode. | [src/llm.rs\:\:output\_format](../../src/llm.rs#L63) |
+| output-format | Returns BAML's ctx.output\_format text for the role's answer shape (src/llm\_schema/\<role\>.schema.txt), with a \`max N\` comment on every capped field matching the cap submit enforces; non-maintainer roles ignore the mode. | [src/llm.rs\:\:output\_format](../../src/llm.rs#L64) |
 | parse-answer | Strictly validates text as the role's answer via the generated types\: one JSON object, no surrounding text, no duplicate or unknown fields, snake\_case enums. Errors are FieldError {field, problem, example} naming the field path and an example at it. Needs no BAML native library. | [src/llm.rs\:\:parse](../../src/llm.rs#L80) |
 | prepare-baml-env | Unsafe, before threads\: if BAML\_LIBRARY\_PATH is unset and the exe is in a bin dir, sets it to \<prefix\>/lib/stewards/libbaml\_cffi.\<ext\> when a regular file not group/other-writable; BAML\_LIBRARY\_DISABLE\_DOWNLOAD unless STEWARDS\_BAML\_DOWNLOAD; BAML\_LOG=off unless set; drops BOUNDARY\_\*. | [src/llm.rs\:\:prepare\_baml\_env](../../src/llm.rs#L314) |
 | direct-guards | Checks, in order\: \[models.direct\] \<role\> is \<provider\>/\<model\> with provider anthropic\|openai\|google-ai (else no\_direct\_model), the provider's API key env var is non-blank (else no\_api\_key), the BAML native library loads (else baml\_runtime\_unavailable). Returns (provider, model, key). | [src/llm.rs\:\:direct\_guards](../../src/llm.rs#L342) |
-| direct-call | After direct\_guards, calls the role's BAML function with a ClientRegistry client carrying the explicit model and api\_key, and returns the typed answer serialized as JSON text. Any BAML error becomes the fixed direct\_call\_failed error, never echoing the brief, reply, or provider response. | [src/llm.rs\:\:direct](../../src/llm.rs#L5) |
+| direct-call | After direct\_guards, calls the role's BAML function with a ClientRegistry client carrying the explicit model and api\_key, and returns the typed answer serialized as JSON text. Any BAML error becomes the fixed direct\_call\_failed error, never echoing the brief, reply, or provider response. | [src/llm.rs\:\:direct](../../src/llm.rs#L384) |
 | schema-freshness | src/baml\_client embeds every baml\_src file verbatim, llm\_sources.sha256 matches baml\_src/\*.baml plus src/llm\_schema/\*.txt, and every generated enum has the on\_generate snake\_case rename. Refresh\: baml-cli generate, then the ignored llm\:\:tests\:\:refresh\_llm\_schema. | [tests/llm.rs\:\:generated\_client\_and\_rendered\_text\_match\_baml\_src](../../tests/llm.rs#L561) |
 | schema-caps | Sampled fields of every role's schema state exactly submit's cap (ID\_CAP, LINE\_CAP, PROSE\_CAP, TASK\_CHANGE\_CAP, EXPLANATION\_CAP, LIST\_CAP), and every number a schema states after \`max \` is one of those caps. | [tests/llm.rs\:\:every\_role\_schema\_states\_the\_caps\_submit\_enforces](../../tests/llm.rs#L382) |
 
@@ -59,4 +59,4 @@ Start in baml_src: change a prompt or an answer shape there, never in src/llm_sc
 
 ## Last reviewed
 
-9b59164cc2a4e3360ceedfa6a7a20349362f39f4
+680708dc18906aa4b5574f58462a5f360d7ec66c

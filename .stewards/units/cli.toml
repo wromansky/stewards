@@ -1,11 +1,11 @@
 unit = "cli"
 
 [reviewed]
-commit = "abb34dd4b9c58712b0fa3bd1faef9368847a5fce"
-fingerprint = "sha256:c71641df9e86667b8d661e0b020bdb766d8f069588d586f7e80403351610de22"
-tree = "f4a57cac7e52c06daaf4147b7e64f56875db20c6"
-tester = "f4a57cac7e52c06daaf4147b7e64f56875db20c6"
-documenter = "f4a57cac7e52c06daaf4147b7e64f56875db20c6"
+commit = "680708dc18906aa4b5574f58462a5f360d7ec66c"
+fingerprint = "sha256:6e54aa49f43339014c6258de41ae1845e317feefb295bbbb5798fa42ae30cef6"
+tree = "ebd06c68798cf0b601137b9588f401d4df034b34"
+tester = "ebd06c68798cf0b601137b9588f401d4df034b34"
+documenter = "ebd06c68798cf0b601137b9588f401d4df034b34"
 
 [[interface]]
 id = "json-envelope"
@@ -35,7 +35,7 @@ contract = "Unbuilt command validate and flags (review --pr, next --pr, init --c
 [[interface]]
 id = "review-command"
 anchor = "src/review.rs::run"
-contract = "`review [--task] [--roles] [--answer ...]` records answers, shows up to 20 result files per call as reported (blocking findings, non-blocking notes), lists every due job unless findings, files or unowned changes remain; exit 0 only when done."
+contract = "`review [--task] [--roles] [--answer ...]` records answers, shows up to 20 result files per call as reported, lists due jobs unless findings, files or unowned changes remain; then line adds failing checks and open plans; exit 0 only when done."
 
 [[interface]]
 id = "completions-man"

@@ -257,6 +257,34 @@ pub struct Doc {
     pub how_to_change: String,
 }
 
+/// An architect's plan, `.stewards/plans/<id>.toml`: open until `next` closes and deletes it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Plan {
+    pub title: String,
+    pub created: String,
+    #[serde(rename = "step")]
+    pub steps: Vec<PlanStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub unit: String,
+    pub change: String,
+    #[serde(default)]
+    pub interfaces: Vec<String>,
+    pub check: String,
+    /// The last result of `check`, which `next` writes; absent until it first runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<StepResult>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StepResult {
+    Pass,
+    Fail,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestCard {
     pub unit: String,
@@ -332,6 +360,8 @@ pub struct Loaded {
     pub units: Vec<UnitDef>,
     pub cards: BTreeMap<String, UnitCard>,
     pub tests: BTreeMap<String, TestCard>,
+    /// The open plans, `(id, plan)` by id: the file name without `.toml`.
+    pub plans: Vec<(String, Plan)>,
 }
 
 impl Loaded {
@@ -424,13 +454,61 @@ pub fn load_repo(root: &Path) -> Result<Loaded> {
             tests.insert(u.name.clone(), test);
         }
     }
+    let plans = load_plans(root, &units)?;
     Ok(Loaded {
         root: root.to_path_buf(),
         repo,
         units,
         cards,
         tests,
+        plans,
     })
+}
+
+pub const PLANS_DIR: &str = ".stewards/plans";
+
+/// Every `.stewards/plans/*.toml`, by name, read through no link as cards are; a step naming a
+/// unit `units` lacks is `invalid_toml`.
+fn load_plans(root: &Path, units: &[UnitDef]) -> Result<Vec<(String, Plan)>> {
+    let dir = match std::fs::read_dir(safe_path(root, PLANS_DIR, false)?) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(anyhow::Error::new(e).context(PLANS_DIR)),
+    };
+    let mut names = vec![];
+    for entry in dir {
+        let entry = entry?;
+        // a directory or FIFO is no plan; a link is kept so `parse_toml` refuses it
+        let kind = entry.file_type()?;
+        let name = entry.file_name().into_string().ok();
+        if let Some(id) = name.as_deref().and_then(|n| n.strip_suffix(".toml"))
+            && (kind.is_file() || kind.is_symlink())
+        {
+            names.push(id.to_string());
+        }
+    }
+    names.sort();
+    let mut plans = vec![];
+    for id in names {
+        let rel = format!("{PLANS_DIR}/{id}.toml");
+        // gone since the listing: closed by another `next`
+        let Some(plan) = parse_toml::<Plan>(root, &rel)? else {
+            continue;
+        };
+        if let Some(s) = plan
+            .steps
+            .iter()
+            .find(|s| !units.iter().any(|u| u.name == s.unit))
+        {
+            bail!(CliError::new(
+                "invalid_toml",
+                format!("{rel}: step unit `{}` is not a unit in units.toml", s.unit),
+                format!("fix the step's unit in {rel}, or delete the plan"),
+            ));
+        }
+        plans.push((id, plan));
+    }
+    Ok(plans)
 }
 
 /// Reads `root/rel`; `Ok(None)` when it does not exist, `invalid_toml` naming `rel` and the line,

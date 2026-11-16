@@ -967,14 +967,28 @@ route; group per unit.
   only the characters that could start markup, a link or an autolink in card
   text, and refuse a `docs_path` at or outside the repo root.
 - **Execution.** Only commands whose argv starts with the whole argv of a
-  `commands.*` entry from `repo.toml`, or for one unit's own jobs (its
+  `commands.test` entry from `repo.toml`, or for one unit's own jobs (its
   scenarios, bug repros, task checks) of that unit's test card
   `test_command`, ever run (`pytest` does not allow `pytest-x`): repro,
-  plan step checks, scenario commands, test and lint. No answer has a
+  plan step checks, flow checks, scenario commands. `commands.lint` is
+  never run. No answer has a
   field that sets `test_command`, so only `init` or a person writes it, as
-  for `repo.toml`. argv split, no shell, from the repo root, inheriting env, timeout
-  from `commands.timeout_seconds`. Nothing from an answer file, card, issue,
-  or PR runs otherwise.
+  for `repo.toml`. The words after an allowed prefix are not checked: a repro
+  or check can pass flags that make the allowed program run any other
+  program, as the user, with the inherited environment (tokens included),
+  and with no sandbox. The allowlist limits which program starts, not what
+  it does. CI runs `check`, which runs nothing. One module (`run`) owns the
+  allowlist and the execution: argv split, no shell, from the repo root, a
+  bare program name found only through the absolute entries of `PATH`,
+  stdin null, inheriting env, in its own process group, which is killed
+  whole at the matching entry's `timeout_seconds` (the longest matching
+  entry; else `commands.timeout_seconds`) and after a normal exit, so
+  nothing the command left behind keeps running; a process that leaves the
+  group is not killed. The check itself refuses control, invisible and
+  shell characters. A timeout or a program that cannot start is
+  a failed result, not an error; the result keeps the last 4,000
+  characters of stdout and stderr with control characters replaced.
+  Nothing from an answer file, card, issue, or PR runs otherwise.
 - **Writes.** The tool writes only `.stewards/**`, `docs/units/**`, the
   marked block in `AGENTS.md`, two appended `.gitignore` lines, and CI
   files when asked by flag. Never source or

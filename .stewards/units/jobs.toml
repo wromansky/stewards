@@ -1,11 +1,11 @@
 unit = "jobs"
 
 [reviewed]
-commit = "8b41f486851a23b5cb84c49253be3626e3082a83"
-fingerprint = "sha256:54d1483cc24bbbb3cf2ae7996031267d1e822f50e7bb232b7c7aced5284cb033"
-tree = "d7dd3969375a48bc1de2d6e6fc752f9dad517a2a"
-tester = "d7dd3969375a48bc1de2d6e6fc752f9dad517a2a"
-documenter = "d7dd3969375a48bc1de2d6e6fc752f9dad517a2a"
+commit = "a39ff78b15d22061c338871f7c5faf770d894039"
+fingerprint = "sha256:11ab0b4c21fb59c00474402b7b859ffe4a7488a9a02782e224ec70248fd338c8"
+tree = "20cc2dde46c624a5da741b741db24db5a5eab651"
+tester = "20cc2dde46c624a5da741b741db24db5a5eab651"
+documenter = "20cc2dde46c624a5da741b741db24db5a5eab651"
 
 [[interface]]
 id = "brief-header"
@@ -89,8 +89,8 @@ contract = "Reads unit, role, task n and snap back from a brief, answer or resul
 
 [[interface]]
 id = "command-allowlist"
-anchor = "src/submit.rs::allowlist"
-contract = "A scenario command, repro or task check must start with a commands.test entry or the unit's own test card test_command, never another unit's; an architect flow check gets commands.test only."
+anchor = "src/submit.rs::check_command"
+contract = "A scenario command, repro or task check must pass run::check against run::allowed: start with a commands.test entry or the unit's own test card test_command, never another unit's; an architect flow check gets commands.test only. check_command reports a refusal as command_not_allowed."
 
 [[interface]]
 id = "answer-too-long"
@@ -169,10 +169,6 @@ name = "superseded"
 
 [[anchor]]
 path = "src/submit.rs"
-name = "allowlist"
-
-[[anchor]]
-path = "src/submit.rs"
 name = "answered_job"
 
 [[anchor]]
@@ -191,6 +187,10 @@ name = "files_past"
 path = "src/brief.rs"
 name = "write_round"
 
+[[anchor]]
+path = "src/submit.rs"
+name = "check_command"
+
 [[gap]]
 kind = "future"
 title = "unchanged check and writes are not atomic"
@@ -199,5 +199,5 @@ note = "A concurrent submit writing between check_unchanged and the writes is st
 
 [doc]
 overview = "The jobs unit is the hand-off between the tool and the agent that does a piece of work. The tool writes a brief for one role on one unit (or for the architect, who has no unit), or the numbered reviewer briefs that together cover every due unit, and gives the agent one sentence to pass to a subagent: Read `<brief path>` and follow it. The agent answers in typed JSON, and submitting that answer checks it against the brief, writes the resulting updates, retires the brief, and leaves what it printed beside it as a result file for `stewards review` to collect. A review finding is blocking or a note: only blocking findings hold up approval or make a fix task, notes are printed and recorded. An agent that will not apply a finding answers it once; the next reviewer accepts or contests it. The brief carries the answer schema and each field's length cap, and a field over its cap is rejected. A card patch in an answer updates entries by key, and only the explicit remove lists delete. Each submit leaves one line of telemetry. It lives in src/brief.rs, src/submit.rs and src/telemetry.rs."
-how_it_works = "Building a brief packs and frames a role's context (build in src/brief.rs). build_review returns one brief per group of pack::review, so every due unit is in exactly one and none waits for a later round; each header lists its units and its number n, and the text asks the answer to copy its snapshot. build refuses an unsafe repo root (unsafe_path) and a validator brief with no unjudged bug (usage). rel_path names a brief .stewards/briefs/<unit>-<role>-<snap>.md (architect-<snap>.md, review-<n>-<snap>.md, <unit>-developer-<n>-<snap>.md), <snap> the snapshot's first 8 hex characters; job_of reads a name back, write_text removes the job's briefs and answers at other snapshots, and write_round also the review briefs past the last. handoff turns a path into the one sentence; read_header parses the header line (no_brief if missing or bad). submit_file takes the brief the answer file's name gives, else the job's one brief (find), checks the header, then runs the role's handler. A command in an answer must start with a commands.test entry or that unit's own test command (allowlist). check_patch validates a card patch before any write; apply_patch upserts, then removes. reviewer checks each header unit as the maintainer, tester and documenter are, and writes nothing on any error. It keeps the unit's blocking findings in <unit>-findings.json (StoredFinding); answer_finding records an answer, the reviewer accepts it or lists it in contested, and a stamp deletes the file. Writes go through write_remove_and_retire, which refuses link paths, returns card_changed if a checked file changed, and removes the brief last. Telemetry and the result file only warn."
+how_it_works = "Building a brief packs and frames a role's context (build in src/brief.rs). build_review returns one brief per group of pack::review, so every due unit is in exactly one and none waits for a later round; each header lists its units and its number n, and the text asks the answer to copy its snapshot. build refuses an unsafe repo root (unsafe_path) and a validator brief with no unjudged bug (usage). rel_path names a brief .stewards/briefs/<unit>-<role>-<snap>.md (architect-<snap>.md, review-<n>-<snap>.md, <unit>-developer-<n>-<snap>.md), <snap> the snapshot's first 8 hex characters; job_of reads a name back, write_text removes the job's briefs and answers at other snapshots, and write_round also the review briefs past the last. handoff turns a path into the one sentence; read_header parses the header line (no_brief if missing or bad). submit_file takes the brief the answer file's name gives, else the job's one brief (find), checks the header, then runs the role's handler. A command in an answer must start with a commands.test entry or that unit's own test command (run::allowed builds the list and run::check judges it; check_command reports the refusal). check_patch validates a card patch before any write; apply_patch upserts, then removes. reviewer checks each header unit as the maintainer, tester and documenter are, and writes nothing on any error. It keeps the unit's blocking findings in <unit>-findings.json (StoredFinding); answer_finding records an answer, the reviewer accepts it or lists it in contested, and a stamp deletes the file. Writes go through write_remove_and_retire, which refuses link paths, returns card_changed if a checked file changed, and removes the brief last. Telemetry and the result file only warn."
 how_to_change = "Start in src/brief.rs for what a brief says or where it lives, and in src/submit.rs for what an answer must satisfy or what a submit writes. Keep the header line format and the brief path scheme in step, because submit finds the brief by path and trusts the header to match. Build a job path only through rel_path, and its answer and result paths through answer_rel and result_rel. Give a subagent a brief only through handoff, and keep check_root refusing every character that could end or hide its code span. Print brief text only through emit. Keep the caps the schema states in step with the caps check_text enforces. Keep write_remove_and_retire checking for changed files and link paths before it writes, and the brief removal last. A check a role's handler makes belongs in a shared function the reviewer calls too; review re-checks a result's findings with ShownFinding::passes_submit_checks, so keep it in step with what submit checks. Briefs of one review round must stay independent: each submit stands alone. The findings file sits where subagents can write, so read it only through read_findings. An entry leaves a card only by a remove list that check_patch has checked. Keep telemetry to sizes and counts. Tests: tests/brief.rs, submit.rs, submit_roles.rs, developer.rs and review.rs; assert on the rendered brief text for a brief change."

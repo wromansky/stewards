@@ -16,6 +16,7 @@ pub mod output;
 pub mod pack;
 pub mod review;
 pub mod route;
+pub mod run;
 pub mod status;
 pub mod submit;
 pub mod telemetry;

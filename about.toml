@@ -1,0 +1,12 @@
+# cargo-about config for THIRD-PARTY-LICENSES.html (the release workflow runs it per target).
+# A licence not listed here fails the release: review it, then add it.
+accepted = [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

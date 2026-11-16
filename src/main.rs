@@ -164,8 +164,10 @@ enum Command {
         #[arg(long)]
         keep_work: bool,
     },
-    /// Shell completions
-    Completions { shell: String },
+    /// Print the completion script of a shell
+    Completions { shell: clap_complete::Shell },
+    /// Print the man page (roff)
+    Man,
 }
 
 fn main() -> ExitCode {
@@ -300,6 +302,7 @@ fn dispatch(g: &Global, command: Command) -> anyhow::Result<ExitCode> {
                 keep_work,
             },
         ),
-        Command::Completions { shell } => completions::run(g, &shell, Cli::command()),
+        Command::Completions { shell } => completions::run(shell, Cli::command()),
+        Command::Man => completions::run_man(Cli::command()),
     }
 }

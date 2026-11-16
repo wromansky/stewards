@@ -65,8 +65,10 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   from the usual env vars, for CI and batch. It is the only mode that needs
   BAML's native library. A missing model entry, key, or library is an
   error, never a silent fallback, and the library is never downloaded
-  unless `STEWARDS_BAML_DOWNLOAD` is set. The tool never names a model
-  itself.
+  unless `STEWARDS_BAML_DOWNLOAD` is set. When `BAML_LIBRARY_PATH` is unset
+  and `<exe dir>/../lib/stewards/libbaml_cffi.<so|dylib>` exists (the layout
+  of the release archive, the install script, and the AUR package), the tool
+  uses that file. The tool never names a model itself.
 - **Delivery:** the repo's `AGENTS.md` block is the one truth: the ritual,
   the handoff, the editing rules. Every harness reads it with
   no install. User-level instructions are optional accelerators (hooks are
@@ -649,7 +651,8 @@ never routed, never reported as unowned, so no unit ever owns them.
 | `debt` | `simplified:` comments attached to units |
 | `docs [unit]` | renders `docs/units/<unit>.md` and the index |
 | `eval [--harness h] [--suite s] [--arm a] [--task n]... [--runs n] [--max-cost usd] [--no-developers] [--model id] [--thinking level] [--setup-dir d] [--keep-work]` | runs the eval suite; exit 0 when the suite passes, 1 otherwise |
-| `completions <shell>` | shell completions |
+| `completions <shell>` | the completion script of `bash`, `zsh`, `fish`, `elvish`, or `powershell` on stdout (a bad shell is a `usage` error), one line on stderr saying where to save it |
+| `man` | the roff man page on stdout, one line on stderr saying where to save it |
 
 Global flags: `--human`, `--repo <name>`, `-C <dir>`, `--direct`. JSON by
 default, markdown with `--human`. Exit 0 ok, 1 work is due (`check`
@@ -1857,11 +1860,19 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
 
 Releases from tags via GitHub Actions; matrix `x86_64-unknown-linux-gnu`,
 `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`;
-each archive bundles the matching `libbaml_cffi` and the install script sets
-`BAML_LIBRARY_PATH`; the workflow bumps the AUR PKGBUILD (builds from source,
-pins the runtime lib as a source entry) and runs `cargo publish`.
-Completions and the man page come from `clap_complete` and `clap_mangen` at
-build time. Checklist in `RELEASING.md`.
+each archive (`stewards-<version>-<target>.tar.gz`: `bin/`, `lib/stewards/`
+with the matching `libbaml_cffi`, `share/` with completions and the man page,
+`LICENSE`, `README.md`) is built from the tag, and the library is downloaded
+and checked against a sha256 pinned in the workflow (the BAML release
+publishes none). A job writes `SHA256SUMS` and creates the release with the
+archives and `install.sh`, which installs under `${STEWARDS_PREFIX:-$HOME/.local}`
+after verifying the archive against `SHA256SUMS`. The binary finds the
+bundled library by its place (see LLM modes), so no script sets
+`BAML_LIBRARY_PATH`. After the release, separate jobs run `cargo publish` and
+bump the AUR PKGBUILD (builds from the crates.io source, pins the runtime lib
+as a source entry). The workflow generates completions and the man page with
+`stewards completions` and `stewards man` (`clap_complete`, `clap_mangen`).
+Checklist in `RELEASING.md`.
 
 ## Build order
 

@@ -303,3 +303,19 @@ given = "an approve whose findings all have blocking false"
 expect = "the unit stamps, the notes are printed and reported, and no fix task is written"
 level = "integration"
 command = "cargo test --test review an_approval_with_only_notes_stamps_and_writes_no_fix_task"
+
+[[scenario]]
+id = "architect-plan-stored"
+interface = "architect-plan"
+given = "an architect answer with a plan of one step, submitted twice with one title"
+expect = "the plan is at .stewards/plans/<date>-<slug>.toml and the second at -2; the summary names the id"
+level = "integration"
+command = "cargo test --test submit_roles architect_plan_is_stored_and_a_second_with_the_same_title_gets_2"
+
+[[scenario]]
+id = "architect-plan-rejects-bad-step"
+interface = "architect-plan"
+given = "a plan with an unknown unit, a disallowed check, or no step"
+expect = "answer_parse_failed on the unit or steps, command_not_allowed on the check, and no plan file"
+level = "integration"
+command = "cargo test --test submit_roles architect_plan_with_an_unknown_unit_a_disallowed_check_or_no_step_is_rejected"

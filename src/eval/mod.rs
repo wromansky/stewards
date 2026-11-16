@@ -2064,7 +2064,12 @@ fn repo_arm_tree(base: &Path, dir: &Path, arm: Arm) -> Result<()> {
 fn link_build_cache(cache: &Path, dir: &Path) -> Result<()> {
     let target = dir.join("target");
     let out = Command::new("cp")
-        .args(["-a", "--reflink=auto"])
+        // BSD cp (macOS) has no --reflink; its -c clones where the file system can.
+        .args(if cfg!(target_os = "macos") {
+            ["-a", "-c"]
+        } else {
+            ["-a", "--reflink=auto"]
+        })
         .arg(cache)
         .arg(&target)
         .output()?;

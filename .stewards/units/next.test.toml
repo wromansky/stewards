@@ -79,3 +79,11 @@ given = "both units stamped and unchanged; the api card has an [[anchor]] on a n
 expect = "next lists a reviewer job with reason 'api: dead anchor: src/api/items.py::save_item'; --roles gives an api maintainer job; once the card anchor is fixed and stamped, next exits 0"
 level = "integration"
 command = "cargo test --test next a_stamped_unchanged_unit_anchoring_a_mention_is_due_for_review_until_the_card_is_fixed"
+
+[[scenario]]
+id = "pr-posts-the-report-as-one-comment-updated-in-place"
+interface = "next_run"
+given = "single fixture with a github origin and a fake gh that already lists an own marker comment; next --roles --no-brief --pr 3; a second case where gh fails"
+expect = "own comment PATCHed, pr_comment.updated true with its url; body starts with the marker and has no handoff or local path; on failure pr_comment is null, pr_comment_error is one line and the exit code equals the run without --pr"
+level = "integration"
+command = "cargo test --test next pr_posts_the_report_as_one_comment_updated_in_place"

@@ -11,10 +11,11 @@ use crate::check::{
     CheckReport, changed_since, check_at, dead_anchors, one_line, stale_files, unowned_ok,
 };
 use crate::debt::{DebtItem, is_debt_line};
+use crate::forge::{self, PrComment};
 use crate::git;
 use crate::llm::Mode;
 use crate::model::{Anchor, GapKind, Interface, Role, StepResult, UnitCard};
-use crate::output::{Global, Human, emit, not_implemented};
+use crate::output::{Global, Human, emit};
 use crate::plan::{self, PlanReport};
 use crate::route::Router;
 use crate::workspace::{Repo, Workspace, here};
@@ -62,6 +63,12 @@ pub struct NextReport {
     /// Files no unit owns that changed or were added since a stamp, outside `unowned_ok`: no
     /// reviewer is shown them, so `next` and `review` are not clean while any is left.
     pub unowned_changed: Vec<String>,
+    /// With `--pr`: the PR or MR comment this call created or edited; `null` when posting failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_comment: Option<Option<PrComment>>,
+    /// With `--pr`, when posting failed: why, on one line. The exit code is the command's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_comment_error: Option<String>,
 }
 
 impl NextReport {
@@ -170,6 +177,8 @@ pub fn next(
         plans,
         check: check_at(ws, None, &snapshots)?,
         unowned_changed,
+        pr_comment: None,
+        pr_comment_error: None,
     })
 }
 
@@ -675,6 +684,13 @@ fn interfaces_touched(
 
 impl Human for NextReport {
     fn render(&self) -> String {
+        self.render_with(true)
+    }
+}
+
+impl NextReport {
+    /// `render`, without each job's handoff (an absolute local path) when `handoffs` is false.
+    fn render_with(&self, handoffs: bool) -> String {
         let mut out = vec!["## Jobs\n".to_string()];
         if self.jobs.is_empty() {
             out.push("No jobs.".into());
@@ -687,7 +703,7 @@ impl Human for NextReport {
                 units => format!(" (units {})", one_line(&units.join(", "))),
             };
             out.push(format!("- `{}`{covers}: {reasons}", who.trim()));
-            if let Some(h) = &j.handoff {
+            if let Some(h) = j.handoff.as_ref().filter(|_| handoffs) {
                 let waiting = if j.waiting { " (waiting)" } else { "" };
                 out.push(format!("  handoff{waiting}: {}", one_line(h)));
             }
@@ -733,6 +749,15 @@ impl Human for NextReport {
             }
         }
         out.extend(self.unowned_line().map(|l| format!("\n{}", one_line(&l))));
+        out.extend(self.pr_comment.iter().flatten().map(|c| {
+            let verb = if c.updated { "updated" } else { "posted" };
+            format!("\nComment {verb}: {}", one_line(&c.url))
+        }));
+        out.extend(
+            self.pr_comment_error
+                .as_ref()
+                .map(|e| format!("\nComment not posted: {}", one_line(e))),
+        );
         out.push(String::new());
         out.push(self.check.render());
         out.join("\n")
@@ -747,16 +772,33 @@ pub fn run(
     no_run: bool,
     pr: Option<u64>,
 ) -> Result<ExitCode> {
-    if pr.is_some() {
-        return not_implemented("next --pr");
-    }
-    let (_, ws) = here(g)?;
+    let (cwd, ws) = here(g)?;
     let briefs = if no_brief {
         Briefs::None
     } else {
         Briefs::Write
     };
-    let report = next(&ws, task, briefs, roles, !no_run)?;
+    let mut report = next(&ws, task, briefs, roles, !no_run)?;
+    if let Some(pr) = pr {
+        // a failed post must not hide the report or change the exit code
+        let text = report.render_with(false);
+        let posted = ws.current_repo(&cwd).and_then(|repo| {
+            forge::post(
+                &repo.root,
+                pr,
+                "<!-- stewards:next -->",
+                "### stewards next",
+                &text,
+            )
+        });
+        match posted {
+            Ok(c) => report.pr_comment = Some(Some(c)),
+            Err(e) => {
+                report.pr_comment = Some(None);
+                report.pr_comment_error = Some(forge::error_line(&e));
+            }
+        }
+    }
     emit(&report, g.human);
     Ok(
         if report.jobs.is_empty()

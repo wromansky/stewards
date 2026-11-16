@@ -63,3 +63,11 @@ given = "a repo with nothing due and one open plan"
 expect = "then starts `done.` and names the plan, exit 0; a failed step or flow check instead says to fix the failing checks, exit 1"
 level = "integration"
 command = "cargo test --test plans review_is_done_with_an_open_plan_and_names_it"
+
+[[scenario]]
+id = "forge-comment-edits-own"
+interface = "forge-comment"
+given = "a fake gh with a marked comment by the logged-in user on a later page, and one by another user"
+expect = "its own comment is PATCHed in place, the other is never edited, every call carries --hostname from origin"
+level = "integration"
+command = "cargo test --test forge edits_its_own_comment_in_place_across_pages"

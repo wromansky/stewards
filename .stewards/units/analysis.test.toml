@@ -119,3 +119,19 @@ given = "a Rust fn whose raw string holds a lone `}` and a blank line"
 expect = "one span covering the whole function"
 level = "integration"
 command = "cargo test --test anchors interface_lines_of_a_rust_raw_string_with_a_lone_brace_are_one_span"
+
+[[scenario]]
+id = "check-grammar-unusable-warns"
+interface = "check-report"
+given = "a runtime grammar dir whose library exports no tree_sitter_<lang> symbol"
+expect = "one grammar_unusable warning for the dir; the extension keeps the text rule"
+level = "integration"
+command = "cargo test --test anchors a_library_without_the_grammar_symbol_warns_and_the_extension_keeps_the_text_rule"
+
+[[scenario]]
+id = "anchor-resolve-relative-home-no-grammars"
+interface = "anchor-resolve"
+given = "a relative stewards home whose grammars dir sits inside the analysed repo"
+expect = "the home is ignored; the repo's grammar is never loaded"
+level = "integration"
+command = "cargo test --test anchors a_relative_stewards_home_is_no_home_so_the_repos_own_grammars_are_never_read"

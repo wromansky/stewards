@@ -1,11 +1,11 @@
 unit = "eval"
 
 [reviewed]
-commit = "65320c2d69de7a962f750b69b572e05b1d599474"
-fingerprint = "sha256:5ecad64a2eab10cd8350f63c4e2d1df43aa86064b9275a0e5146bb9bdd56de96"
-tree = "6532dea9ec7ab5543c86c1f9f21098b199069131"
-tester = "6532dea9ec7ab5543c86c1f9f21098b199069131"
-documenter = "6532dea9ec7ab5543c86c1f9f21098b199069131"
+commit = "f1f0d1739d2f18c534c514967edc69aff44907ed"
+fingerprint = "sha256:90d9964680b1423fc34e2719c17d5c731a36a1d915246a6fd35bf1f5ed005e41"
+tree = "5d2b5da0a87e100ad345ba8e3dad3a6b88e7cc53"
+tester = "5d2b5da0a87e100ad345ba8e3dad3a6b88e7cc53"
+documenter = "5d2b5da0a87e100ad345ba8e3dad3a6b88e7cc53"
 
 [[interface]]
 id = "eval_run"
@@ -367,13 +367,6 @@ kind = "gap"
 title = "Hermes files_opened does not follow a cd across terminal calls"
 anchor = "src/eval/hermes.rs::files_opened"
 note = "simplified: only a call's workdir and a leading cd are followed; upgrade if files_opened disagrees with the transcripts."
-
-[[gap]]
-kind = "bug"
-title = "Eval tests fail off Linux"
-anchor = "src/eval/mod.rs::kill_leftovers"
-note = "macOS Darwin 25.5.0, working tree of this change: 9 of 86 tests in tests/eval.rs fail (list in check). The listed note says 4 of 86 with a cp flag hunk; no such hunk is in the diff (git diff touches only src/next.rs, src/pack.rs, and card and doc files), and src/eval/** is unchanged. So the failures are not caused by this change; the card note is wrong on count and on the hunk."
-repro = "cargo test --test eval"
 
 [doc]
 overview = "The eval unit is the runner behind `stewards eval`. It measures whether coding agents do better with stewards than without: it drives a harness (Pi, Claude Code or Hermes Agent) over a suite of tasks in several arms, parses every session transcript into a run record, checks that the full arm followed the ritual, and reports cost and token overhead. The graders never branch on the harness. It also holds the material it runs on under evals/: the fixture, task prompts, suite manifests, arms.sh, and one reproduction per seeded bug."

@@ -14,6 +14,7 @@
 - [jobs](jobs.md): The brief/submit job cycle\: renders and writes a role's brief with its header, validates the typed answer against it, writes the updates and retires the brief, and appends telemetry.
 - [setup](setup.md): Onboarding and generated files\: init proposes units and writes .stewards, the guide and AGENTS.md block, the per-harness facts table, and docs rendering from unit cards.
 - [eval](eval.md): The eval runner\: suites and their manifests, arm setup, the Pi driver and transcript parser, the ritual gate and overhead report, and the fixture, tasks and seeded-bug repros it runs on.
+- [run](run.md): The allowlisted command runner\: which commands may run (repo test commands and a unit's own test command), the check every agent-written command passes, and execution without a shell under a timeout with the whole process group killed.
 
 ## Flows
 

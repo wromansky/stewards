@@ -1,11 +1,11 @@
 unit = "setup"
 
 [reviewed]
-commit = "680708dc18906aa4b5574f58462a5f360d7ec66c"
-fingerprint = "sha256:91260a75a36cbaa6d0b68550c8e31e8a959a010d8e0542f09de28ee221429ba1"
-tree = "ebd06c68798cf0b601137b9588f401d4df034b34"
-tester = "ebd06c68798cf0b601137b9588f401d4df034b34"
-documenter = "ebd06c68798cf0b601137b9588f401d4df034b34"
+commit = "1006636d574fdf1b23c99bd28b7bc5f434270106"
+fingerprint = "sha256:8ff2cf87b32ecad2f53e817825d4f79ec284ad7f94591ecf714184e76b1bfa77"
+tree = "bc8c9f3ec8afacd3fef7bdd577fbfef2b899f16d"
+tester = "bc8c9f3ec8afacd3fef7bdd577fbfef2b899f16d"
+documenter = "bc8c9f3ec8afacd3fef7bdd577fbfef2b899f16d"
 
 [[interface]]
 id = "init"
@@ -44,8 +44,8 @@ contract = "`docs [unit]` renders docs_path/<unit>.md for one or every unit plus
 
 [[interface]]
 id = "init-ci"
-anchor = "src/init.rs::run"
-contract = "`init --ci` returns not_implemented; `init --hooks` and `render` are cut from 0.1.0, so they are usage errors."
+anchor = "src/init.rs::write_ci"
+contract = "`init --ci` on an initialized repo with an origin writes the forge's CI template (.github/workflows/stewards.yml or .gitlab/stewards.yml) once, refuses a file with other content, and adds the path to unowned_ok unless owned; `init --hooks` and `render` are cut from 0.1.0."
 
 [[anchor]]
 path = "src/init.rs"
@@ -121,13 +121,7 @@ title = "Last reviewed commit is written at line start"
 anchor = "src/docs.rs::unit_page"
 note = "esc assumes a tool-written prefix, but unit_page writes reviewed.commit alone on its line and the commit is not validated; a hand-edited commit like `1. x` or `---` renders as a list or rule. Cosmetic only: no HTML or link can form."
 
-[[gap]]
-kind = "future"
-title = "init --ci is not implemented"
-anchor = "src/init.rs::run"
-note = "The flag is parsed but returns not_implemented."
-
 [doc]
-overview = "The setup unit is how a repository gets onto stewards and how the generated files stay true. It proposes units for a repo and writes .stewards, writes the stewards block into AGENTS.md, tells every agent harness the same way to delegate, and renders human documentation pages from the unit cards. A reader meets it as three commands, init, guide and docs, plus the harness table that guide and init draw on."
-how_it_works = "Plain init (src/init.rs, propose) refuses with already_initialized if units.toml or repo.toml exists. Otherwise it proposes units from manifest roots, source directories and co-change history, naming the repo after its origin URL's last segment, else its directory. Test commands come from what each directory directly holds (dir_tests): the repo-wide commands only from the repo root, and a unit's own command (unit_test) from its dir/** paths, skipped when the root covers its toolchain or its directories disagree, written to the unit's test card. It writes both files and those cards, appends missing .gitignore lines, upserts the AGENTS.md block, and reports, ending with the AGENTS.md-only note. init --draft (draft_jobs) runs only step 1 on an uninitialized repo, then briefs an architect job plus a first review per never-reviewed unit with handoffs, and says to run review --roles until it exits 0; --direct checks every model guard first, then submits each job, a failure reporting how many were submitted. --ci returns not_implemented; --hooks and render are cut from 0.1.0. src/guide.rs holds the block: upsert_block writes it at the top of AGENTS.md or replaces the text between the markers, returning whether the file changed. guide prints the block's paragraphs, roles, adoption and AGENTS.md-only text, and one delegation text for every harness; --all, --errors and --glossary add every harness, the error table and the glossary. src/harness.rs: detect returns the first harness whose verified env prefix matches; by_name looks one up case-insensitively, else harness_unknown. src/docs.rs (pages) renders docs_path/<unit>.md plus README.md from cards, escaping text, linking live anchors, rejecting a bad docs_path or unknown unit, writing only changed files."
-how_to_change = "Start from the file for the command: src/init.rs for proposing units, test commands and draft jobs, src/guide.rs for the AGENTS.md block and guide text, src/harness.rs for per-harness facts, src/docs.rs for rendered pages. Each has a test file in tests/ (init.rs, init_draft.rs, guide.rs, docs.rs); change the test with the behavior. Keep true what the contracts promise: plain init never overwrites an initialized repo; the repo-wide test command comes only from the root and a unit's from its own directories; init --draft only runs on an uninitialized repo and checks every model guard before any --direct call; the .gitignore step only appends and never duplicates a line in another spelling; upsert_block stays idempotent and touches only its markers' text; stewards writes only AGENTS.md and gives every harness the same delegation text; a harness is only detected when its env rule is verified; docs refuses an empty or escaping docs_path and rewrites only changed files. Look up the repo, its cards and a unit through the shared helpers. Keep the card's interface table in step when a contract changes."
+overview = "The setup unit is how a repository gets onto stewards and how the generated files stay true. It proposes units for a repo and writes .stewards, writes the stewards block into AGENTS.md, tells every agent harness the same way to delegate, writes the CI template for the origin's forge, and renders human documentation pages from the unit cards. A reader meets it as init, guide and docs, plus the harness table that guide and init draw on."
+how_it_works = "Plain init (src/init.rs, propose) refuses with already_initialized if units.toml or repo.toml exists. Otherwise it proposes units from manifest roots, source directories and co-change history, naming the repo after its origin URL's last segment, else its directory. Test commands come from what each directory directly holds (dir_tests): repo-wide only from the root, a unit's own (unit_test) from its dir/** paths, skipped when the root covers its toolchain or its directories disagree. It writes both files and the test cards, appends missing .gitignore lines, upserts the AGENTS.md block, and reports, ending with the AGENTS.md-only note. init --draft (draft_jobs) runs only step 1 on an uninitialized repo, briefs an architect job plus a first review per never-reviewed unit, and says to run review --roles until it exits 0; --direct checks every model guard first. init --ci (write_ci) needs an initialized repo with an origin: it picks the forge from the origin host, writes .github/workflows/stewards.yml or .gitlab/stewards.yml pinned to this version (a file with other content is refused, a rerun is a no-op), and adds the path to unowned_ok in repo.toml through toml_edit unless a unit, a tool or unowned_ok covers it. --hooks and render are cut from 0.1.0. src/guide.rs: upsert_block writes the block at the top of AGENTS.md or between its markers; guide prints its paragraphs and one delegation text for every harness. src/harness.rs: detect and by_name. src/docs.rs (pages) renders docs_path pages from cards."
+how_to_change = "Start from the file for the command: src/init.rs for proposing units, test commands, draft jobs and the CI templates, src/guide.rs for the AGENTS.md block and guide text, src/harness.rs for per-harness facts, src/docs.rs for rendered pages. Each has a test file in tests/ (init.rs, init_draft.rs, guide.rs, docs.rs); change the test with the behavior. Keep true what the contracts promise: plain init never overwrites an initialized repo; the repo-wide test command comes only from the root and a unit's from its own directories; init --draft only runs on an uninitialized repo and checks every model guard before any --direct call; init --ci never overwrites a CI file with other content and keeps repo.toml's comments; the .gitignore step only appends and never duplicates a line in another spelling; upsert_block stays idempotent; stewards writes only AGENTS.md and gives every harness the same delegation text; a harness is only detected when its env rule is verified; docs refuses an empty or escaping docs_path and rewrites only changed files. Keep the card's interface table in step when a contract changes."

@@ -6,12 +6,13 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::check::one_line;
+use crate::check::{one_line, unowned_ok};
+use crate::forge::{self, Forge};
 use crate::llm::types::UnitProposal;
 use crate::llm::{self, Mode};
 use crate::model::{self, Role, SCHEMA, TestCard, UnitDef};
 use crate::next::{self, Job};
-use crate::output::{CliError, Global, Human, emit, not_implemented, with_note};
+use crate::output::{CliError, Global, Human, emit, with_note};
 use crate::route::Router;
 use crate::submit::{self, Submitted};
 use crate::workspace::{self, Repo, Workspace};
@@ -548,11 +549,12 @@ fn append_gitignore(repo: &Repo) -> Result<bool> {
 }
 
 pub fn run(g: &Global, draft: bool, ci: bool) -> Result<ExitCode> {
-    if ci {
-        return not_implemented("init --ci");
-    }
     let (cwd, ws) = workspace::here(g)?;
     let repo = ws.current_repo(&cwd)?;
+    if ci {
+        emit(&write_ci(repo)?, g.human);
+        return Ok(ExitCode::SUCCESS);
+    }
     let initialized = STARTING_FILES.iter().any(|f| repo.root.join(f).exists());
     // --draft continues an initialized repo; plain init only starts one
     let step1 = if draft && initialized {
@@ -565,6 +567,158 @@ pub fn run(g: &Global, draft: bool, ci: bool) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     draft_jobs(g, ws.is_workspace, repo, step1)
+}
+
+#[derive(Serialize)]
+struct CiReport {
+    /// The template's path when this call wrote it; empty when the same file was already there.
+    written: Vec<String>,
+    /// The `unowned_ok` entry added to `.stewards/repo.toml`, when the path had no owner.
+    unowned_ok_added: Vec<String>,
+    then: String,
+}
+
+impl Human for CiReport {
+    fn render(&self) -> String {
+        let list = |l: &[String]| {
+            if l.is_empty() {
+                "none".into()
+            } else {
+                l.join(", ")
+            }
+        };
+        format!(
+            "# stewards init --ci\n\nWritten: {}\nAdded to unowned_ok: {}\n\n{}",
+            list(&self.written),
+            list(&self.unowned_ok_added),
+            self.then
+        )
+    }
+}
+
+const GITHUB_CI: &str = r#"name: stewards
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  stewards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install stewards
+        run: |
+          curl -fsSL https://github.com/wromansky/stewards/releases/download/v@V@/install.sh | sh -s v@V@
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Comment the due review jobs
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: stewards next --no-brief --no-run --pr "$PR_NUMBER"
+      - name: Check
+        run: stewards check
+"#;
+
+const GITLAB_CI: &str = r#"# The runner image needs curl, git, and (for the merge request comment) glab.
+stewards:
+  image: debian:stable-slim
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+  variables:
+    GIT_DEPTH: "0"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl git ca-certificates
+    - curl -fsSL https://github.com/wromansky/stewards/releases/download/v@V@/install.sh | sh -s v@V@
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - if [ -n "$CI_MERGE_REQUEST_IID" ]; then stewards next --no-brief --no-run --pr "$CI_MERGE_REQUEST_IID" || true; fi
+    - stewards check
+"#;
+
+/// `init --ci`: the CI template for the origin's forge, through `Repo::write`, and its path in
+/// `unowned_ok` unless a unit owns it.
+fn write_ci(repo: &Repo) -> Result<CiReport> {
+    let Some(loaded) = &repo.loaded else {
+        return Err(CliError::new(
+            "usage",
+            "this repo has no .stewards/ to add the CI file to unowned_ok in",
+            "run stewards init first",
+        )
+        .into());
+    };
+    let origin = git::origin_url(&repo.root).ok_or_else(|| {
+        CliError::new(
+            "usage",
+            "the repo has no `origin` remote to pick the CI template from",
+            "add an origin remote on GitHub or GitLab",
+        )
+    })?;
+    let cli = forge::Real {
+        root: repo.root.clone(),
+    };
+    let github = Forge::of_origin(&cli, &origin)? == Forge::GitHub;
+    let (path, template) = if github {
+        (".github/workflows/stewards.yml", GITHUB_CI)
+    } else {
+        (".gitlab/stewards.yml", GITLAB_CI)
+    };
+    let text = template.replace("@V@", env!("CARGO_PKG_VERSION"));
+    let mut written = vec![];
+    if repo.root.join(path).exists() {
+        if repo.read(path, 1 << 20)? != text.as_bytes() {
+            return Err(CliError::new(
+                "usage",
+                format!("{path} already exists with other content"),
+                format!("remove {path} to rewrite it"),
+            )
+            .into());
+        }
+    } else {
+        repo.write(path, text.as_bytes())?;
+        written.push(path.to_string());
+    }
+    let router = Router::new(&loaded.units, &loaded.repo.docs_path)?;
+    let mut unowned_ok_added = vec![];
+    if router.owner(path).is_none()
+        && !router.tool_owned(path)
+        && !unowned_ok(&loaded.repo)?.is_match(path)
+    {
+        let rel = ".stewards/repo.toml";
+        // toml_edit, not a re-serialization: the user's comments and layout stay
+        let mut doc: toml_edit::DocumentMut = std::str::from_utf8(&repo.read(rel, 1 << 20)?)?
+            .parse()
+            .with_context(|| rel.to_string())?;
+        doc.entry("unowned_ok")
+            .or_insert(toml_edit::value(toml_edit::Array::new()))
+            .as_array_mut()
+            .with_context(|| format!("{rel}: unowned_ok is not a list"))?
+            .push(path);
+        repo.write(rel, doc.to_string().as_bytes())?;
+        unowned_ok_added.push(path.to_string());
+    }
+    let mut then = format!(
+        "Commit {path} and .stewards/repo.toml. CI runs stewards check on every push and fails \
+         while a unit changed since its review: run stewards review until it exits 0 before you push."
+    );
+    if !github {
+        then += " Add to .gitlab-ci.yml: `include:` then `  - local: .gitlab/stewards.yml`. Create a \
+                 project access token (Reporter role, `api` scope, short expiry) and store it as the masked CI/CD variable GITLAB_TOKEN so the merge request comment can be posted.";
+    }
+    Ok(CiReport {
+        written,
+        unowned_ok_added,
+        then,
+    })
 }
 
 /// The last path segment of a remote URL without a trailing `.git`: `widgets` for

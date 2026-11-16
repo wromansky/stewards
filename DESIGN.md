@@ -484,10 +484,37 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   their REST and GraphQL APIs), once per bug: the issue URL is recorded on
   the gap.
 - **Git and PR:** (`init --hooks`, a pre-push hook running `check`, is cut
-  from 0.1.0; see Build order.) `next --pr <n>` posts the jobs as a PR or MR comment updated in place;
-  `review --pr <n>` runs maintainer review briefs on the diff and posts
-  findings with rungs; CI templates for GitHub Actions and GitLab CI. The
-  remote host picks `gh` or `glab`.
+  from 0.1.0; see Build order.) `next --pr <n>` posts the report (the `--human` text, in a code fence
+  longer than any backtick run in it, so card and file text cannot ping,
+  link, or format) as one PR or MR comment updated in place;
+  `review --pr <n>` is `review` plus posting what that call reported (each
+  finding and note as `file:line: cut -> replace_with`, per unit verdicts, the
+  jobs listed, and the `then` line) the same way; both add `pr_comment {url,
+  updated}` to the report. The comment starts with a marker line
+  (`<!-- stewards:next -->`, `<!-- stewards:review -->`); updating lists the
+  PR's comments and edits the first whose author is the logged-in user and
+  whose body starts with the marker, else creates one (two concurrent runs
+  can each create one). The `next` text omits each job's handoff (a local
+  path). A failed post does not hide the report or change the exit code: the
+  report carries `pr_comment: null` and `pr_comment_error` (one line). The
+  repo and host come from `origin` (`repos/<owner>/<repo>` or
+  `projects/<encoded path>` and `--hostname`), not from `gh`/`glab`'s default
+  remote. The forge is GitHub for exactly `github.com`, GitLab for exactly
+  `gitlab.com`; any other host is the forge whose CLI reports a login to it
+  (`gh auth status --hostname`, then `glab`), else a `usage` error that names
+  host and path, never userinfo. `init --ci` writes
+  `.github/workflows/stewards.yml` (GitHub Actions) or `.gitlab/stewards.yml`
+  (GitLab CI; `.gitlab-ci.yml` is never touched, the `include:` lines are
+  printed) for that forge. The GitHub template pins `actions/checkout` by tag,
+  not SHA, and `install.sh`'s checksum comes from the same release as the
+  binary. The GitLab template needs `glab` on the runner image, and a
+  project access token (Reporter, `api` scope, short expiry) in the
+  `GITLAB_TOKEN` variable, which every branch pipeline that can see the
+  variable can read. The CI job installs the release
+  matching this binary, runs `next --no-brief --no-run --pr <n>` on pull
+  requests (allowed to fail), then `check`, which decides the job. CI has no
+  stamped trees (they are local unreachable objects), so `next` there lists
+  due units with every owned file as changed and no hunks; `check` needs none.
 - **Telemetry:** `.stewards/telemetry/<yyyy-mm>.jsonl`, gitignored, one line
   per submit: unit, role, task, pack bytes and anchor count, pulled anchors,
   harness, timestamp, for a reviewer the number of units it covered, and
@@ -697,7 +724,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | Command | Does |
 |---|---|
 | `guide [--harness h] [--all] [--errors] [--glossary]` | prints the ritual, the handoff, roles, editing rules, adoption, delegation text for the detected or named harness (the generic paragraph for one not in the table), error codes, glossary |
-| `init [--draft] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts, writes the AGENTS.md block, and says (`note`) that a harness not reading `AGENTS.md` needs a line pointing at it; `--draft` briefs the naming and card drafting (each first review's task: draft the card, record each problem as a gap, approve; existing code is not changed), prints each brief's handoff, and says to start those subagents, noting that a first review never asks for existing code to change, then run `review --roles` until it exits 0; `--ci` writes the CI template |
+| `init [--draft] [--ci]` | step 1 proposes `units.toml` and `repo.toml` from facts, writes the AGENTS.md block, and says (`note`) that a harness not reading `AGENTS.md` needs a line pointing at it; `--draft` briefs the naming and card drafting (each first review's task: draft the card, record each problem as a gap, approve; existing code is not changed), prints each brief's handoff, and says to start those subagents, noting that a first review never asks for existing code to change, then run `review --roles` until it exits 0; `--ci` writes the CI template of the origin's forge, adds its path to `unowned_ok` unless a unit owns it, leaves an identical file, refuses a different one (`usage`), and prints `{written, unowned_ok_added, then}` |
 | `status [--telemetry]` | units, freshness, coverage, gaps, across the workspace; uninitialized repos; `stamp_claim`, what a stamp claims |
 | `route <path>...` | owning unit per path, `null` when none; no LLM: an unowned path goes to the architect |
 | `pack [unit] --role <r> [--diff] [--task t]` | the context pack; no unit for the architect or the reviewer (the reviewer's is `groups[]`, one review pack per brief of the round, every due unit in exactly one) |
@@ -708,7 +735,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | `check` | failures: stale or never-stamped units, dead anchors, unknown interface ids; warnings: uncovered interfaces, overlapping globs, unowned files (outside `unowned_ok`), `instruction_files` entries that do not point at `AGENTS.md`, `grammar_unusable`: a directory under the stewards home's `grammars/` that could not be used, naming it and the reason, with `rebuild it against tree-sitter ABI <min>..<max>, or remove <dir>` (never a failure; `next` and `review` carry it with the other warnings) |
 | `validate [--report <f>] [--export]` | `--report` takes one JSON object `{unit, title, repro, evidence, interface?}`, records the bug on its unit's card, runs the repro through the allowlist, writes the validator brief (neither flag: `usage`); `--export` files an issue for every judged bug that has none |
 | `review [--task t] [--roles] [--answer a]...` | records each `--answer` (`<unit>: <file>:<line>: <reason>`, a reason not to apply a finding of the last review, for a reviewer to accept or contest), then reports, as what subagents reported (not verified), and removes the result files the last round's submits wrote, at most 20 per call, then lists what `next` (`next --roles`) lists for the task in force (`--task`, else the one the last `--task` stored), each job with its handoff, and one `then` line; never starts a session; exit 0 only when no job is listed, no finding is reported, and no result file is left |
-| `review --pr <n>` | maintainer review briefs on a PR or MR diff; findings posted as review comments |
+| `review --pr <n>` | `review`, then posts what this call reported as one PR or MR comment updated in place (`src/forge.rs`: `gh` or `glab` by the origin host) |
 | `debt` | `simplified:` comments attached to units |
 | `docs [unit]` | renders `docs/units/<unit>.md` and the index |
 | `eval [--harness h] [--suite s] [--arm a] [--task n]... [--runs n] [--max-cost usd] [--no-developers] [--model id] [--thinking level] [--setup-dir d] [--keep-work]` | runs the eval suite; exit 0 when the suite passes, 1 otherwise |
@@ -1105,7 +1132,7 @@ route; group per unit.
   `change` on its command line.
 - **Writes.** The tool writes only `.stewards/**`, `docs/units/**`, the
   marked block in `AGENTS.md`, two appended `.gitignore` lines, and CI
-  files when asked by flag. Never source or
+  files when asked by flag (`init --ci`, which also appends the file's path to `unowned_ok` in `repo.toml` with `toml_edit`, layout kept, unless a unit owns it). Never source or
   tests. Deletes only inside `.stewards/briefs` and `.stewards/telemetry`,
   and closed plans. `submit` writes a new plan; `next` (and so `review`)
   writes each step result that changed and deletes a closed plan, unless
@@ -1118,8 +1145,20 @@ route; group per unit.
   (`unsafe_path`). `load_repo` refuses the same way to read `.stewards/`,
   `.stewards/units`, or any file it loads through a link.
 - **Secrets and external text.** `pack` names but never inlines files
-  matching `[pack] exclude`. `review --pr` and `next --pr` read the diff and
-  file list only, never the PR title, body, or comments. Telemetry stores
+  matching `[pack] exclude`. `review --pr` and `next --pr` never read the PR
+  title or body, and of the comments only each one's id, body, and author login,
+  to find their own (author is the logged-in user, body starts with the marker);
+  nothing of any comment is kept or printed. The text they post goes inside a
+  code fence longer than any backtick run in it, each line indented by one
+  space so that no line starts a GitLab quick action (GitLab runs `/merge` and
+  the like from API notes, fenced or not), invisible characters shown as
+  `\u{XXXX}`, and is cut to stay under the comment size cap. The repo and
+  host come from `origin`, not from gh/glab's default remote. Under
+  `GITHUB_TOKEN`, `gh api user` is refused and the author is
+  `github-actions[bot]`, shared with any other workflow using that token. A
+  GitLab token in a CI variable is readable by every branch pipeline that can
+  see the variable. A posting failure is reported in `pr_comment_error` and
+  does not change the exit code. Telemetry stores
   sizes and counts. Tracker export sends only fields the tool composed.
   No secrets in any stewards file; tracker auth from CLIs and env.
 - **Sessions and results.** stewards never starts a session or a

@@ -1,0 +1,18 @@
+pkgbase = stewards
+	pkgdesc = A team of agents that already knows your repo, for any coding-agent harness
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/wromansky/stewards
+	arch = x86_64
+	license = MIT
+	makedepends = cargo
+	makedepends = protobuf
+	depends = gcc-libs
+	depends = glibc
+	options = !lto
+	source = stewards-0.1.0.tar.gz::https://static.crates.io/crates/stewards/stewards-0.1.0.crate
+	source = libbaml_cffi-0.226.3-x86_64.so::https://github.com/boundaryml/baml/releases/download/0.226.3/libbaml_cffi-x86_64-unknown-linux-gnu.so
+	sha256sums = SKIP
+	sha256sums = 44ffbd33d0c3b3a79a228a815c657b47c3c0151258da9f62b24d62491467d8ac
+
+pkgname = stewards

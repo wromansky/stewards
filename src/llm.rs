@@ -281,7 +281,19 @@ fn example(role: Role, mode: Mode) -> Value {
     v
 }
 
-/// Makes the BAML library download opt-in (`STEWARDS_BAML_DOWNLOAD`), keeps BAML from logging
+/// The library of the release archive, install script, and AUR package: `<exe dir>/../lib/stewards/`.
+fn bundled_library() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let lib = exe
+        .parent()?
+        .parent()?
+        .join("lib/stewards")
+        .join(format!("libbaml_cffi.{}", std::env::consts::DLL_EXTENSION));
+    lib.is_file().then_some(lib)
+}
+
+/// Points `BAML_LIBRARY_PATH` at the bundled library when it is unset and the file exists, makes
+/// the BAML library download opt-in (`STEWARDS_BAML_DOWNLOAD`), keeps BAML from logging
 /// prompts and replies to stderr unless `BAML_LOG` is set, and drops `BOUNDARY_*` variables so
 /// nothing is sent to Boundary's cloud.
 ///
@@ -292,8 +304,15 @@ pub unsafe fn prepare_baml_env() {
         .map(|(k, _)| k)
         .filter(|k| k.to_string_lossy().starts_with("BOUNDARY_"))
         .collect();
+    let bundled = std::env::var_os("BAML_LIBRARY_PATH")
+        .is_none()
+        .then(bundled_library)
+        .flatten();
     // SAFETY: the caller guarantees no other thread exists.
     unsafe {
+        if let Some(lib) = bundled {
+            std::env::set_var("BAML_LIBRARY_PATH", lib);
+        }
         if std::env::var_os("STEWARDS_BAML_DOWNLOAD").is_none() {
             std::env::set_var("BAML_LIBRARY_DISABLE_DOWNLOAD", "true");
         }

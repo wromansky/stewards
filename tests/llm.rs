@@ -813,6 +813,65 @@ fn prepared_env_turns_off_baml_logging_and_download_before_direct() {
 }
 
 #[test]
+fn child_bundled_library() {
+    if is_child() {
+        // SAFETY: this child runs one test with --test-threads=1; libtest's main thread only waits.
+        unsafe { prepare_baml_env() };
+        println!(
+            "CHILD BAML_LIBRARY_PATH={:?}",
+            std::env::var("BAML_LIBRARY_PATH").ok()
+        );
+    }
+}
+
+/// Removes the planted directory even when an assertion fails.
+struct Planted(std::path::PathBuf);
+
+impl Drop for Planted {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn prepare_baml_env_finds_the_library_beside_the_executable_only_when_it_exists() {
+    // The child is this test binary: target/debug/deps/<test>, so `../lib/stewards` is target/debug/lib/stewards.
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap().parent().unwrap().join("lib/stewards");
+    assert!(
+        !dir.exists(),
+        "{} is left over from a failed run",
+        dir.display()
+    );
+    let lib = dir.join(format!("libbaml_cffi.{}", std::env::consts::DLL_EXTENSION));
+    let path_of = |envs: &[(&str, &str)]| {
+        let out = child("child_bundled_library", envs, &[]);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        stdout
+            .lines()
+            .find_map(|l| {
+                l.split_once("CHILD BAML_LIBRARY_PATH=")
+                    .map(|(_, v)| v.to_string())
+            })
+            .unwrap_or_else(|| panic!("{stdout}"))
+    };
+
+    assert_eq!(path_of(&[]), "None");
+    let _planted = Planted(dir.clone());
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(path_of(&[]), "None", "a directory is not the library");
+    std::fs::write(&lib, "").unwrap();
+    assert_eq!(
+        path_of(&[]),
+        format!("Some({:?})", lib.display().to_string())
+    );
+    assert_eq!(
+        path_of(&[("BAML_LIBRARY_PATH", "/elsewhere/lib.so")]),
+        "Some(\"/elsewhere/lib.so\")"
+    );
+}
+
+#[test]
 fn every_finding_schema_states_blocking_and_what_false_is_for() {
     for (role, mode) in [
         (Role::Maintainer, Mode::Review),

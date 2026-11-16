@@ -5,12 +5,16 @@ edition = "2024"
 description = "A team of agents that already knows your repo, for any coding-agent harness"
 license = "MIT"
 repository = "https://github.com/wromansky/stewards"
+readme = "README.md"
+include = ["/src/", "/baml_src/", "/Cargo.toml", "/Cargo.lock", "/LICENSE", "/README.md"]
 
 [dependencies]
 anyhow = "1.0.104"
 baml = "=0.226.3"
 baml-sys = "=0.226.3"
 clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
 globset = "0.4.21"
 libc = "0.2"
 serde = { version = "1.0.229", features = ["derive"] }

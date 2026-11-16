@@ -32,12 +32,13 @@ Start from the anchor for the behavior you want: load_repo or the type definitio
 | repo-write | Replaces rel via a unique temp file renamed over it (a planted link is replaced, never followed), keeping the old file's permissions; the temp file is removed on failure. | [src/workspace.rs\:\:write](../../src/workspace.rs#L263) |
 | repo-append | Appends to the regular file rel, creating it when missing; refuses a non-regular file or a symlinked path. | [src/workspace.rs\:\:append](../../src/workspace.rs#L293) |
 | repo-remove | Removes the regular file rel; missing is Ok; a non-regular file or symlinked path is refused. | [src/workspace.rs\:\:remove](../../src/workspace.rs#L346) |
-| user-config | Reads config.toml from the user dir (\$STEWARDS\_HOME, else \~/.stewards); missing file is an empty Config; Config\:\:model(harness, role) is the pinned alias or None. Never writes. | [src/user.rs\:\:load\_config\_from](../../src/user.rs#L54) |
-| user-memory | Reads memory.toml \[\[entry\]\] items from the user dir; missing file is empty; malformed is invalid\_toml with file\:line. Never writes. | [src/user.rs\:\:load\_memory\_from](../../src/user.rs#L58) |
-| memory-for | Entries whose roles (absent = all) include role and whose languages (absent = all) share one with \`languages\`, in file order, stopping before the first entry that pushes total text bytes past budget\_bytes. | [src/user.rs\:\:memory\_for](../../src/user.rs#L65) |
+| user-config | Reads config.toml from the user dir (\$STEWARDS\_HOME, else \~/.stewards; counted only when absolute, else no user dir and an empty Config); missing file is an empty Config; Config\:\:model(harness, role) is the pinned alias or None. Never writes. | [src/user.rs\:\:load\_config\_from](../../src/user.rs#L62) |
+| user-memory | Reads memory.toml \[\[entry\]\] items from the user dir; missing file is empty; malformed is invalid\_toml with file\:line. Never writes. | [src/user.rs\:\:load\_memory\_from](../../src/user.rs#L66) |
+| memory-for | Entries whose roles (absent = all) include role and whose languages (absent = all) share one with \`languages\`, in file order, stopping before the first entry that pushes total text bytes past budget\_bytes. | [src/user.rs\:\:memory\_for](../../src/user.rs#L73) |
 | loaded-card | Loaded\:\:card(unit) returns a clone of the unit's card, or an empty card (unit set, reviewed None, no interface, anchors, gaps, or doc) when it has none yet. The one lookup submit and check use instead of their own copies. | [src/model.rs\:\:card](../../src/model.rs#L381) |
 | repo-read | Repo\:\:read(rel, cap) returns the bytes of the regular file rel through safe\_path, opened with no link followed and without blocking on a FIFO (unix), its type checked on the open handle; a non-regular file or one over cap bytes is an error. | [src/workspace.rs\:\:read](../../src/workspace.rs#L313) |
 | plain-names | Ok when every \`/\`-separated part of rel is a plain name (no \`.\`, \`..\`, empty part, or root), else unsafe\_path. The name half of safe\_path, also run on each repo.toml instruction\_files entry at load. | [src/workspace.rs\:\:plain\_names](../../src/workspace.rs#L204) |
+| user-grammars-dir | \<user dir\>/grammars, or None when the user dir is not an absolute path, so a relative home never resolves into the analysed repo. | [src/user.rs\:\:grammars\_dir](../../src/user.rs#L50) |
 
 ## Scenarios
 
@@ -62,4 +63,4 @@ Start from the anchor for the behavior you want: load_repo or the type definitio
 
 ## Last reviewed
 
-680708dc18906aa4b5574f58462a5f360d7ec66c
+b4c0b3c14c1ea4086a7105b2e900f87f5bb1c5f3

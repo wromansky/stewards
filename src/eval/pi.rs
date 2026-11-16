@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 
 use super::{
     Action, Driver, FAILED_STOPS, ReviewSubmit, Run, Session, Tokens, fresh_session_env,
-    is_reviewer_submit, reads_git_history, records, repo_relative, reviewed_units, ritual_steps,
-    run_session, shell_reads, stewards_commands,
+    is_architect_submit, is_reviewer_submit, plan_stored, reads_git_history, records,
+    repo_relative, reviewed_units, ritual_steps, run_session, shell_reads, stewards_commands,
 };
 use crate::output::CliError;
 
@@ -318,12 +318,7 @@ fn review_submits(records: &[&Value]) -> Vec<(String, ReviewSubmit)> {
         }) else {
             continue;
         };
-        let text: String = result["message"]["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|b| b["text"].as_str())
-            .collect();
+        let text = result_text(result);
         if let Some(units) = reviewed_units(&text) {
             let at = result["timestamp"].as_str().unwrap_or_default().to_string();
             out.push((
@@ -336,6 +331,29 @@ fn review_submits(records: &[&Value]) -> Vec<(String, ReviewSubmit)> {
         }
     }
     out
+}
+
+fn result_text(result: &Value) -> String {
+    result["message"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b["text"].as_str())
+        .collect()
+}
+
+/// Whether one session ran an architect `submit` whose output says `plan <id> stored`.
+fn architect_stored(records: &[&Value]) -> bool {
+    bash_commands(records).any(|(call, command)| {
+        stewards_commands(command)
+            .iter()
+            .any(|c| is_architect_submit(c))
+            && records.iter().any(|r| {
+                r["message"]["role"] == "toolResult"
+                    && r["message"]["toolCallId"] == call["id"]
+                    && plan_stored(&result_text(r))
+            })
+    })
 }
 
 /// The distinct repo-relative paths one session opened (see `Run::files_opened`), in order: each
@@ -467,12 +485,14 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
     let mut thinking_levels = BTreeSet::new();
     let mut sessions_without_thinking = vec![];
     let mut reviews = vec![];
+    let mut plan_stored = false;
     let mut git_history_commands = vec![];
     let mut failed_children = vec![];
     for (i, (name, recs)) in sessions.enumerate() {
         all.extend(actions(recs, i > 0));
         if i > 0 {
             reviews.extend(review_submits(recs));
+            plan_stored |= architect_stored(recs);
         }
         git_history_commands.extend(
             bash_commands(recs)
@@ -548,6 +568,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
             reviews.sort_by(|a, b| a.0.cmp(&b.0));
             reviews.into_iter().map(|(_, r)| r).collect()
         },
+        plan_stored,
         git_history_commands,
         stop_reason: last_stop(&main),
         failed_children,

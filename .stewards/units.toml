@@ -52,3 +52,8 @@ paths = ["src/eval/**", "tests/eval.rs", "tests/eval_interrupt.rs", "tests/fixtu
 name = "run"
 purpose = "The allowlisted command runner: which commands may run (repo test commands and a unit's own test command), the check every agent-written command passes, and execution without a shell under a timeout with the whole process group killed."
 paths = ["src/run.rs", "tests/run.rs"]
+
+[[unit]]
+name = "dist"
+purpose = "How stewards is shipped: the release workflow, the install script, the AUR package, the release checklist, and the tests for completions, the man page and the install script."
+paths = [".github/workflows/release.yml", "install.sh", "packaging/**", "RELEASING.md", "tests/completions.rs"]

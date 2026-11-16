@@ -292,9 +292,9 @@ fn every_command_parses_its_flags() {
             "--max-cost",
             "2.5",
         ],
-        &["completions", "bash"],
         &["--repo", "single", "--direct", "-C", dir, "check"],
     ];
+    // `completions` and `man` print scripts, not JSON: tests/completions.rs runs them.
     for args in commands {
         let out = stewards(Path::new("/"), args);
         let v: Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");

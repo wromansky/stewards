@@ -47,3 +47,11 @@ given = "a review approving a unit with only non-blocking findings"
 expect = "the notes are printed and recorded, the unit stamps, no fix task is written"
 level = "integration"
 command = "cargo test --test review an_approval_with_only_notes_stamps_and_writes_no_fix_task"
+
+[[scenario]]
+id = "completions-scripts"
+interface = "completions-man"
+given = "stewards completions for each of the five shells, and stewards man"
+expect = "exit 0, script or `.TH stewards 1` page on stdout, `save it: stewards ... > ` on stderr"
+level = "integration"
+command = "cargo test --test completions every_shell_prints_a_script_naming_review_and_a_save_hint"

@@ -1,0 +1,50 @@
+# Maintainer: Billy Romansky
+# The release workflow rewrites pkgver and the first sha256sums entry (packaging/aur/bump.sh).
+pkgname=stewards
+pkgver=0.1.0
+pkgrel=1
+_bamlver=0.226.3
+pkgdesc='A team of agents that already knows your repo, for any coding-agent harness'
+arch=('x86_64')
+url='https://github.com/wromansky/stewards'
+# MIT for stewards; Apache-2.0 for the BAML library (its LICENSE is installed under /usr/share/licenses).
+license=('MIT' 'Apache-2.0')
+depends=('gcc-libs' 'glibc')
+makedepends=('cargo' 'protobuf')
+# The BAML runtime library stewards loads for --direct; the binary finds it in ../lib/stewards.
+source=("$pkgname-$pkgver.tar.gz::https://static.crates.io/crates/$pkgname/$pkgname-$pkgver.crate"
+        "libbaml_cffi-$_bamlver-x86_64.so::https://github.com/boundaryml/baml/releases/download/$_bamlver/libbaml_cffi-x86_64-unknown-linux-gnu.so")
+sha256sums=('SKIP'
+            '44ffbd33d0c3b3a79a228a815c657b47c3c0151258da9f62b24d62491467d8ac')
+options=('!lto')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/stewards "$pkgdir/usr/bin/stewards"
+  install -Dm755 "$srcdir/libbaml_cffi-$_bamlver-x86_64.so" "$pkgdir/usr/lib/stewards/libbaml_cffi.so"
+  # Each file is written first, so a failing stewards stops the build instead of installing an empty file.
+  target/release/stewards completions bash > "$srcdir/stewards.bash"
+  target/release/stewards completions zsh > "$srcdir/_stewards"
+  target/release/stewards completions fish > "$srcdir/stewards.fish"
+  target/release/stewards man > "$srcdir/stewards.1"
+  install -Dm644 "$srcdir/stewards.bash" "$pkgdir/usr/share/bash-completion/completions/stewards"
+  install -Dm644 "$srcdir/_stewards" "$pkgdir/usr/share/zsh/site-functions/_stewards"
+  install -Dm644 "$srcdir/stewards.fish" "$pkgdir/usr/share/fish/vendor_completions.d/stewards.fish"
+  install -Dm644 "$srcdir/stewards.1" "$pkgdir/usr/share/man/man1/stewards.1"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 licenses/baml/LICENSE "$pkgdir/usr/share/licenses/$pkgname/baml/LICENSE"
+  install -Dm644 licenses/baml/SOURCE "$pkgdir/usr/share/licenses/$pkgname/baml/SOURCE"
+}

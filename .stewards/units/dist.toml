@@ -1,0 +1,104 @@
+unit = "dist"
+
+[reviewed]
+commit = "9b59164cc2a4e3360ceedfa6a7a20349362f39f4"
+fingerprint = "sha256:42795a1d218b0381ca5637d080fa50b19388811b70289f4fef0ce7d4fc6c3d4e"
+tree = "0a37eaeebf7a63734c2912f3399a10ebb45498a3"
+tester = "0a37eaeebf7a63734c2912f3399a10ebb45498a3"
+documenter = "0a37eaeebf7a63734c2912f3399a10ebb45498a3"
+
+[[interface]]
+id = "release-workflow"
+anchor = ".github/workflows/release.yml::release"
+contract = "On a v<x>.<y>.<z> tag: check versions, pins, library sha256s; build four archives with licenses; release job (tag on main) attests and releases; publish (--no-verify) and AUR jobs need release-environment approval."
+
+[[interface]]
+id = "install-sh"
+anchor = "install.sh::sha256"
+contract = "sh install.sh [v<version>]: https only; absolute ${STEWARDS_PREFIX:-$HOME/.local} (root needs a prefix); installs only if the tarball matches SHA256SUMS; bin and lib by write-then-rename; refuses musl and odd versions."
+
+[[interface]]
+id = "aur-bump"
+anchor = "packaging/aur/bump.sh::bump"
+contract = "sh bump.sh <version> <64-hex sha256 of the .crate> rewrites pkgver, pkgrel=1 and the first sha256sums entry in PKGBUILD and the same lines in .SRCINFO; rejects a malformed version or hash."
+
+[[interface]]
+id = "aur-pkgbuild"
+anchor = "packaging/aur/PKGBUILD::package"
+contract = "Builds the crates.io crate and installs binary, libbaml_cffi in /usr/lib/stewards, completions for bash, zsh and fish, the man page, LICENSE and BAML's licenses/baml files; the build fails if stewards cannot generate a completion or the man page."
+
+[[interface]]
+id = "release-checklist"
+anchor = "RELEASING.md::Releasing"
+contract = "Ordered maintainer steps from version bump to post-release verification, plus known limits."
+
+[[interface]]
+id = "completions-tests"
+anchor = "tests/completions.rs::FakeRelease"
+contract = "Tests stewards completions (five shells, save hint on stderr), stewards man, install.sh against a fake release served by curl and uname shims with no network, and bump.sh on a temp copy of PKGBUILD and .SRCINFO over two successive bumps."
+
+[[anchor]]
+path = ".github/workflows/release.yml"
+name = "release"
+
+[[anchor]]
+path = "install.sh"
+name = "sha256"
+
+[[anchor]]
+path = "packaging/aur/bump.sh"
+name = "bump"
+
+[[anchor]]
+path = "packaging/aur/PKGBUILD"
+name = "package"
+
+[[anchor]]
+path = "RELEASING.md"
+name = "Releasing"
+
+[[anchor]]
+path = "tests/completions.rs"
+name = "FakeRelease"
+
+[[gap]]
+kind = "gap"
+title = "Release workflow is never exercised before a tag"
+anchor = ".github/workflows/release.yml::release"
+note = "The workflow runs only on v* tags, and archive assembly, library checksums, gh release create, cargo publish and the AUR push have no dry run or pull-request check. A mistake surfaces on the real release, and cargo publish and the AUR push cannot be undone."
+
+[[gap]]
+kind = "gap"
+title = "Pinned BAML version is checked in the workflow but not in the PKGBUILD"
+anchor = "packaging/aur/PKGBUILD::package"
+note = "The build job greps Cargo.toml for baml =$BAML_VERSION, but PKGBUILD _bamlver, its library sha256 and .SRCINFO are only kept in line by hand (RELEASING.md step 1). They match today at 0.226.3 and can drift silently."
+repro = "grep -n 0.226.3 .github/workflows/release.yml packaging/aur/PKGBUILD packaging/aur/.SRCINFO"
+
+[[gap]]
+kind = "gap"
+title = "install.sh test depends on the host not being musl"
+anchor = "tests/completions.rs::FakeRelease"
+note = "The uname shim fakes Linux x86_64, but install.sh then runs ls /lib/ld-musl-* on the real host, so the install tests fail on an Alpine machine. Only the Linux x86_64 target branch is covered; macOS and aarch64 mapping and the musl refusal are not tested."
+
+[[gap]]
+kind = "gap"
+title = "AUR job resets pkgrel and the repo PKGBUILD never advances"
+anchor = "packaging/aur/bump.sh::bump"
+note = "bump.sh always writes pkgrel=1 and the job pushes only to the AUR, so main keeps the old pkgver. A manual pkgrel bump on the AUR is overwritten by the next release, and a re-run of the AUR job for the same tag is a no-op only if nothing else changed."
+
+[[gap]]
+kind = "gap"
+title = "SHA256SUMS shares a source with the archive"
+anchor = "install.sh::sha256"
+note = "Already listed in RELEASING.md known limits: the checksum catches corruption, not a tampered release. There is no signature or attestation."
+
+[[gap]]
+kind = "bug"
+title = "Bundled library accepted from a directory others can write"
+note = "src/llm.rs bundled_library checks the mode of libbaml_cffi (no group/other write bit) and that the executable sits in a bin directory, but not the mode of lib/stewards/ or bin/. Anyone who can write a 0777 lib/stewards directory can rename the file away and put their own 0755 one there, which is then dlopen'ed. Check 0o022 on the lib directory too (and on the file's owner if wanted). The tests cover only the file mode."
+repro = "cargo test --test llm prepare_baml_env_ignores_a_library_that_others_can_write"
+
+[doc]
+overview = "How stewards is shipped. A v<x>.<y>.<z> tag runs .github/workflows/release.yml, which builds four archives (linux and macOS, x86_64 and aarch64), each holding the binary, the BAML library libbaml_cffi, shell completions, the man page, licenses/ (BAML's Apache-2.0 LICENSE and SOURCE) and a cargo-about THIRD-PARTY-LICENSES.html. The release job (tag must be on main) attests provenance and creates the GitHub release with SHA256SUMS and install.sh; the publish and aur jobs then run under the `release` environment, which needs a reviewer. install.sh installs a release under an absolute ${STEWARDS_PREFIX:-$HOME/.local} after checking the tarball against SHA256SUMS. packaging/aur holds the PKGBUILD, .SRCINFO and bump.sh. RELEASING.md is the maintainer checklist (one-time repository setup, each release, known limits)."
+how_it_works = "Build job (per target): checks the tag, Cargo.toml version, `baml =` and `baml-sys =` pins agree and (on x86_64 linux) that the PKGBUILD and .SRCINFO carry the same baml version and library sha256; builds; generates THIRD-PARTY-LICENSES.html with cargo-about (about.toml lists accepted licences, about.hbs is the template; an unlisted licence fails); downloads libbaml_cffi and checks its sha256; assembles bin/, lib/stewards/, share/, licenses/ and tars it. Release job: refuses a commit not on origin/main, requires exactly four archives, writes SHA256SUMS, attests build provenance, runs gh release create. Publish job (environment release): `cargo package` without the token, then `cargo publish --no-verify` with CARGO_REGISTRY_TOKEN. AUR job (environment release): downloads the published .crate, runs bump.sh <version> <sha256>, pushes PKGBUILD and .SRCINFO over ssh with a pinned host key. The PKGBUILD writes each completion and the man page to a file before installing, so a failing stewards fails the build, and installs BAML's licence. install.sh is wrapped in main, fetches with curl --proto =https, and installs bin/ and lib/ files by mktemp then rename. The binary loads the bundled library from <prefix>/lib/stewards/ only when it runs from a directory named bin and the library file is not group- or other-writable (bundled_library in src/llm.rs). tests/completions.rs tests completions, man, install.sh (fake release served by curl, id and uname shims, no network) and bump.sh."
+how_to_change = "Follow RELEASING.md in order; the one-time repository setup (release environment, its two secrets, tag ruleset) is done by hand and unchecked. When baml is bumped, change BAML_VERSION and the four lib_sha256 values in release.yml, the version, URL and sha256 in PKGBUILD and .SRCINFO (the build job now refuses a mismatch for x86_64), the baml and baml-sys pins in Cargo.toml, and licenses/baml; the bump.sh test hard-codes the PKGBUILD library sha256, so update it too. When an archive path or name changes, change release.yml, install.sh, the PKGBUILD package() and the FakeRelease fixture together. When a new licence appears in the dependency tree, review it and add it to about.toml. When PKGBUILD or .SRCINFO layout changes, bump.sh and its test change with it. The release workflow runs only on tags, so changes to it are not exercised before a release; cargo publish and the AUR push cannot be undone. Run cargo test for install.sh, bump.sh and completions; install.sh's tests need a non-musl host."

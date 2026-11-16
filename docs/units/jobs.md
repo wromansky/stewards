@@ -23,8 +23,8 @@ Start in src/brief.rs for what a brief says or where it lives, and in src/submit
 | brief-write | Writing a brief removes its stale \`.answer.json\` and the job's briefs and answers at other snapshots (result files stay); a developer brief run also removes job files past the task list's end, and a review round (write\_round) the review briefs past its last. | [src/brief.rs\:\:write\_text](../../src/brief.rs#L544) |
 | brief-build | Packs and frames a role's brief; \`unsafe\_path\` for a repo root with a backtick, control, line-separator or invisible char; a validator brief with no unjudged bug is \`usage\`. | [src/brief.rs\:\:build](../../src/brief.rs#L388) |
 | submit-file | Needs a known unit (none for architect, reviewer); an answer file named as a job file of this job picks the brief at that snapshot, else the job's one brief; the header must match unit, role, task, tree id and brief name; answer \<=256 KiB; retires, logs telemetry, writes .result.json. | [src/submit.rs\:\:submit\_file](../../src/submit.rs#L229) |
-| anchor-name-bare | An anchor name holding whitespace (\`fn create\_item\`) in a card patch's interface, anchors or gaps, or an architect flow entry, is \`answer\_parse\_failed\` on that field instead of \`answer\_dead\_anchor\`. | [src/submit.rs\:\:spaced\_name](../../src/submit.rs#L2603) |
-| write-and-retire | Refuses link paths and returns \`card\_changed\` before any write when a checked file changed since it was recorded; writes in order, then removes the brief, naming already-written files on a later failure. | [src/submit.rs\:\:write\_remove\_and\_retire](../../src/submit.rs#L2030) |
+| anchor-name-bare | An anchor name holding whitespace (\`fn create\_item\`) in a card patch's interface, anchors or gaps, or an architect flow entry, is \`answer\_parse\_failed\` on that field instead of \`answer\_dead\_anchor\`. | [src/submit.rs\:\:spaced\_name](../../src/submit.rs#L2689) |
+| write-and-retire | Refuses link paths and returns \`card\_changed\` before any write when a checked file changed since it was recorded; writes in order, then removes the brief, naming already-written files on a later failure. | [src/submit.rs\:\:write\_remove\_and\_retire](../../src/submit.rs#L2116) |
 | telemetry-append | Appends one JSON line per submit to \`.stewards/telemetry/\<yyyy-mm\>.jsonl\`\: sizes and counts only. | [src/telemetry.rs\:\:append](../../src/telemetry.rs#L37) |
 | telemetry-summary | Per-role submit counts and mean pack bytes plus total pulled anchors; null with no telemetry files; unreadable files and lines are skipped, never an error. | [src/telemetry.rs\:\:summary](../../src/telemetry.rs#L70) |
 | card-patch | card\_patch upserts interface by id, anchors by path\:\:name, gaps by title (keeping severity and issue); unnamed entries stay, in order. Only remove\_\* lists remove; a removal naming a key the card lacks or the patch also upserts is \`answer\_parse\_failed\`. | [src/submit.rs\:\:apply\_patch](../../src/submit.rs#L807) |
@@ -34,10 +34,11 @@ Start in src/brief.rs for what a brief says or where it lives, and in src/submit
 | review-submit | Snapshot must match the header's (else no\_brief); each header unit once, checked like its maintainer/tester/documenter answers; no write on error. approve (no blocking or contested finding) stamps; changes writes the fix task and \<unit\>-findings.json. blocking false is a note. | [src/submit.rs\:\:reviewer](../../src/submit.rs#L1285) |
 | brief-handoff | The one sentence for a brief at an absolute path, the same for every role and every command that writes a brief\: Read \`\<path\>\` and follow it. A path check\_root refuses is \`unsafe\_path\`. | [src/brief.rs\:\:handoff](../../src/brief.rs#L218) |
 | job-name | Reads unit, role, task n and snap back from a brief, answer or result file name, only when rel\_path builds exactly that name; any other name is None. | [src/brief.rs\:\:job\_of](../../src/brief.rs#L103) |
-| command-allowlist | A scenario command, repro or task check must pass run\:\:check against run\:\:allowed\: start with a commands.test entry or the unit's own test card test\_command, never another unit's; an architect flow check gets commands.test only. check\_command reports a refusal as command\_not\_allowed. | [src/submit.rs\:\:check\_command](../../src/submit.rs#L2471) |
-| answer-too-long | A field over its cap is answer\_too\_long giving its length, how far over the cap it is, the cap and a target at 80% of the cap; the fix says a length-only rejection does not count toward the three tries. | [src/submit.rs\:\:check\_text](../../src/submit.rs#L2495) |
+| command-allowlist | A scenario command, repro or task check must pass run\:\:check against run\:\:allowed\: start with a commands.test entry or the unit's own test card test\_command, never another unit's; a plan step check gets its unit's list; an architect flow check gets commands.test only. Refusal is command\_not\_allowed. | [src/submit.rs\:\:check\_command](../../src/submit.rs#L2557) |
+| answer-too-long | A field over its cap is answer\_too\_long giving its length, how far over the cap it is, the cap and a target at 80% of the cap; the fix says a length-only rejection does not count toward the three tries. | [src/submit.rs\:\:check\_text](../../src/submit.rs#L2581) |
 | first-review | A maintainer review of a never-stamped unit (no reviewed block) is rejected as answer\_parse\_failed on \`verdict\` for \`changes\` and on \`findings\[i\]\` for any finding; problems go in card\_patch.gaps and the verdict is approve. The brief for it leads with brief\:\:FIRST\_REVIEW. | [src/submit.rs\:\:check\_first\_review](../../src/submit.rs#L658) |
-| finding-answer | \`review --answer '\<unit\>\: \<file\>\:\<line\>\: \<reason\>'\` records one reason on a finding of the last review, once; the next reviewer accepts it or contests it (blocking, unanswerable). No such finding, bad reason or already answered is \`usage\`. | [src/submit.rs\:\:answer\_finding](../../src/submit.rs#L2264) |
+| finding-answer | \`review --answer '\<unit\>\: \<file\>\:\<line\>\: \<reason\>'\` records one reason on a finding of the last review, once; the next reviewer accepts it or contests it (blocking, unanswerable). No such finding, bad reason or already answered is \`usage\`. | [src/submit.rs\:\:answer\_finding](../../src/submit.rs#L2350) |
+| architect-plan | An architect plan needs at least one step, each step a known unit and a check that passes the allowlist; it is stored at .stewards/plans/\<yyyy-mm-dd\>-\<slug\>.toml, with -2, -3 on a taken id; card\_changed if another submit takes the id first. | [src/submit.rs\:\:plan\_id](../../src/submit.rs#L2004) |
 
 ## Scenarios
 
@@ -81,6 +82,8 @@ Start in src/brief.rs for what a brief says or where it lives, and in src/submit
 | finding-answer-accepted | review-submit | an answered finding the next reviewer does not contest, then an approve | the answer is accepted, the unit stamps and its findings file is gone | integration |
 | finding-answer-contested | finding-answer | an answered finding the next reviewer contests | it returns blocking in the fix task, cannot be approved over, and cannot be answered again | integration |
 | review-notes-do-not-block | review-submit | an approve whose findings all have blocking false | the unit stamps, the notes are printed and reported, and no fix task is written | integration |
+| architect-plan-stored | architect-plan | an architect answer with a plan of one step, submitted twice with one title | the plan is at .stewards/plans/\<date\>-\<slug\>.toml and the second at -2; the summary names the id | integration |
+| architect-plan-rejects-bad-step | architect-plan | a plan with an unknown unit, a disallowed check, or no step | answer\_parse\_failed on the unit or steps, command\_not\_allowed on the check, and no plan file | integration |
 
 ## Flows
 
@@ -98,4 +101,4 @@ Start in src/brief.rs for what a brief says or where it lives, and in src/submit
 
 ## Last reviewed
 
-3b8cbbc8884aac89d624a65ae07dd955ff1578c4
+f1f0d1739d2f18c534c514967edc69aff44907ed

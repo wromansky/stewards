@@ -35,25 +35,28 @@ struct MemoryFile {
     entry: Vec<Entry>,
 }
 
-/// `$STEWARDS_HOME`, else `~/.stewards`.
-fn user_dir() -> PathBuf {
-    match std::env::var_os("STEWARDS_HOME") {
+/// `$STEWARDS_HOME`, else `~/.stewards`; `None` unless that is an absolute path. A relative one
+/// (HOME unset or empty, a relative STEWARDS_HOME) would resolve inside the repo being analysed,
+/// whose own `.stewards/` could then supply config, memory and native grammar libraries.
+fn user_dir() -> Option<PathBuf> {
+    let dir = match std::env::var_os("STEWARDS_HOME") {
         Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".stewards"),
-    }
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".stewards"),
+    };
+    dir.is_absolute().then_some(dir)
 }
 
 /// Where runtime tree-sitter grammars live: `<stewards home>/grammars`.
-pub fn grammars_dir() -> PathBuf {
-    user_dir().join("grammars")
+pub fn grammars_dir() -> Option<PathBuf> {
+    Some(user_dir()?.join("grammars"))
 }
 
 pub fn load_config() -> Result<Config> {
-    load_config_from(&user_dir())
+    user_dir().map_or_else(|| Ok(Config::default()), |d| load_config_from(&d))
 }
 
 pub fn load_memory() -> Result<Vec<Entry>> {
-    load_memory_from(&user_dir())
+    user_dir().map_or_else(|| Ok(vec![]), |d| load_memory_from(&d))
 }
 
 pub fn load_config_from(dir: &Path) -> Result<Config> {

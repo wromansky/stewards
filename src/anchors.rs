@@ -226,6 +226,8 @@ fn definitions(g: &Lang, text: &str) -> Vec<Def> {
     if parser.set_language(&g.language).is_err() {
         return vec![];
     }
+    // simplified: no time limit or size cap on a parse; a huge file or a looping external
+    // scanner hangs it. Upgrade: parse_with_options with a deadline, and a byte cap in `read`.
     let Some(tree) = parser.parse(text, None) else {
         return vec![];
     };

@@ -794,3 +794,20 @@ fn a_runtime_directory_never_overrides_a_static_extension() {
     assert!(dead_data_anchors(repo.path(), home.path()).is_empty());
     assert!(unusable_grammars(repo.path(), home.path()).is_empty());
 }
+
+/// A relative stewards home would resolve inside the repo, whose `.stewards/grammars` could then
+/// hand `check` a native library: it counts as no home at all.
+#[test]
+fn a_relative_stewards_home_is_no_home_so_the_repos_own_grammars_are_never_read() {
+    let repo = repo_anchoring(
+        &[("src/api/data.rs", "fn name() {}\n")],
+        &[("src/api/data.rs", "name")],
+    );
+    std::fs::create_dir_all(repo.path().join(".stewards/grammars/json")).unwrap();
+    assert!(unusable_grammars(repo.path(), Path::new(".stewards")).is_empty());
+    // the same directory through an absolute home is read (and refused: it has no library)
+    assert_eq!(
+        unusable_grammars(repo.path(), &repo.path().join(".stewards")).len(),
+        1
+    );
+}

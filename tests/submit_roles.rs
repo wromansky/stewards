@@ -578,7 +578,7 @@ fn architect_on_an_inline_flow_array_is_invalid_toml_and_writes_nothing() {
     edit(
         &d.join(REPO_TOML),
         "[[flow]]\nname = \"create-item\"\nunits = [\"api\", \"store\"]\n\
-         entry = \"src/api/items.py::create_item\"\ncheck = \"pytest tests -k create_item\"\n",
+         entry = \"src/api/items.py::create_item\"\n",
         "",
     );
     edit(
@@ -627,22 +627,89 @@ fn architect_unit_proposals_are_printed_and_not_applied() {
     assert_eq!(fs::read(d.join(".stewards/units.toml")).unwrap(), units);
 }
 
+fn count_plan(title: &str, steps: Value) -> Value {
+    architect(
+        json!([]),
+        json!([]),
+        json!([]),
+        json!({"title": title, "steps": steps}),
+    )
+}
+
+fn count_step(unit: &str, check: &str) -> Value {
+    json!({"unit": unit, "change": "add count", "interfaces": ["create-item"], "check": check})
+}
+
+/// The file names in `.stewards/plans`, sorted.
+fn plan_files(d: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(d.join(".stewards/plans"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
-fn architect_plan_is_accepted_and_reported_as_not_stored() {
+fn architect_plan_is_stored_and_a_second_with_the_same_title_gets_2() {
     let dir = fixture("single");
     let d = dir.path();
-    let plan = json!({"title": "add count", "steps": [
-        {"unit": "api", "change": "add count", "interfaces": ["create-item"], "check": "pytest tests/api"}]});
-    let v = submit_ok(
-        d,
-        "architect",
-        &architect(json!([]), json!([]), json!([]), plan),
+    let a = count_plan(
+        "Add count: API & store!",
+        json!([count_step("api", "pytest tests/api")]),
     );
+    let v = submit_ok(d, "architect", &a);
+    let [name] = &plan_files(d)[..] else {
+        panic!("one plan file")
+    };
+    let id = name.strip_suffix(".toml").unwrap();
+    let created = &id[..10];
+    assert_eq!(id, format!("{created}-add-count-api-store"));
     assert_eq!(
         v["summary"],
-        "architect: 0 purposes set; 0 unit proposals for you to review; 0 flows upserted; 0 decisions; plan not stored yet"
+        format!(
+            "architect: 0 purposes set; 0 unit proposals for you to review; 0 flows upserted; 0 \
+             decisions; plan {id} stored (1 step): make each step's change, then run stewards \
+             review; it runs each step's check and closes the plan when every check passes and \
+             every unit is reviewed"
+        )
     );
-    assert!(!d.join(".stewards/plans").exists());
+    let plan: stewards::model::Plan =
+        toml::from_str(&fs::read_to_string(d.join(format!(".stewards/plans/{name}"))).unwrap())
+            .unwrap();
+    assert_eq!(
+        (plan.title.as_str(), plan.created.as_str()),
+        ("Add count: API & store!", created)
+    );
+    assert_eq!(plan.steps[0].check, "pytest tests/api");
+    assert_eq!(plan.steps[0].result, None);
+    // a second plan with one title is not written over the first
+    submit_ok(d, "architect", &a);
+    assert_eq!(plan_files(d), [format!("{id}-2.toml"), name.clone()]);
+}
+
+#[test]
+fn architect_plan_with_an_unknown_unit_a_disallowed_check_or_no_step_is_rejected() {
+    let dir = fixture("single");
+    let d = dir.path();
+    let cases = [
+        (
+            json!([count_step("nope", "pytest tests")]),
+            "answer_parse_failed",
+            "plan.steps[0].unit",
+        ),
+        (
+            json!([count_step("api", "make test")]),
+            "command_not_allowed",
+            "plan.steps[0].check",
+        ),
+        (json!([]), "answer_parse_failed", "plan.steps"),
+    ];
+    for (steps, code, field) in cases {
+        let a = count_plan("add count", steps);
+        submit_rejected(d, "architect", &a, code, field, REPO_TOML);
+        assert!(!d.join(".stewards/plans").exists());
+    }
 }
 
 #[test]

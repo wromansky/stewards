@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use libloading::os::unix;
 use libloading::{Library, Symbol};
 use tree_sitter::{LANGUAGE_VERSION, Language, MIN_COMPATIBLE_LANGUAGE_VERSION, Query};
 use tree_sitter_language::LanguageFn;
@@ -35,7 +36,7 @@ impl Dir {
 fn dirs() -> &'static [Dir] {
     static DIRS: OnceLock<Vec<Dir>> = OnceLock::new();
     DIRS.get_or_init(|| {
-        let Ok(entries) = std::fs::read_dir(user::grammars_dir()) else {
+        let Some(Ok(entries)) = user::grammars_dir().map(std::fs::read_dir) else {
             return vec![];
         };
         let mut dirs: Vec<Dir> = entries
@@ -88,11 +89,16 @@ fn load(dir: &Path) -> Result<Runtime, String> {
     // SAFETY: the user put this library in their own stewards home, so its initializers and its
     // `tree_sitter_<lang>` function are trusted to run and to return a `TSLanguage`.
     let (library, language) = unsafe {
-        let library =
-            Library::new(&lib).map_err(|e| format!("cannot load {}: {e}", lib.display()))?;
+        // RTLD_NOW: an unresolved symbol fails here, as a warning, not later mid-parse as an abort.
+        let library: Library = unix::Library::open(Some(&lib), unix::RTLD_NOW | unix::RTLD_LOCAL)
+            .map_err(|e| format!("cannot load {}: {e}", lib.display()))?
+            .into();
         let entry: Symbol<unsafe extern "C" fn() -> *const ()> = library
             .get(symbol.as_bytes())
             .map_err(|_| format!("{} exports no `{symbol}`", lib.display()))?;
+        if (*entry)().is_null() {
+            return Err(format!("{} `{symbol}` returned null", lib.display()));
+        }
         let language = Language::from(LanguageFn::from_raw(*entry));
         (library, language)
     };

@@ -452,6 +452,7 @@ pub fn run(
             task.as_deref(),
             Briefs::KeepWaiting,
             roles,
+            true,
         )?)
     };
     let (mut then, mut clean) = match &report {
@@ -492,6 +493,17 @@ pub fn run(
         ),
         Some(_) => ("done".to_string(), true),
     };
+    if report.as_ref().is_some_and(NextReport::checks_failed) {
+        let line = format!(
+            "Fix the failing checks listed under next.flow_checks and next.plans, then run stewards {command} again."
+        );
+        then = if clean {
+            line
+        } else {
+            format!("{then} {line}")
+        };
+        clean = false;
+    }
     if let Some(line) = report.as_ref().and_then(NextReport::unowned_line) {
         then = if clean {
             line
@@ -499,6 +511,18 @@ pub fn run(
             format!("{then} {line}")
         };
         clean = false;
+    }
+    // an open plan does not hold `done` back: its steps are the next change, not this one's
+    if clean && let Some(r) = &report {
+        let left: Vec<String> = r
+            .plans
+            .iter()
+            .filter(|p| !p.closed)
+            .map(|p| format!("Plan {} has steps left; see next.plans.", p.id))
+            .collect();
+        if !left.is_empty() {
+            then = format!("done. {}", left.join(" "));
+        }
     }
     let text = match &task {
         Some(t) => t.clone(),

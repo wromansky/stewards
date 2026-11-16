@@ -15,3 +15,11 @@ given = 'repo.toml lists instruction_files = ["/etc/passwd"], ["../x.md"], ["a/.
 expect = "stewards check exits 2 with error code unsafe_path"
 level = "integration"
 command = "cargo test --test check an_unsafe_instruction_file_path_is_rejected_on_load"
+
+[[scenario]]
+id = "plan-invalid-toml-names-path"
+interface = "load-repo"
+given = "a plan file with bad TOML or a step naming an unknown unit"
+expect = "invalid_toml naming .stewards/plans/<id>.toml; a symlinked plan file is unsafe_path"
+level = "integration"
+command = "cargo test --test plans an_invalid_plan_file_is_invalid_toml_naming_its_path"

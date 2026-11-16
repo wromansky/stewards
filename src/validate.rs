@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::brief;
 use crate::check::one_line;
+use crate::forge;
 use crate::git;
 use crate::llm::{FieldError, types};
 use crate::model::{self, Role};
-use crate::output::{CliError, Global, Human, emit, not_implemented};
+use crate::output::{CliError, Global, Human, emit};
 use crate::run;
 use crate::submit::{self, Problems};
+use crate::tracker;
 use crate::workspace::{Repo, here};
 
 const SHAPE: &str = r#"{"unit": "api", "title": "count off by one", "repro": "<a commands.test prefix> tests/api -k count", "evidence": "expected 2, got 3", "interface": null}"#;
@@ -102,7 +104,18 @@ fn parse(text: &str) -> Result<Report> {
 
 pub fn run(g: &Global, report: Option<&Path>, export: bool) -> Result<ExitCode> {
     if export {
-        return not_implemented("validate --export");
+        let (cwd, ws) = here(g)?;
+        let repo = ws.current_repo(&cwd)?;
+        let cli = forge::Real {
+            root: repo.root.clone(),
+        };
+        let origin = git::origin_url(&repo.root);
+        let env = |k: &str| std::env::var(k).ok();
+        let out = tracker::export(repo, |t| {
+            tracker::backend(t, &env, &cli, origin.as_deref(), &tracker::Http)
+        })?;
+        emit(&out, g.human);
+        return Ok(ExitCode::SUCCESS);
     }
     let Some(file) = report else {
         return Err(CliError::new(

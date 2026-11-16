@@ -93,7 +93,7 @@ impl Forge {
         ))
     }
 
-    fn bin(self) -> &'static str {
+    pub(crate) fn bin(self) -> &'static str {
         match self {
             Forge::GitHub => "gh",
             Forge::GitLab => "glab",
@@ -160,7 +160,7 @@ impl Cli for Real {
     }
 }
 
-fn login_fix(bin: &str) -> String {
+pub(crate) fn login_fix(bin: &str) -> String {
     format!("install `{bin}` and run `{bin} auth login`, or set its token variable")
 }
 
@@ -216,7 +216,7 @@ pub struct Comment<'a> {
 /// Bytes the whole comment body stays under (GitHub's cap is 65536).
 const BODY_BYTES: usize = 65_000;
 
-fn api(
+pub(crate) fn api(
     cli: &dyn Cli,
     forge: Forge,
     host: &str,
@@ -236,7 +236,7 @@ fn api(
 }
 
 /// `[A-Za-z0-9._-]+`, not starting with `-`, not `.` or `..`.
-fn plain_name(s: &str) -> bool {
+pub(crate) fn plain_name(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with('-')
         && s != "."
@@ -245,16 +245,41 @@ fn plain_name(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
-/// The comment body: `marker`, `title`, then `text` in a code fence longer than any backtick run
-/// in it, each line indented by one space (GitLab runs a line starting with `/` as a quick
-/// action, even inside a fence), invisible characters shown as `\u{XXXX}`, cut so the whole body stays under `BODY_BYTES`.
-fn body(marker: &str, title: &str, text: &str) -> String {
-    let indented = escape_invisible(text)
+/// `text` with invisible characters shown as `\u{XXXX}` and each line indented by one space, so
+/// no line starts a GitLab quick action; for a fence.
+pub(crate) fn indented(text: &str) -> String {
+    escape_invisible(text)
         .replace('\r', " ")
         .lines()
         .map(|l| format!(" {l}"))
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n")
+}
+
+/// A GitLab project path as the API's URL-encoded project id.
+pub(crate) fn gitlab_id(path: &str) -> String {
+    path.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-_.".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// The `host` or `host:port` and the repo path of an `origin` URL, without its userinfo.
+pub(crate) fn host_and_path(origin: &str) -> (String, String) {
+    let o = Origin::parse(origin);
+    (o.hostname(), o.path)
+}
+
+/// The comment body: `marker`, `title`, then `text` in a code fence longer than any backtick run
+/// in it, each line indented by one space (GitLab runs a line starting with `/` as a quick
+/// action, even inside a fence), invisible characters shown as `\u{XXXX}`, cut so the whole body stays under `BODY_BYTES`.
+fn body(marker: &str, title: &str, text: &str) -> String {
+    let indented = indented(text);
     let longest = indented
         .split(|c| c != '`')
         .map(str::len)
@@ -308,17 +333,7 @@ pub fn post_comment(
             )
         }
         Forge::GitLab => {
-            let enc: String = o
-                .path
-                .bytes()
-                .map(|b| {
-                    if b.is_ascii_alphanumeric() || b"-_.".contains(&b) {
-                        (b as char).to_string()
-                    } else {
-                        format!("%{b:02X}")
-                    }
-                })
-                .collect();
+            let enc = gitlab_id(&o.path);
             (
                 "username",
                 "author",

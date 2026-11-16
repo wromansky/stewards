@@ -15,7 +15,7 @@ use crate::git;
 use crate::harness;
 use crate::llm::types::{self, CardPatch, Verdict};
 use crate::llm::{self, Answer, FieldError, Mode};
-use crate::model::{self, GapKind, Role, TestCard, UnitCard};
+use crate::model::{self, GapKind, PLANS_DIR, Role, TestCard, UnitCard};
 use crate::next;
 use crate::output::{CliError, Global, Human, emit, with_note};
 use crate::route::Router;
@@ -1733,18 +1733,53 @@ fn architect(
     let loaded = repo.loaded()?;
     let entries = git::ls_tree(root, &git::snapshot(root)?)?;
     let mut p = vec![];
+    let names: Vec<&str> = loaded.units.iter().map(|d| d.name.as_str()).collect();
+    let unknown_unit = |p: &mut Problems, field: String, u: &str| {
+        if !names.contains(&u) {
+            p.push((
+                "answer_parse_failed",
+                FieldError {
+                    field,
+                    problem: format!(
+                        "`{u}` is not a unit in units.toml; units: {}",
+                        names.join(", ")
+                    ),
+                    example: format!("\"{}\"", names.first().unwrap_or(&"api")),
+                },
+            ));
+        }
+    };
     if let Some(plan) = &a.plan {
         check_text(&mut p, "plan.title", &plan.title, ID_CAP, true);
         check_list(&mut p, "plan.steps", plan.steps.len());
+        if plan.steps.is_empty() {
+            p.push((
+                "answer_parse_failed",
+                FieldError {
+                    field: "plan.steps".into(),
+                    problem: "a plan has at least one step; with nothing to change, answer \
+                              plan: null"
+                        .into(),
+                    example: format!(
+                        "[{{\"unit\": \"{}\", \"change\": \"...\", \"interfaces\": [], \
+                         \"check\": \"...\"}}]",
+                        names.first().unwrap_or(&"api")
+                    ),
+                },
+            ));
+        }
         for (i, s) in plan.steps.iter().enumerate() {
             let f = format!("plan.steps[{i}]");
             check_text(&mut p, &format!("{f}.unit"), &s.unit, ID_CAP, true);
+            unknown_unit(&mut p, format!("{f}.unit"), &s.unit);
             check_text(&mut p, &format!("{f}.change"), &s.change, PROSE_CAP, false);
             check_list(&mut p, &format!("{f}.interfaces"), s.interfaces.len());
             for (j, id) in s.interfaces.iter().enumerate() {
                 check_text(&mut p, &format!("{f}.interfaces[{j}]"), id, ID_CAP, true);
             }
             check_text(&mut p, &format!("{f}.check"), &s.check, LINE_CAP, true);
+            let allowed = run::allowed(loaded, Some(&s.unit));
+            check_command(&mut p, &format!("{f}.check"), &s.check, &allowed);
         }
     }
     check_list(&mut p, "flows", a.flows.len());
@@ -1755,20 +1790,7 @@ fn architect(
         for (j, u) in flow.units.iter().enumerate() {
             let field = format!("{f}.units[{j}]");
             check_text(&mut p, &field, u, ID_CAP, true);
-            if !loaded.units.iter().any(|d| &d.name == u) {
-                let names: Vec<&str> = loaded.units.iter().map(|d| d.name.as_str()).collect();
-                p.push((
-                    "answer_parse_failed",
-                    FieldError {
-                        field,
-                        problem: format!(
-                            "`{u}` is not a unit in units.toml; units: {}",
-                            names.join(", ")
-                        ),
-                        example: format!("\"{}\"", names.first().unwrap_or(&"api")),
-                    },
-                ));
-            }
+            unknown_unit(&mut p, field, u);
         }
         check_text(&mut p, &format!("{f}.entry"), &flow.entry, LINE_CAP, true);
         let entry = model::Anchor::parse(&flow.entry).ok();
@@ -1913,9 +1935,40 @@ fn architect(
     if set > 0 {
         writes.push((UNITS_TOML.to_string(), units.to_string()));
     }
+    let mut before = before.clone();
+    let stored = match a.plan {
+        Some(plan) => {
+            let created: String = telemetry::rfc3339(SystemTime::now())
+                .chars()
+                .take(10)
+                .collect();
+            let id = plan_id(root, &created, &plan.title);
+            let rel = format!("{PLANS_DIR}/{id}.toml");
+            // absent now; `card_changed` if another submit takes the id before this one writes
+            before.extend(record(root, std::slice::from_ref(&rel))?);
+            let plan = model::Plan {
+                title: plan.title,
+                created,
+                steps: plan
+                    .steps
+                    .into_iter()
+                    .map(|s| model::PlanStep {
+                        unit: s.unit,
+                        change: s.change,
+                        interfaces: s.interfaces,
+                        check: s.check,
+                        result: None,
+                    })
+                    .collect(),
+            };
+            writes.push((rel, toml::to_string(&plan)?));
+            Some((id, plan.steps.len()))
+        }
+        None => None,
+    };
     write_and_retire(
         repo,
-        before,
+        &before,
         &writes,
         &brief::rel_path(None, Role::Architect, None, &header.snapshot),
     )?;
@@ -1928,9 +1981,13 @@ fn architect(
         named(count(names.len(), "flow") + " upserted", names),
         count(a.decisions.len(), "decision"),
     );
-    // simplified: a plan is validated but not stored; the plans stage stores and tracks it
-    if a.plan.is_some() {
-        summary += "; plan not stored yet";
+    if let Some((id, n)) = stored {
+        summary += &format!(
+            "; plan {id} stored ({}): make each step's change, then run stewards review; it runs \
+             each step's check and closes the plan when every check passes and every unit is \
+             reviewed",
+            count(n, "step")
+        );
     }
     Ok(Submitted {
         summary,
@@ -1939,6 +1996,35 @@ fn architect(
         pulled_anchors: a.pulled_anchors,
         ..Default::default()
     })
+}
+
+/// `<created>-<slug>` for a new plan: the slug is `title` lowercased, each run of characters
+/// other than `a-z0-9` one `-`, at most 40 characters (`plan` when nothing is left), and `-2`,
+/// `-3`, ... follow when a plan file of that id exists.
+fn plan_id(root: &Path, created: &str, title: &str) -> String {
+    let mut slug = String::new();
+    for c in title.to_lowercase().chars() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.truncate(40);
+    let slug = match slug.trim_end_matches('-') {
+        "" => "plan",
+        s => s,
+    };
+    let base = format!("{created}-{slug}");
+    let taken =
+        |id: &str| std::fs::symlink_metadata(root.join(format!("{PLANS_DIR}/{id}.toml"))).is_ok();
+    (1..)
+        .map(|n| match n {
+            1 => base.clone(),
+            n => format!("{base}-{n}"),
+        })
+        .find(|id| !taken(id))
+        .expect("some suffix is free")
 }
 
 /// The `[[array]]` table of `doc` whose `key` is `id`, appended when there is none.

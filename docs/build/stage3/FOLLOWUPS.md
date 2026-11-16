@@ -1,0 +1,2 @@
+- stored review task showed 'from none' on a later round of the same loop (s3-runner, 2026-11-15): find out when review-task.txt is dropped mid-loop
+- release.yml: cargo package and the token step share a job/runner (reviewer note, 2026-11-15); add to RELEASING.md Known limits or split if crates.io upload from a .crate is feasible

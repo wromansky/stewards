@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use super::{
-    Arm, Plan, RITUAL_NOTE, Run, RunRecord, RunRole, SetupNotes, Status, Suite, UnitReview,
+    Arm, Plan, PlanOutcome, RITUAL_NOTE, Run, RunRecord, RunRole, SetupNotes, Status, Suite,
+    UnitReview,
 };
 use crate::output::Human;
 
@@ -107,6 +108,23 @@ pub struct GateCount {
     pub runs: usize,
 }
 
+/// Report-only: `k` of `n` runs of one arm (or `full` for `plan`) whose repro passed.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Fixed {
+    pub arm: Arm,
+    pub fixed: usize,
+    pub runs: usize,
+}
+
+/// Report-only: of the `full` runs of a task that `expects_plan`, those that stored a plan and
+/// those that closed it.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PlanCount {
+    pub stored: usize,
+    pub closed: usize,
+    pub runs: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskGrade {
     pub task: u32,
@@ -117,6 +135,10 @@ pub struct TaskGrade {
     pub arms: Vec<ArmStats>,
     /// `None` (n/a) on a read-only task or without a `full` arm.
     pub gate: Option<GateCount>,
+    /// Report-only, per arm; empty when the task names no repro.
+    pub bug_fixed: Vec<Fixed>,
+    /// Report-only; `None` unless the task `expects_plan` and a `full` arm ran.
+    pub plan: Option<PlanCount>,
     /// Main tokens, total tokens, cost, peak main context, and (with `files_opened_vs_bare`) main
     /// files opened, `full` over `bare`: reported, not judged.
     pub overhead: Vec<Ratio>,
@@ -149,7 +171,7 @@ pub fn gate_misses(r: &RunRecord) -> Vec<&'static str> {
         out.push("no subagent was given a handoff");
     }
     if !step("check_green") {
-        out.push("the runner's `stewards next --no-brief` did not exit 0");
+        out.push("the runner's `stewards next --no-brief --no-run` did not exit 0");
     }
     out
 }
@@ -166,7 +188,7 @@ pub fn grade_task(
     arms: &[Arm],
     runs: u32,
 ) -> TaskGrade {
-    let facts = suite.task(task).copied().unwrap_or_default();
+    let facts = suite.task(task).cloned().unwrap_or_default();
     let stats: Vec<ArmStats> = arms
         .iter()
         .map(|&a| arm_stats(a, &runs_of(records, task, a, RunRole::Task)))
@@ -264,6 +286,34 @@ pub fn grade_task(
             runs: rs.len(),
         }
     });
+    let bug_fixed = if facts.repro.is_some() {
+        arms.iter()
+            .map(|&arm| {
+                let rs = runs_of(records, task, arm, RunRole::Task);
+                Fixed {
+                    arm,
+                    fixed: rs.iter().filter(|r| r.bug_fixed == Some(true)).count(),
+                    runs: rs.len(),
+                }
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+    let plan = full.filter(|_| facts.expects_plan).map(|f| {
+        let rs = runs_of(records, task, f, RunRole::Task);
+        let count = |pick: fn(&PlanOutcome) -> bool| {
+            rs.iter()
+                .filter_map(|r| r.plan.as_ref())
+                .filter(|p| pick(p))
+                .count()
+        };
+        PlanCount {
+            stored: count(|p| p.stored),
+            closed: count(|p| p.closed),
+            runs: rs.len(),
+        }
+    });
     let verdict = match gate {
         _ if incomplete => Verdict::Incomplete,
         None => Verdict::NotApplicable,
@@ -276,6 +326,8 @@ pub fn grade_task(
         reasons,
         arms: stats,
         gate,
+        bug_fixed,
+        plan,
         overhead,
     }
 }
@@ -687,8 +739,23 @@ pub fn render(s: &Summary) -> String {
             .iter()
             .map(|r| format!("{} {}", r.name, ratio(r.ratio)))
             .collect();
+        let mut extra = String::new();
+        if !g.bug_fixed.is_empty() {
+            let arms: Vec<String> = g
+                .bug_fixed
+                .iter()
+                .map(|f| format!("{} {}/{}", f.arm.as_str(), f.fixed, f.runs))
+                .collect();
+            extra += &format!("; bug fixed {} (report-only)", arms.join(", "));
+        }
+        if let Some(p) = g.plan {
+            extra += &format!(
+                "; plan stored {}/{}, closed {}/{} (report-only)",
+                p.stored, p.runs, p.closed, p.runs
+            );
+        }
         out.push(format!(
-            "- task {}: {}{gate}{why} (overhead, full/bare: {})",
+            "- task {}: {}{gate}{why} (overhead, full/bare: {}){extra}",
             g.task,
             g.verdict.as_str(),
             overhead.join(", ")

@@ -704,7 +704,7 @@ impl Human for NextReport {
             let (flow, cmd) = (one_line(&f.flow), one_line(&f.command));
             out.push(format!("- {flow}: {verdict} (`{cmd}`)"));
             if !f.pass {
-                out.push(fenced_output(&f.output));
+                out.push(crate::pack::fenced("text", &f.output).trim_end().into());
             }
         }
         if !self.plans.is_empty() {
@@ -727,7 +727,7 @@ impl Human for NextReport {
                 let (unit, change) = (one_line(&s.unit), one_line(&s.change));
                 out.push(format!("  - {unit} ({fresh}, {result}): {change}"));
                 if let Some(o) = s.output.as_ref().filter(|_| result == "fail") {
-                    out.push(fenced_output(o));
+                    out.push(crate::pack::fenced("text", o).trim_end().into());
                 }
                 out.extend(s.todo.as_ref().map(|t| format!("    {}", one_line(t))));
             }
@@ -737,13 +737,6 @@ impl Human for NextReport {
         out.push(self.check.render());
         out.join("\n")
     }
-}
-
-/// A check's output, the command's text, in a fence no backtick run inside it can close.
-fn fenced_output(output: &str) -> String {
-    let longest = output.split(|c| c != '`').map(str::len).max().unwrap_or(0);
-    let fence = "`".repeat(longest.max(2) + 1);
-    format!("{fence}text\n{output}\n{fence}")
 }
 
 pub fn run(

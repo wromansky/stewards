@@ -1,11 +1,11 @@
 unit = "next"
 
 [reviewed]
-commit = "3b8cbbc8884aac89d624a65ae07dd955ff1578c4"
-fingerprint = "sha256:86920ceb0162babc24bd5018f0aad6e63778763e8346194183209fbd79d81138"
-tree = "63f6b2fe819b5b262aa6fed3593573942fdb640b"
-tester = "63f6b2fe819b5b262aa6fed3593573942fdb640b"
-documenter = "63f6b2fe819b5b262aa6fed3593573942fdb640b"
+commit = "680708dc18906aa4b5574f58462a5f360d7ec66c"
+fingerprint = "sha256:15f3975c2baf2ef82e37684bbac0f433dae5a8d159d91ae777a9cb9ea99eabbf"
+tree = "85a095ea43f013ed7e8840d1e5f50c9b994cdc8e"
+tester = "85a095ea43f013ed7e8840d1e5f50c9b994cdc8e"
+documenter = "85a095ea43f013ed7e8840d1e5f50c9b994cdc8e"
 
 [[interface]]
 id = "next"
@@ -15,7 +15,7 @@ contract = "Roles: maintainer if stale/unreviewed or (stamped) a card anchor is 
 [[interface]]
 id = "next_run"
 anchor = "src/next.rs::run"
-contract = "`stewards next`: lists the reviewer jobs (one per review brief) and first reviews, or with --roles every per-role job; no --pr; writes briefs unless --no-brief; exits 0 only with no jobs, no check failures and no changed unowned file outside unowned_ok."
+contract = "`stewards next`: lists reviewer jobs (one per review brief) and first reviews, or with --roles every per-role job; no --pr; writes briefs unless --no-brief; runs plan and flow checks unless --no-run; exits 0 only with no jobs, failed checks or changed unowned file."
 
 [[interface]]
 id = "status"
@@ -86,23 +86,11 @@ name = "reviewer_jobs"
 
 [[gap]]
 kind = "future"
-title = "flow checks are never run"
-anchor = "src/next.rs::run"
-note = "NextReport.flow_checks is always empty and the --no-run flag is ignored (`_no_run`)."
-
-[[gap]]
-kind = "future"
 title = "next --pr is not implemented"
 anchor = "src/next.rs::run"
 note = 'Returns not_implemented("next --pr").'
 
-[[gap]]
-kind = "future"
-title = "no plan ever covers moved units"
-anchor = "src/next.rs::next"
-note = "Plans do not exist yet, so any two stamped units that moved always raise an architect job."
-
 [doc]
-overview = "This unit answers two questions about a workspace: where do things stand, and what review work is due. `stewards status` prints one row per unit of every initialized repo: whether its review is fresh, stale or unreviewed, how many interfaces it has and how many a test scenario covers, its open gaps and bugs, and its debt, then a line saying what a stamp claims (one reviewer, shown this snapshot's diff, found nothing; not proof). Repos never initialized are listed apart. `stewards next` is the gate before reporting done. Plainly it lists, per repo, every stamped unit that is due in a reviewer job, with each unit's reasons (as many numbered review briefs as the review budget needs, none deferred to a later round), plus a maintainer first-review job for each never-reviewed unit, and writes their briefs. `stewards next --roles` lists the deeper per-role jobs instead (maintainer, tester, documenter, validator, sometimes an architect), one brief each. It also names changed files that no unit owns and repo.toml's unowned_ok does not list. Either way it exits 0 only when nothing is due, no such file is left, and the checks pass. A stamped unit stays due while an anchor of its card does not resolve, though no file changed: reason 'dead anchor: <path::name>'. The tester and documenter fire on an interface's own lines changing, not on any edit to its file. A unit never reviewed gets only its maintainer job (and, with --roles, a validator job for an unjudged bug); the tester and documenter wait for the first review's stamp."
-how_it_works = "`status` (src/status.rs::status) compares each unit's stored review fingerprint with a fresh one: no stamp is unreviewed, a match fresh, a mismatch stale; it also counts interfaces, covered interfaces, gaps, bugs and debt, carries guide::STAMP_CLAIM as stamp_claim, and always exits 0. `role_jobs` in src/next.rs snapshots each repo and builds the per-role jobs per unit in fixed order: maintainer when stale or never reviewed (changed files, every owned file with no stamp, and debt added since the stamp), or when a stamped unit has a card anchor `check` calls dead (reason `dead anchor: <path::name>`); tester and documenter when interfaces_touched finds a card interface's lines hit by a git::diff_hunks hunk since the role's mark (widened one line each side; reason `interface changed: <anchor>`), or the whole file counts (`interface file changed`) when anchors::interface_lines cannot place it; tester also on a changed owned test file, documenter also when needs_docs; both need a stamp. An unjudged bug gives a validator job; 2+ moved stamped units put an architect job first. `next` with roles writes each job's brief. Without, due_for_review folds each repo's stamped maintainer/tester/documenter jobs into one entry per unit, reviewer_jobs builds every review brief of the round with brief::build_review (one job each, numbered, every due unit in exactly one, stale numbered briefs removed), and never-reviewed maintainer jobs follow; architect and validator jobs are dropped. changed_unowned diffs each stamp's tree against the snapshot and keeps files no unit or the tool owns and unowned_ok does not match; they fill NextReport.unowned_changed. review_due gives brief and pack the same due list for one repo. `run` rejects --pr and exits 1 while any job, check failure or unowned changed file remains."
-how_to_change = "Change a due-job rule in the per-unit block of role_jobs in src/next.rs, and what counts as an interface change in interfaces_touched; plain next and review_due both derive from role_jobs, so they follow. Change which jobs the reviewer folds in due_for_review, keeping a never-reviewed maintainer job out of it (it keeps its own first-review job). Keep a never-reviewed unit's maintainer job listing all its files and out of the architect's moved list. Keep tester and documenter jobs gated on a stamp. Take interface files through Anchor::parse. Keep the fallback: when interface_lines cannot locate an interface the file change still counts, so a job is never silently lost; tighten interface_lines itself, not next. Keep repo-prefixed paths in the architect's list, and keep status freshness and next staleness on the same fingerprint. Keep next's dead-anchor test the same as check's. Keep changed_unowned using the same unowned_ok and Router ownership as check, so the two agree on what is unowned. Extend tests/next.rs (per-role rules, run with --roles), tests/review.rs (the reviewer fold, unowned changed files) and tests/status.rs, and run them."
+overview = "This unit answers two questions about a workspace: where do things stand, and what review work is due. `stewards status` prints one row per unit of every initialized repo: review freshness (fresh, stale, unreviewed), interfaces and how many a scenario covers, open gaps and bugs, debt, then a line saying what a stamp claims. Repos never initialized are listed apart. `stewards next` is the gate before reporting done. Plainly it lists, per repo, every stamped unit that is due in a reviewer job with its reasons (as many numbered review briefs as the budget needs), plus a maintainer first-review job per never-reviewed unit, and writes their briefs. `next --roles` lists the per-role jobs instead. It names changed files no unit owns and unowned_ok does not list. Unless --no-run, it also runs each open plan's step checks and each flow's check through the allowlisted runner, stores results, and closes a plan whose steps all pass on fresh units. It exits 0 only when nothing is due, no such file is left, and the checks and plan and flow checks pass. A stamped unit stays due while a card anchor is dead. The tester and documenter fire on an interface's own lines changing. A never-reviewed unit gets only its maintainer job (and a validator job for an unjudged bug)."
+how_it_works = "`status` compares each unit's stored review fingerprint with a fresh one: no stamp is unreviewed, a match fresh, a mismatch stale; it counts interfaces, covered interfaces, gaps, bugs and debt, carries guide::STAMP_CLAIM, and always exits 0. `role_jobs` in src/next.rs snapshots each repo and builds per-role jobs per unit in fixed order: maintainer when stale or never reviewed, or when a stamped unit has a dead card anchor; tester and documenter when interfaces_touched finds an interface's lines hit by a diff hunk since the role's mark, or the whole file counts when anchors::interface_lines cannot place it; tester also on a changed test file, documenter also when needs_docs; both need a stamp. An unjudged bug gives a validator job. 2+ moved stamped units put an architect job first, unless an open plan of the repo has a step for every moved unit. `next` with roles writes each job's brief. Without, due_for_review folds stamped maintainer/tester/documenter jobs into one entry per unit, reviewer_jobs builds every review brief with brief::build_review, never-reviewed maintainer jobs follow; architect and validator jobs are dropped. changed_unowned fills NextReport.unowned_changed. With checks on, plan::plans_and_flows fills NextReport.plans and flow_checks; checks_failed is true when a flow check or step failed. review_due gives brief and pack the same due list. `run` rejects --pr and exits 1 while any job, check failure, failed plan or flow check, or unowned changed file remains."
+how_to_change = "Change a due-job rule in the per-unit block of role_jobs in src/next.rs, and what counts as an interface change in interfaces_touched; plain next and review_due derive from role_jobs. Change which jobs the reviewer folds in due_for_review, keeping a never-reviewed maintainer job out of it. Keep tester and documenter jobs gated on a stamp. Take interface files through Anchor::parse. Keep the fallback: when interface_lines cannot locate an interface the file change still counts; tighten interface_lines, not next. Keep repo-prefixed names in the architect's list, and status freshness and next staleness on the same fingerprint. Keep the dead-anchor test the same as check's, and changed_unowned on the same unowned_ok and Router ownership as check. Plan and flow check running lives in src/plan.rs; next only calls it and reports. Extend tests/next.rs, tests/review.rs, tests/status.rs and tests/plans.rs, and run them."

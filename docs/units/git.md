@@ -19,17 +19,19 @@ Start in src/git.rs and add or change a function there, going through run or run
 | id | contract | anchor |
 |---|---|---|
 | ls\_files | Tracked paths from the index (ls-files -z), raw UTF-8; errors when git fails. | [src/git.rs\:\:ls\_files](../../src/git.rs#L40) |
-| snapshot | Tree sha of the working tree (tracked, modified, untracked-not-ignored) built in a private temp index copy that keeps the real index's mtime; real index, HEAD and refs untouched; refuses a pre-existing temp path; works with no commits and in linked worktrees. | [src/git.rs\:\:snapshot](../../src/git.rs#L1) |
+| snapshot | Tree sha of the working tree (tracked, modified, untracked-not-ignored) built in a private temp index copy that keeps the real index's mtime; real index, HEAD and refs untouched; refuses a pre-existing temp path; works with no commits and in linked worktrees. | [src/git.rs\:\:snapshot](../../src/git.rs#L55) |
 | ls\_tree | (path, blob sha) for every file in a tree, recursive; a leading-dash rev is an error. | [src/git.rs\:\:ls\_tree](../../src/git.rs#L95) |
 | has\_object | True only when the name resolves to a tree (or a commit's tree); blob, unknown, or leading-dash name is false. | [src/git.rs\:\:has\_object](../../src/git.rs#L118) |
 | is\_tree | True only when the name is a tree object itself; commit, blob, or unknown is false. | [src/git.rs\:\:is\_tree](../../src/git.rs#L124) |
 | diff\_names | Paths changed between two revs, no rename detection; leading-dash revs are errors. | [src/git.rs\:\:diff\_names](../../src/git.rs#L130) |
 | diff\_file | Unified diff (-U3, no color, no ext diff, a/ b/ prefixes) of one path between two revs; the path is matched literally, never as a glob. | [src/git.rs\:\:diff\_file](../../src/git.rs#L136) |
-| diff\_added\_lines | Added lines as (path, new-file line number, text); paths with spaces handled; C-quoted paths skipped. | [src/git.rs\:\:diff\_added\_lines](../../src/git.rs#L186) |
+| diff\_added\_lines | Added lines as (path, new-file line number, text) from a -U0 diff with no textconv; paths with spaces handled; C-quoted paths skipped. | [src/git.rs\:\:diff\_added\_lines](../../src/git.rs#L186) |
 | head\_commit | HEAD commit sha; None before the first commit; error for any other git failure. | [src/git.rs\:\:head\_commit](../../src/git.rs#L243) |
 | task\_text | Current branch (HEAD when detached), then the last commit subject on the next line, omitted before the first commit; error outside a repo. | [src/git.rs\:\:task\_text](../../src/git.rs#L266) |
 | recent\_commit\_files | Files touched by each of the last n commits, newest first, merges list none; empty with no commits. | [src/git.rs\:\:recent\_commit\_files](../../src/git.rs#L278) |
 | origin\_url | URL of the origin remote, trimmed; None when there is no origin, it is empty, or git fails. | [src/git.rs\:\:origin\_url](../../src/git.rs#L259) |
+| diff\_hunks | Each -U0 hunk between two revs as (path, (old start, old count), (new start, new count)); a missing count is 1, a count of 0 means an empty side placed after start; deleted, binary and C-quoted files give none; no textconv. | [src/git.rs\:\:diff\_hunks](../../src/git.rs#L215) |
+| blob\_text | Text of a blob by sha or rev\:path, invalid UTF-8 replaced; a leading-dash name is an error, not an option. | [src/git.rs\:\:blob\_text](../../src/git.rs#L238) |
 
 ## Scenarios
 
@@ -39,6 +41,9 @@ Start in src/git.rs and add or change a function there, going through run or run
 | origin\_url\_returns\_origin | origin\_url | repo with origin remote https\://h/o/name.git | Some(that url) | integration |
 | origin\_url\_none\_outside\_repo | origin\_url | a directory that is not a git repo | None | integration |
 | origin\_url\_none\_when\_url\_empty | origin\_url | origin remote whose url is configured empty | None | integration |
+| diff\_hunks\_both\_sides | diff\_hunks | two snapshots\: a file edited, with a line deleted and a line appended, a new file whose content starts with '++ ', and a deleted file | one (path, (old start, count), (new start, count)) per hunk; count 0 on an empty side; the deleted file has no hunks | integration |
+| diff\_hunks\_skips\_binary\_and\_quoted | diff\_hunks | snapshots that add a binary file, a file named q"uote.txt, and a file named 'sp ace.txt' | only the sp ace.txt hunk ((0,0),(1,1)); binary and C-quoted files have none | integration |
+| blob\_text\_reads\_blob | blob\_text | a snapshot tree holding a.txt with 'hello\\n' | blob\_text of that file's blob sha is 'hello\\n' | integration |
 
 ## Flows
 
@@ -55,4 +60,4 @@ Start in src/git.rs and add or change a function there, going through run or run
 
 ## Last reviewed
 
-e68ec0e8d29e804bf3091e0216bb44f63665e6b9
+680708dc18906aa4b5574f58462a5f360d7ec66c

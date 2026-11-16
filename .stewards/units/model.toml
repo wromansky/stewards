@@ -1,16 +1,16 @@
 unit = "model"
 
 [reviewed]
-commit = "8f1830aabdf439b0e9581b490c46180bb773c51f"
-fingerprint = "sha256:b389679e97363e28b131f140273cb677373bfa5a9c90adf67c8d581a3fbf08ec"
-tree = "8cd5fedf47888e990011f128287639f2b25a0567"
-tester = "8cd5fedf47888e990011f128287639f2b25a0567"
-documenter = "8cd5fedf47888e990011f128287639f2b25a0567"
+commit = "680708dc18906aa4b5574f58462a5f360d7ec66c"
+fingerprint = "sha256:07a65caab7c2bc73c4445220176d6a4c82b58fce50d884c5e1a10143ea063e42"
+tree = "ebd06c68798cf0b601137b9588f401d4df034b34"
+tester = "ebd06c68798cf0b601137b9588f401d4df034b34"
+documenter = "ebd06c68798cf0b601137b9588f401d4df034b34"
 
 [[interface]]
 id = "load-repo"
 anchor = "src/model.rs::load_repo"
-contract = "Reads .stewards/ under git root into Loaded. Errors: not_a_git_repo, no_stewards_dir, schema_too_new (before the full parse), invalid_toml with file:line (also duplicate unit name), unsafe_path for a symlinked file or dir or a non-plain instruction_files entry. Missing units.toml or cards are fine."
+contract = "Reads .stewards/ under git root into Loaded, plans (.stewards/plans/<id>.toml) included; a plan step naming an unknown unit is invalid_toml. Also: not_a_git_repo, no_stewards_dir, schema_too_new, invalid_toml file:line, unsafe_path."
 
 [[interface]]
 id = "unit-name"

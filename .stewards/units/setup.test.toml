@@ -103,3 +103,11 @@ given = "`guide` with no flags"
 expect = "roles say a stamp is one reviewer reporting no finding, not proof the code is right, and that review --roles is the deeper pass"
 level = "integration"
 command = "cargo test --test guide roles_say_a_stamp_is_one_reviewer_reporting_no_finding"
+
+[[scenario]]
+id = "init-ci-writes-template-once"
+interface = "init-ci"
+given = "an initialized repo with origin git@github.com:a/b.git and the CI file unowned, run `init --ci` twice, then over a different file"
+expect = "first run writes the workflow and adds it to unowned_ok; the rerun writes and adds nothing; a differing file is a usage error and stays unchanged; no origin is a usage error"
+level = "integration"
+command = "cargo test --test init ci_writes_the_origins_template_once_and_the_cut_hooks_and_render_are_gone"

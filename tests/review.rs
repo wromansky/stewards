@@ -2018,3 +2018,55 @@ fn an_approval_with_only_notes_stamps_and_writes_no_fix_task() {
         "{v}"
     );
 }
+
+#[test]
+fn review_pr_posts_what_the_call_reported_and_the_then_line() {
+    let dir = changed_both();
+    let d = dir.path();
+    common::set_origin(d, "https://github.com/o/r.git");
+    review(d, &["--task", "t"]);
+    let api = json!({"unit": "api", "verdict": "changes", "card_patch": null, "check": check(true),
+        "findings": [finding(8, true)]});
+    let (code, v) = submit(d, &answer(json!([api, documented("store")])));
+    assert_eq!(code, 0, "{v}");
+    let gh = common::fake_gh("[]", true);
+    let (code, v) = common::run_with_path(d, gh.path(), &["review", "--task", "t", "--pr", "3"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["pr_comment"]["updated"], false);
+    let log = fs::read_to_string(gh.path().join("log")).unwrap();
+    assert!(
+        log.contains("api -X POST repos/o/r/issues/3/comments"),
+        "{log}"
+    );
+    let body = fs::read_to_string(gh.path().join("body")).unwrap();
+    let body: Value = serde_json::from_str(&body).unwrap();
+    let body = body["body"].as_str().unwrap();
+    assert!(body.starts_with("<!-- stewards:review -->\n"), "{body}");
+    for want in [
+        "unit api: changes",
+        "finding api: src/api/items.py:8: the change on line 8 -> the old line",
+        "then: Fix the findings, then run stewards review again.",
+    ] {
+        assert!(body.contains(want), "{want} in {body}");
+    }
+}
+
+#[test]
+fn review_pr_with_a_failed_post_keeps_the_report_and_the_exit_code() {
+    let dir = changed_both();
+    let d = dir.path();
+    common::set_origin(d, "https://github.com/o/r.git");
+    let (plain_code, plain) = review(d, &["--task", "t"]);
+    let gh = common::fake_gh("[]", false);
+    let (code, v) = common::run_with_path(d, gh.path(), &["review", "--task", "t", "--pr", "3"]);
+    assert_eq!(code, plain_code, "{v}");
+    assert_eq!(v["then"], plain["then"]);
+    assert_eq!(v["pr_comment"], Value::Null);
+    assert!(
+        v["pr_comment_error"]
+            .as_str()
+            .unwrap()
+            .starts_with("tracker_auth:"),
+        "{v}"
+    );
+}

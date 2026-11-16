@@ -5,6 +5,7 @@ pub mod completions;
 pub mod debt;
 pub mod docs;
 pub mod eval;
+pub mod forge;
 pub mod git;
 pub mod guide;
 pub mod harness;

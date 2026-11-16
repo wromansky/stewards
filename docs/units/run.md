@@ -4,24 +4,24 @@
 
 ## Overview
 
-run is the one place a command may start. allowed builds the allowlist: the repo's commands.test entries (each with its own timeout, else commands.timeout_seconds) plus the named unit's test_command, never another unit's and never commands.lint. check is the gate every agent-written command passes (submit applies it to scenarios, repros, tasks and flow checks): no SHELL_CHARS, and the leading words must be all the words of an allowed entry. run refuses what check refuses, and otherwise executes it.
+run is the one place a command may start. allowed builds the allowlist: the repo's commands.test entries (each with its own timeout, else commands.timeout_seconds) plus the named unit's test_command, never another unit's and never commands.lint. check is the gate every agent-written command passes (submit applies it to scenarios, repros, tasks and flow checks): no SHELL_CHARS, no control or invisible character, and the leading words must be all the words of an allowed entry. The words after that prefix are not checked: the allowlist limits which program starts, not what it does. run refuses what check refuses, and otherwise executes it.
 
 ## How it works
 
-run splits the command on whitespace and spawns it without a shell from the repo root, stdin null, env inherited, in its own process group. Two threads drain stdout and stderr into one capped buffer so a full pipe cannot block the child. The parent polls try_wait every 50ms; at the entry's timeout it SIGKILLs the whole group, so background children die too. Output keeps the last 4000 characters, control characters turned to spaces and invisible characters escaped. A timeout (with a command_timeout line appended) or a program that cannot start is a failed RunResult; only a refused command is an error, command_not_allowed. Readers are waited for 1s each after exit, so a process that left the group and holds a pipe open cannot hang run.
+run splits the command on whitespace, finds a bare program name only through the absolute entries of PATH (a name that is not found is a failed result), and spawns it without a shell from the repo root, stdin null, env inherited, in its own process group. Two threads drain stdout and stderr into one capped buffer so a full pipe cannot block the child. The parent polls the leader with waitid(WNOWAIT) every 50ms, which does not reap it, so the group id cannot be reused. At the entry's timeout, and also after a normal exit, it SIGKILLs the whole group and then reaps the leader, so background children die; a process that left the group is not killed. An error while polling kills and reaps the child before it is returned. Output keeps the last 4000 characters, control characters turned to spaces and invisible characters escaped. A timeout (with a command_timeout line appended) or a program that cannot start is a failed RunResult; only a refused command is an error, command_not_allowed. Readers are waited for 1s each after exit, so a process that left the group and holds a pipe open cannot hang run.
 
 ## How to change it
 
-Keep check the single gate: a new caller of run goes through run::run or run::check, never Command directly with an agent-written string. Widening SHELL_CHARS or the prefix rule changes what submit accepts, so update submit's command_not_allowed example and its tests too. A change to timeout or kill behaviour is checked by a_timeout_kills_the_whole_process_group_and_is_a_result in tests/run.rs. commands.lint stays out of allowed.
+Keep check the single gate: a new caller of run goes through run::run or run::check, never Command directly with an agent-written string. Widening SHELL_CHARS, the control and invisible rule, or the prefix rule changes what submit accepts, so update submit's command_not_allowed example and its tests too. A change to timeout or kill behaviour is checked by a_timeout_kills_the_whole_process_group_and_is_a_result and a_process_a_command_leaves_behind_is_killed_after_a_normal_exit in tests/run.rs; a change to program lookup by a_program_is_never_found_through_a_relative_path_entry. commands.lint stays out of allowed.
 
 ## Interface
 
 | id | contract | anchor |
 |---|---|---|
-| run-allowed | The repo's commands.test entries (own timeout, else commands.timeout\_seconds) plus the named unit's test\_command only; never another unit's, never commands.lint. | [src/run.rs\:\:allowed](../../src/run.rs#L47) |
-| run-check | Err if cmd has a SHELL\_CHARS character or does not start with all the words of an allowed entry; else the matching entry with the most words. | [src/run.rs\:\:check](../../src/run.rs#L12) |
-| run-run | Refused command\: command\_not\_allowed error. Else runs argv, no shell, from root, in its own process group, SIGKILLed at the entry's timeout; returns pass, timed\_out, exit\_code, last 4000 chars of output. Timeout or unstartable program is a failed result. | [src/run.rs\:\:run](../../src/run.rs#L1) |
-| run-shell-chars | Characters a command may not contain; submit's command\_not\_allowed example uses it. | [src/run.rs\:\:SHELL\_CHARS](../../src/run.rs#L18) |
+| run-allowed | The repo's commands.test entries (own timeout, else commands.timeout\_seconds) plus the named unit's test\_command only; never another unit's, never commands.lint. | [src/run.rs\:\:allowed](../../src/run.rs#L48) |
+| run-check | Err if cmd has a SHELL\_CHARS, control or invisible character, or does not start with all the words of an allowed entry; else the matching entry with the most words. | [src/run.rs\:\:check](../../src/run.rs#L13) |
+| run-run | Refused\: command\_not\_allowed error. Else runs argv, no shell, in its own process group, SIGKILLed at the timeout and after a normal exit; bare name via absolute PATH only. Returns pass, timed\_out, exit\_code, output tail. | [src/run.rs\:\:run](../../src/run.rs#L1) |
+| run-shell-chars | Characters a command may not contain; submit's command\_not\_allowed example uses it. | [src/run.rs\:\:SHELL\_CHARS](../../src/run.rs#L19) |
 
 ## Scenarios
 
@@ -41,4 +41,4 @@ _None._
 
 ## Last reviewed
 
-a39ff78b15d22061c338871f7c5faf770d894039
+2ab1609b2d2dc9eca8d0a1982fd996c63c2fd7d2

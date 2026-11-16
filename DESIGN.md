@@ -973,13 +973,19 @@ route; group per unit.
   plan step checks, flow checks, scenario commands. `commands.lint` is
   never run. No answer has a
   field that sets `test_command`, so only `init` or a person writes it, as
-  for `repo.toml`. The words after an allowed prefix are not checked, so an
-  agent-written repro or check can pass flags the test runner acts on; CI
-  runs `check`, which runs nothing. One module (`run`) owns the allowlist
-  and the execution: argv split, no shell, from the repo root, stdin null,
-  inheriting env, in its own process group, killed whole at the matching
-  entry's `timeout_seconds` (the longest matching entry; else
-  `commands.timeout_seconds`). A timeout or a program that cannot start is
+  for `repo.toml`. The words after an allowed prefix are not checked: a repro
+  or check can pass flags that make the allowed program run any other
+  program, as the user, with the inherited environment (tokens included),
+  and with no sandbox. The allowlist limits which program starts, not what
+  it does. CI runs `check`, which runs nothing. One module (`run`) owns the
+  allowlist and the execution: argv split, no shell, from the repo root, a
+  bare program name found only through the absolute entries of `PATH`,
+  stdin null, inheriting env, in its own process group, which is killed
+  whole at the matching entry's `timeout_seconds` (the longest matching
+  entry; else `commands.timeout_seconds`) and after a normal exit, so
+  nothing the command left behind keeps running; a process that leaves the
+  group is not killed. The check itself refuses control, invisible and
+  shell characters. A timeout or a program that cannot start is
   a failed result, not an error; the result keeps the last 4,000
   characters of stdout and stderr with control characters replaced.
   Nothing from an answer file, card, issue, or PR runs otherwise.

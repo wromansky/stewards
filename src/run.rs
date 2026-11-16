@@ -1,15 +1,16 @@
 //! The allowlisted command runner: which commands may run, and running one.
 use std::io::Read;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::check::escape_invisible;
+use crate::check::{escape_invisible, invisible};
 use crate::model::{CommandEntry, Loaded};
 use crate::output::CliError;
 
@@ -73,14 +74,20 @@ pub fn allowed(loaded: &Loaded, unit: Option<&str>) -> Vec<Allowed> {
         .collect()
 }
 
-/// The `allowed` entry `cmd` runs under, or why it may not run: `cmd` has no `SHELL_CHARS` and
-/// its leading words are all the words of an entry, so `pytest` allows `pytest tests/x` but not
+/// The `allowed` entry `cmd` runs under, or why it may not run: `cmd` has no `SHELL_CHARS`, no
+/// control or invisible character, and its leading words are all the words of an entry, so `pytest` allows `pytest tests/x` but not
 /// `pytest-x`. Of several matching entries the one with the most words wins (its timeout).
 pub fn check<'a>(cmd: &str, allowed: &'a [Allowed]) -> Result<&'a Allowed, String> {
     if let Some(c) = cmd.chars().find(|c| SHELL_CHARS.contains(c)) {
         return Err(format!(
             "contains {c:?}; a command is plain argv with no shell syntax: no \
              separators, pipes, redirects, substitutions, quotes, or globs"
+        ));
+    }
+    if let Some(c) = cmd.chars().find(|&c| c.is_control() || invisible(c)) {
+        return Err(format!(
+            "contains the control or invisible character U+{:04X}; a command is plain text",
+            c as u32
         ));
     }
     let words: Vec<&str> = cmd.split_whitespace().collect();
@@ -102,8 +109,9 @@ pub fn check<'a>(cmd: &str, allowed: &'a [Allowed]) -> Result<&'a Allowed, Strin
 }
 
 /// Runs `cmd` from `root` if `check` allows it: argv split, no shell, stdin null, env inherited,
-/// in its own process group, which is killed at the entry's timeout. A timeout or a program that
-/// cannot start is a failed result; only a refused command is an error (`command_not_allowed`).
+/// in its own process group, which is killed at the entry's timeout and after a normal exit (a
+/// process that left the group is not). A bare program name is looked up only through the
+/// absolute entries of `PATH`. A timeout or a program that cannot start is a failed result; only a refused command is an error (`command_not_allowed`).
 pub fn run(root: &Path, allowed: &[Allowed], cmd: &str) -> Result<RunResult> {
     let entry = check(cmd, allowed).map_err(|problem| {
         CliError::new(
@@ -120,7 +128,11 @@ pub fn run(root: &Path, allowed: &[Allowed], cmd: &str) -> Result<RunResult> {
         timed_out: false,
         output: String::new(),
     };
-    let mut child = match Command::new(argv[0])
+    let Some(program) = resolve(argv[0]) else {
+        result.output = clean(format!("cannot start `{}`: not found in PATH", argv[0]).as_bytes());
+        return Ok(result);
+    };
+    let mut child = match Command::new(program)
         .args(&argv[1..])
         .current_dir(root)
         .stdin(Stdio::null())
@@ -160,13 +172,16 @@ pub fn run(root: &Path, allowed: &[Allowed], cmd: &str) -> Result<RunResult> {
     let limit = Duration::from_secs(entry.timeout_seconds);
     let started = Instant::now();
     let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break Some(status);
+        match has_exited(&child) {
+            Err(e) => {
+                let _ = kill_group_and_reap(&mut child);
+                return Err(e.into());
+            }
+            Ok(true) => break Some(kill_group_and_reap(&mut child)?),
+            Ok(false) => {}
         }
         if started.elapsed() >= limit {
-            // The unreaped leader keeps its pid, so the group id cannot have been reused.
-            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
-            let _ = child.wait();
+            let _ = kill_group_and_reap(&mut child);
             break None;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -197,6 +212,40 @@ pub fn run(root: &Path, allowed: &[Allowed], cmd: &str) -> Result<RunResult> {
     }
     result.output = clean(&bytes);
     Ok(result)
+}
+
+/// Whether the leader has exited, without reaping it: its pid stays ours, so the group id
+/// cannot be reused before `kill_group_and_reap`.
+fn has_exited(child: &Child) -> std::io::Result<bool> {
+    // SAFETY: an all-zero siginfo_t is valid; waitid only writes it.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+    if unsafe { libc::waitid(libc::P_PID, child.id() as libc::id_t, &mut info, flags) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(info.si_signo != 0)
+}
+
+/// Kills the leader's whole process group, then reaps the leader.
+fn kill_group_and_reap(child: &mut Child) -> std::io::Result<ExitStatus> {
+    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    child.wait()
+}
+
+/// `program` as a path: one with a `/` as is, a bare name found in the first absolute entry of
+/// `PATH` that holds an executable file of that name.
+fn resolve(program: &str) -> Option<PathBuf> {
+    if program.contains('/') {
+        return Some(program.into());
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(program))
+        .find(|p| {
+            p.metadata()
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
 }
 
 /// The last `OUTPUT_CAP` characters of `bytes` as lossy UTF-8, each control character but

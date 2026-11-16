@@ -1,13 +1,14 @@
 #[allow(dead_code)] // each test crate uses a subset of the helpers
 mod common;
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::{edit, fixture};
 use stewards::model::load_repo;
 use stewards::output::CliError;
-use stewards::run::{RunResult, allowed, check, run};
+use stewards::run::{Allowed, RunResult, allowed, check, run};
 
 const REPO_TOML: &str = ".stewards/repo.toml";
 
@@ -105,6 +106,75 @@ fn a_timeout_kills_the_whole_process_group_and_is_a_result() {
     {
         assert!(Instant::now() < deadline, "background pid {pid} still runs");
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Panics unless process `pid` is gone (a killed one may linger as a zombie until init reaps it).
+fn assert_gone(pid: i32) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Path::new(&format!("/proc/{pid}")).exists()
+        && !std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap_or_default()
+            .contains(") Z ")
+    {
+        assert!(Instant::now() < deadline, "background pid {pid} still runs");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_process_a_command_leaves_behind_is_killed_after_a_normal_exit() {
+    let dir = repo(
+        "[\"sh\"]",
+        "sleep 30 >/dev/null 2>&1 &\necho $! > bg.pid\nexit 0\n",
+    );
+    let d = dir.path();
+    let r = run_ok(d, None, "sh s.sh");
+    assert!(r.pass && !r.timed_out, "{r:?}");
+    assert_gone(
+        std::fs::read_to_string(d.join("bg.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap(),
+    );
+}
+
+#[test]
+fn a_program_is_never_found_through_a_relative_path_entry() {
+    let dir = repo("[\"tool-stewards\"]", "");
+    let d = dir.path();
+    let script = d.join("tool-stewards");
+    std::fs::write(&script, "#!/bin/sh\ntouch ran\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let loaded = load_repo(d).unwrap();
+    let list = allowed(&loaded, None);
+    let path = std::env::var_os("PATH").unwrap();
+    for first in [".", "", "node_modules/.bin"] {
+        let mut dirs = vec![std::path::PathBuf::from(first)];
+        dirs.extend(std::env::split_paths(&path));
+        // SAFETY: only this test reads or writes PATH in this test binary.
+        unsafe { std::env::set_var("PATH", std::env::join_paths(dirs).unwrap()) };
+        let r = run(d, &list, "tool-stewards").unwrap();
+        unsafe { std::env::set_var("PATH", &path) };
+        assert!(!r.pass && r.exit_code.is_none(), "{first:?}: {r:?}");
+        assert!(!d.join("ran").exists(), "{first:?}");
+    }
+}
+
+#[test]
+fn check_alone_refuses_control_invisible_and_shell_characters() {
+    let list = [Allowed {
+        cmd: "pytest".into(),
+        timeout_seconds: 5,
+    }];
+    assert!(check("pytest tests/x", &list).is_ok());
+    for cmd in [
+        "pytest tests/x\u{1b}]0;t\u{7}",
+        "pytest tests/x\u{200b}",
+        "pytest a;b",
+    ] {
+        assert!(check(cmd, &list).is_err(), "{cmd:?}");
     }
 }
 

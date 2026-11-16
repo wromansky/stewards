@@ -1,11 +1,11 @@
 unit = "run"
 
 [reviewed]
-commit = "a39ff78b15d22061c338871f7c5faf770d894039"
-fingerprint = "sha256:5a05252691bf9febde265a44f8badee95f916d87f9369ff052d45bdd140f6282"
-tree = "5f3f22502d8437e0d575af0e45b6c689f0942ef3"
-tester = "5f3f22502d8437e0d575af0e45b6c689f0942ef3"
-documenter = "5f3f22502d8437e0d575af0e45b6c689f0942ef3"
+commit = "2ab1609b2d2dc9eca8d0a1982fd996c63c2fd7d2"
+fingerprint = "sha256:7c55a372786b8ea5c843379173d52c603b06a08e563614c445ee2a464c895b2b"
+tree = "b3c5f70fdb587cc946077b4e2dd7686b4c5be674"
+tester = "b3c5f70fdb587cc946077b4e2dd7686b4c5be674"
+documenter = "b3c5f70fdb587cc946077b4e2dd7686b4c5be674"
 
 [[interface]]
 id = "run-allowed"
@@ -15,12 +15,12 @@ contract = "The repo's commands.test entries (own timeout, else commands.timeout
 [[interface]]
 id = "run-check"
 anchor = "src/run.rs::check"
-contract = "Err if cmd has a SHELL_CHARS character or does not start with all the words of an allowed entry; else the matching entry with the most words."
+contract = "Err if cmd has a SHELL_CHARS, control or invisible character, or does not start with all the words of an allowed entry; else the matching entry with the most words."
 
 [[interface]]
 id = "run-run"
 anchor = "src/run.rs::run"
-contract = "Refused command: command_not_allowed error. Else runs argv, no shell, from root, in its own process group, SIGKILLed at the entry's timeout; returns pass, timed_out, exit_code, last 4000 chars of output. Timeout or unstartable program is a failed result."
+contract = "Refused: command_not_allowed error. Else runs argv, no shell, in its own process group, SIGKILLed at the timeout and after a normal exit; bare name via absolute PATH only. Returns pass, timed_out, exit_code, output tail."
 
 [[interface]]
 id = "run-shell-chars"
@@ -74,6 +74,6 @@ anchor = "src/run.rs::run"
 note = "Only run::allowed and run::check are used (by submit); later tasks add the callers of run::run."
 
 [doc]
-overview = "run is the one place a command may start. allowed builds the allowlist: the repo's commands.test entries (each with its own timeout, else commands.timeout_seconds) plus the named unit's test_command, never another unit's and never commands.lint. check is the gate every agent-written command passes (submit applies it to scenarios, repros, tasks and flow checks): no SHELL_CHARS, and the leading words must be all the words of an allowed entry. run refuses what check refuses, and otherwise executes it."
-how_it_works = "run splits the command on whitespace and spawns it without a shell from the repo root, stdin null, env inherited, in its own process group. Two threads drain stdout and stderr into one capped buffer so a full pipe cannot block the child. The parent polls try_wait every 50ms; at the entry's timeout it SIGKILLs the whole group, so background children die too. Output keeps the last 4000 characters, control characters turned to spaces and invisible characters escaped. A timeout (with a command_timeout line appended) or a program that cannot start is a failed RunResult; only a refused command is an error, command_not_allowed. Readers are waited for 1s each after exit, so a process that left the group and holds a pipe open cannot hang run."
-how_to_change = "Keep check the single gate: a new caller of run goes through run::run or run::check, never Command directly with an agent-written string. Widening SHELL_CHARS or the prefix rule changes what submit accepts, so update submit's command_not_allowed example and its tests too. A change to timeout or kill behaviour is checked by a_timeout_kills_the_whole_process_group_and_is_a_result in tests/run.rs. commands.lint stays out of allowed."
+overview = "run is the one place a command may start. allowed builds the allowlist: the repo's commands.test entries (each with its own timeout, else commands.timeout_seconds) plus the named unit's test_command, never another unit's and never commands.lint. check is the gate every agent-written command passes (submit applies it to scenarios, repros, tasks and flow checks): no SHELL_CHARS, no control or invisible character, and the leading words must be all the words of an allowed entry. The words after that prefix are not checked: the allowlist limits which program starts, not what it does. run refuses what check refuses, and otherwise executes it."
+how_it_works = "run splits the command on whitespace, finds a bare program name only through the absolute entries of PATH (a name that is not found is a failed result), and spawns it without a shell from the repo root, stdin null, env inherited, in its own process group. Two threads drain stdout and stderr into one capped buffer so a full pipe cannot block the child. The parent polls the leader with waitid(WNOWAIT) every 50ms, which does not reap it, so the group id cannot be reused. At the entry's timeout, and also after a normal exit, it SIGKILLs the whole group and then reaps the leader, so background children die; a process that left the group is not killed. An error while polling kills and reaps the child before it is returned. Output keeps the last 4000 characters, control characters turned to spaces and invisible characters escaped. A timeout (with a command_timeout line appended) or a program that cannot start is a failed RunResult; only a refused command is an error, command_not_allowed. Readers are waited for 1s each after exit, so a process that left the group and holds a pipe open cannot hang run."
+how_to_change = "Keep check the single gate: a new caller of run goes through run::run or run::check, never Command directly with an agent-written string. Widening SHELL_CHARS, the control and invisible rule, or the prefix rule changes what submit accepts, so update submit's command_not_allowed example and its tests too. A change to timeout or kill behaviour is checked by a_timeout_kills_the_whole_process_group_and_is_a_result and a_process_a_command_leaves_behind_is_killed_after_a_normal_exit in tests/run.rs; a change to program lookup by a_program_is_never_found_through_a_relative_path_entry. commands.lint stays out of allowed."

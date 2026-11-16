@@ -1,11 +1,11 @@
 unit = "next"
 
 [reviewed]
-commit = "1006636d574fdf1b23c99bd28b7bc5f434270106"
-fingerprint = "sha256:d2e46f2969c6e331363a077282702e18cd4ccc4cddf02f86cafca100c0f1578f"
-tree = "bc8c9f3ec8afacd3fef7bdd577fbfef2b899f16d"
-tester = "bc8c9f3ec8afacd3fef7bdd577fbfef2b899f16d"
-documenter = "bc8c9f3ec8afacd3fef7bdd577fbfef2b899f16d"
+commit = "ee25d4ba92bfb51241efdef584a610b0afccbacf"
+fingerprint = "sha256:342751199eb3a60a2f84d567fc82b1837fd13f6269166f82c1c81d03c46521d6"
+tree = "8742d4e63f139bf5283ffc6dc9c9e1d13e7909b2"
+tester = "8742d4e63f139bf5283ffc6dc9c9e1d13e7909b2"
+documenter = "8742d4e63f139bf5283ffc6dc9c9e1d13e7909b2"
 
 [[interface]]
 id = "next"

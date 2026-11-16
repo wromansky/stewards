@@ -34,7 +34,7 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers, the 
 | reviewed\_units | Units, verdicts and counts of blocking findings (contested ones included), notes and contested findings from a reviewer submit's JSON output; None for any other output. | [src/eval/mod.rs\:\:reviewed\_units](../../src/eval/mod.rs#L226) |
 | would\_exceed | True when spent plus the mean cost so far is over max; false with no cost known, so the first session always runs. | [src/eval/mod.rs\:\:would\_exceed](../../src/eval/mod.rs#L1009) |
 | without\_developers | AGENTS.md with the developer Changing line cut to its first sentence; an error when that line is absent. | [src/eval/mod.rs\:\:without\_developers](../../src/eval/mod.rs#L1849) |
-| path\_without\_stewards | PATH with each directory holding stewards replaced by a mirror linking everything else in it. | [src/eval/mod.rs\:\:path\_without\_stewards](../../src/eval/mod.rs#L2080) |
+| path\_without\_stewards | PATH with each directory holding stewards replaced by a mirror linking everything else in it. | [src/eval/mod.rs\:\:path\_without\_stewards](../../src/eval/mod.rs#L2085) |
 | next\_check | Runs stewards next --no-brief in a dir\: exit code and job count; writes no briefs. | [src/eval/mod.rs\:\:next\_check](../../src/eval/mod.rs#L947) |
 | kill\_leftovers | Kills every process whose cwd is under dir, or whose HERMES\_HOME (no other variable) is under it, until none remain or 10 s pass; reports killed and survivors; None without /proc. | [src/eval/mod.rs\:\:kill\_leftovers](../../src/eval/mod.rs#L1772) |
 | claude\_parse | A Claude Code session file plus its stdout.log to a Run\: main tokens from result.usage, total from summed modelUsage, null without a result line; cost\_usd null, figure kept as harness\_reported\_cost\_usd; Read/Grep/Bash reads per record cwd, a Glob listing opens nothing; sidechain children. | [src/eval/claude.rs\:\:parse](../../src/eval/claude.rs#L156) |
@@ -52,7 +52,7 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers, the 
 |---|---|---|---|---|
 | eval-claude-plain-main-equals-total | claude\_parse | the recorded claude-code plain session with no subagent | main tokens equal total tokens, both from the stream's result line | integration |
 | eval-claude-no-result-null-tokens | claude\_parse | a claude-code session whose stdout.log has no result line | main\_tokens and total\_tokens are null | integration |
-| eval-timed-out-null-tokens | execute | a replayed session that timed out | its run record has null main\_tokens and total\_tokens and its leftover process is killed | integration |
+| eval-timed-out-null-tokens | execute | a replayed session that timed out | its run record has null main\_tokens and total\_tokens; on Linux its leftover process is killed (leftovers.killed is 1) | integration |
 | eval-think-prompt-refused | task\_prompt | a task file containing THINK | a usage error naming the file; no shipped suite task contains think | integration |
 | eval-claude-max-cost-refused | eval\_run | no run with a cost, and stewards eval --harness claude-code --max-cost | spent\_usd is null, and --max-cost is a usage error for claude-code | integration |
 | eval-context-file-committed | driver | a driver with a context\_file and arm copies with and without AGENTS.md | the file is committed only into copies with an AGENTS.md, history keeps its shape | integration |
@@ -80,8 +80,7 @@ _None._
 | gap | Hermes runs have no trusted cost | Hermes prices DeepSeek at off-peak rates in every hour, so cost\_usd is null, its figure is harness\_reported\_cost\_usd, and --max-cost is refused for hermes. |
 | gap | Hermes execute\_code shell commands are unseen | Commands an execute\_code script runs through terminal() are not in shell\_commands, files opened, or ritual steps. |
 | gap | Hermes files\_opened does not follow a cd across terminal calls | simplified\: only a call's workdir and a leading cd are followed; upgrade if files\_opened disagrees with the transcripts. |
-| bug | Eval tests fail off Linux | macOS Darwin 25.5.0, working tree of this change\: 9 of 86 tests in tests/eval.rs fail (list in check). The listed note says 4 of 86 with a cp flag hunk; no such hunk is in the diff (git diff touches only src/next.rs, src/pack.rs, and card and doc files), and src/eval/\*\* is unchanged. So the failures are not caused by this change; the card note is wrong on count and on the hunk. |
 
 ## Last reviewed
 
-65320c2d69de7a962f750b69b572e05b1d599474
+f1f0d1739d2f18c534c514967edc69aff44907ed

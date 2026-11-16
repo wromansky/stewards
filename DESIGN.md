@@ -62,8 +62,10 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
 - **LLM modes:** the harness's own agents think by default: the tool writes
   a brief, the agent answers, the tool validates. `--direct` (or
   `STEWARDS_DIRECT=1`) makes the tool call the model through BAML with a key
-  from the usual env vars, for CI and batch. It is the only mode that needs
-  BAML's native library. A missing model entry, key, or library is an
+  from the usual env vars. Only `init --draft` honours it; no other command
+  reads the flag, so `brief`, `submit`, `next` and `review` run in the
+  handoff loop in every mode. It is the only mode that needs BAML's native
+  library. A missing model entry, key, or library is an
   error, never a silent fallback, and the library is never downloaded
   unless `STEWARDS_BAML_DOWNLOAD` is set. When `BAML_LIBRARY_PATH` is unset
   and `<exe dir>/../lib/stewards/libbaml_cffi.<so|dylib>` exists (the layout
@@ -545,9 +547,12 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   harness, timestamp, for a reviewer the number of units it covered, and
   for a review its number of notes (non-blocking findings). Token counts come from eval transcripts, never from
   what a subagent says about itself.
-- **Evals:** `stewards eval` drives Claude Code, Codex, and Pi over a
-  purpose-built fixture, three arms, graders for all five goals; on demand
-  and on release tags. Manual spot checks for the other harnesses.
+- **Evals:** `stewards eval` drives Pi, Claude Code, and Hermes over a
+  purpose-built fixture, three arms, graders for the ritual gate, the
+  overhead report, and two report-only checks (bug fixed, plan stored and
+  closed); on demand, not in CI. Manual spot checks for the other harnesses.
+  Not in 0.1.0: a Codex driver, the cleanliness and docs-accuracy LLM
+  judges, and eval in CI on release tags (cut 2026-11-15).
 - **Self-test:** Rust tests against fixture repos in `tests/fixtures/`; BAML
   `test` blocks run by `baml-cli test` in CI with a key.
 - **Distribution:** `cargo install stewards`; GitHub releases with the
@@ -767,7 +772,7 @@ never routed, never reported as unowned, so no unit ever owns them.
 | `completions <shell>` | the completion script of `bash`, `zsh`, `fish`, `elvish`, or `powershell` on stdout (a bad shell is a `usage` error), one line on stderr saying where to save it |
 | `man` | the roff man page on stdout, one line on stderr saying where to save it |
 
-Global flags: `--human`, `--repo <name>`, `-C <dir>`, `--direct`. JSON by
+Global flags: `--human`, `--repo <name>`, `-C <dir>`, `--direct` (honoured by `init --draft` only). JSON by
 default, markdown with `--human`. Exit 0 ok, 1 work is due (`check`
 failures; for `next`, also any job, failed flow or plan step check, or
 unowned changed file; for `review`, any job listed, finding reported, result
@@ -1286,7 +1291,7 @@ Error codes (stable; additions are minor versions, meanings never change):
 | `unsafe_path` | a path the tool reads or writes in a repo is not plain names, or passes through a symlink | remove the symlink at `<path>`; stewards never writes through links |
 | `card_changed` | a file `submit` was about to write changed since it was loaded (another submit finished first) | run the same submit again |
 | `no_tasks` | `brief --role developer` with no usable task list for the unit | brief the maintainer again with the change as `--task` |
-| `harness_missing` | `eval` and the harness binary (`pi`, `claude`) is not on PATH, or pi-subagents is not installed in the Pi agent directory | install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`), or Claude Code (`npm install -g @anthropic-ai/claude-code`) |
+| `harness_missing` | `eval` and the harness binary (`pi`, `claude`, or `hermes`) is not on PATH, or pi-subagents is not installed in the Pi agent directory | install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`), Claude Code (`npm install -g @anthropic-ai/claude-code`), or Hermes Agent (https://hermes-agent.nousresearch.com/docs) |
 | `eval_setup_incomplete` | `eval`'s adopted fixture for the `full` arm changed the fixture's code, leaves tracked files unowned, or does not reach a clean `stewards next`; or `--setup-dir` is not a git repository with nothing uncommitted; or a `repo` suite at `HEAD` has uncommitted changes under `src/`, `baml_src/`, or `.stewards/`, or an `[[absent]]` probe's text is already in its tree | read the adoption transcript under `evals/results/<timestamp>/sessions/`, give unowned files a unit in `evals/full-units.toml`, or pass `--setup-dir` a committed adopted copy where `stewards next` exits 0; commit the source and rebuild, or pin a commit before the task's change |
 | `not_implemented` | a command or flag not built yet | use a release that has it |
 | `internal` | any other failure | report a bug |
@@ -1557,7 +1562,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   because one pass on the fixture showed no delegation in `full` and more
   tokens than `bare`: at about 400 lines, reading is too cheap for
   delegation to pay. `self` is the stewards repository itself (about 8,500
-  lines of Rust, nine adopted units with cards and docs) at its manifest's
+  lines of Rust, twelve adopted units with cards and docs) at its manifest's
   `commit`, `HEAD`: the commit the checkout holding `evals/` is on when
   the eval starts, so the source the sessions read is the source the
   binary was built from (an agent once read a fixed pin's old source,
@@ -1640,7 +1645,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
 - **Runner:** `stewards eval --harness <pi|claude-code|hermes>` (default
   `pi`) drives `pi --mode json`, `claude -p --output-format stream-json
   --verbose`, or `hermes chat --oneshot --format stream-json` (all three
-  built; `codex exec --json` is stage 4) behind one
+  built; a Codex driver, `codex exec --json`, is not in 0.1.0) behind one
   `Driver` trait (start a session on a prompt in a directory with a model
   and thinking level and return its transcript; parse it). The drivers
   under `src/eval/` are the only place stewards knows a harness's command
@@ -2045,12 +2050,11 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   measurement with the reviewer role. A task with any compared run
   failed, timed out, without a transcript, or not started is
   `incomplete`: its medians are reported but given no verdict, and it
-  never passes. Cleanliness:
-  BAML judge, 3 votes, majority,
-  counting rung failures, untraced lines, missing checks; pass when `full`
-  has 0 untraced lines, ≤ 1 rung failure, ≥ 1 runnable check, and is ≤
-  `bare` on every count. Docs accuracy: no claim in `docs/units/api.md`
-  contradicted by code after task 1. Bug fixed (report-only, every
+  never passes. Not in 0.1.0: the cleanliness and docs-accuracy LLM
+  judges (a BAML judge, 3 votes, majority, over rung failures, untraced
+  lines and missing checks; and no claim in `docs/units/api.md` contradicted
+  by code after task 1). No run is graded for cleanliness or docs accuracy.
+  Bug fixed (report-only, every
   arm): a task naming `repro = "<dir under evals/repros>"` (fixture task 2:
   `medium-api-pagination`) has that `repro.sh` run after each run, from the
   checkout with `FIXTURE_ROOT=<run dir>` and a 60 s timeout; `bug_fixed` is
@@ -2062,7 +2066,9 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   shows `plan stored k/n, closed k/n`. Neither changes a verdict. The suite fails when any task fails, is
   incomplete when any task is, and passes otherwise: every edit task's
   gate passed and no run is incomplete (exit code 0 only then).
-- **Cadence:** on demand and in CI on release tags; `--max-cost` ceiling.
+- **Cadence:** on demand, by hand: the `fixture` and `self` suites before a
+  release (`RELEASING.md`, step 5). Not in CI: CI has no harness
+  subscriptions, so no eval job runs on release tags. `--max-cost` ceiling.
 
 ## Release and versioning
 
@@ -2084,27 +2090,38 @@ Checklist in `RELEASING.md`.
 
 ## Build order
 
-1. **Core, no LLM** (`feat/stage-1-core`): schemas, workspace resolution,
+What happened: work landed as numbered PRs on topic branches; the number is
+in brackets. Stages 3 and 4 were run as the ten tasks of the 0.1.0 plan
+(`docs/build/stage3/PLAN.md`), and the tasks without a PR number landed as
+merges of `feat/s3-*` branches.
+
+1. **Core, no LLM** [#4, #5]: schemas, workspace resolution,
    `route`, `check`, `stamp`, `status`, `debt`, `pack`, `next` (with
    `brief_path: null`). Checkpoints: model + workspace + cli skeleton;
    git + check + stamp; route + debt + pack; next + workspace fixture + CI.
-2. **Roles** (`feat/stage-2-roles`): `llm.rs`, BAML classes, `brief` and
+2. **Roles** [#6 to #9]: `llm.rs`, BAML classes, `brief` and
    `submit` for the maintainer end to end, then the other roles; `init` two
    steps on stewards itself (first committed `.stewards/`); `docs`,
    `guide`, memory, telemetry. Dogfood from here.
-   **2b. Proof** (`feat/stage-2b-proof`): the eval fixture, the runner, the
-   Pi driver, and the token and ritual graders, run on tasks 1, 3, 4, and 6.
+   **2b. Proof** [#10, then #11 to #18]: the eval fixture, the runner, the
+   Pi driver, and the token and ritual graders, run on tasks 1, 3, 4, and 6;
+   #11 to #18 are the `review` command, the Claude Code and Hermes drivers,
+   and the fixes the evals and dogfooding showed.
    The 2026-11-12 decision replaced the token-saving gate (see Handoff,
    "What the thin eval showed"): stage 3 starts when an agent completes the
    one-job ritual (one review brief per change) unprompted in the eval and
    the user accepts its measured overhead.
-3. **Depth** (`feat/stage-3-depth`): architect and plans in `next`;
-   `validate` and export (GitHub, then GitLab, Jira, Linear); tree-sitter static
-   grammars, then runtime extras. (`render` is cut; see below.)
-4. **Edges** (`feat/stage-4-edges`): the remaining graders, LLM judges,
-   the Codex driver; PR and MR comments, CI templates; completions, man
-   page, release workflow, AUR. (Git hooks and the plugin shell are cut;
-   see below.)
+3. **Depth** [#19, #21, #22, #23, and merges]: the allowlisted command runner
+   [#19]; tree-sitter static grammars [#21]; stored architect plans and flow
+   checks [#22]; runtime grammars [#23]; `validate --report`; the report-only
+   eval graders; `validate --export` to GitHub, GitLab, Jira and Linear.
+   `render` is cut; see below.
+4. **Edges** [#20, and merges]: completions, man page, release workflow,
+   install script, AUR package, `RELEASING.md`, PR and MR comments
+   (`next --pr`, `review --pr`), and CI templates (`init --ci`). Cut from
+   0.1.0: the cleanliness and docs-accuracy LLM judges, the Codex driver, and
+   eval in CI on release tags; `RELEASING.md` has a manual eval pass instead.
+   (Git hooks and the plugin shell are cut; see below.)
 
 **0.1.0 scope (the user's decision, 2026-11-14).** `render`, hooks (`init
 --hooks` and the user-level hook accelerators), and the plugin shell are
@@ -2114,11 +2131,11 @@ four trackers (GitHub, GitLab, Jira, Linear), a CI template, completions
 and the man page, and the release pipeline stay. The `render` command and
 the `--hooks` flag are removed from the CLI.
 
-One PR per stage, one commit per checkpoint, CI green at each commit, squash
-merge. Rough single-builder effort: 4, 6–7, 3 (2b), 6–8, 5–6 days. The BAML
+Work lands as numbered PRs on topic branches, one commit per checkpoint, CI
+green at each commit, squash merge. Rough single-builder effort: 4, 6–7, 3 (2b), 6–8, 5–6 days. The BAML
 spike (risk 1) runs beside stage 1 in a scratch directory, before `llm.rs`
 is designed around it. If scope slips,
-cut in this order: Codex eval driver → tracker export.
+cut in this order: tracker export (the Codex eval driver is already cut).
 
 Dogfood: stage 1 is verified against a hand-written, uncommitted
 `.stewards/` for this repo; the committed one comes from `init` in stage 2,
@@ -2255,7 +2272,7 @@ What the loop takes from it:
 | 2 | plan → brief → maintainer submit → other submits → developer → init --draft → gate |
 | 2b | runner and Pi driver → thin-eval gate |
 | 3 | plan → allowlist runner and plans ‖ tree-sitter → validate ‖ runtime grammars ‖ flow checks → other trackers → gate (render cut) |
-| 4 | plan → PR glue ‖ judges ‖ drivers ‖ release → full eval and gate (hooks and plugin shell cut) |
+| 4 | plan → PR glue ‖ release → report-only eval graders and gate (hooks, plugin shell, LLM judges, Codex driver cut) |
 
 Stage 2's first five tasks and the fixture appear in stage 1's row because
 that is when they run; they still land on their own stage's branch.
@@ -2264,21 +2281,26 @@ that is when they run; they still land on their own stage's branch.
 
 | unit | paths | interface ids |
 |---|---|---|
-| `cli` | `src/main.rs`, `src/output.rs` | `json-envelope`, `errors` |
-| `model` | `src/model.rs`, `src/workspace.rs` | `load-repo`, `anchor-parse`, `discover` |
-| `git` | `src/git.rs` | `git-wrappers` |
-| `analysis` | `src/anchors.rs`, `src/route.rs`, `src/check.rs`, `src/debt.rs` | `resolve`, `owner`, `check-report`, `stamp`, `debt-scan` |
-| `pack` | `src/pack.rs` | `pack-shape`, `budget-shrink` |
-| `next` | `src/next.rs`, `src/status.rs` | `job-rules`, `base-ref`, `status-report` |
-| `llm` (stage 2) | `src/llm.rs`, `baml_src/**`, `src/baml_client/**` | `brief-render`, `submit-parse`, `direct-call` |
-| `evals` (stage 2b) | `evals/**`, `src/eval/**` | `run-shape`, `graders` |
+| `cli` | `src/main.rs`, `src/lib.rs`, `src/output.rs`, `src/completions.rs`, `src/review.rs`, `src/validate.rs`, `tests/validate.rs`, `src/forge.rs`, `tests/forge.rs`, `src/tracker.rs`, `tests/tracker.rs`, `tests/skeleton.rs`, `tests/common/**` | `json-envelope`, `cli-error`, `usage-errors`, `global-flags`, `not-implemented`, `review-command`, `completions-man`, `validate-report`, `forge-comment`, `validate-export` |
+| `model` | `src/model.rs`, `src/workspace.rs`, `src/user.rs`, `tests/workspace.rs`, `tests/user.rs`, `tests/safety.rs`, `tests/fixtures/**` | `load-repo`, `unit-name`, `anchor-parse`, `loaded-unit`, `role-from-str`, `discover`, `repo-containing`, `current-repo`, `loaded-repos`, `display-name`, `safe-path`, `repo-write`, `repo-append`, `repo-remove`, `user-config`, `user-memory`, `memory-for`, `loaded-card`, `repo-read`, `plain-names`, `user-grammars-dir` |
+| `git` | `src/git.rs`, `tests/git.rs` | `ls_files`, `snapshot`, `ls_tree`, `has_object`, `is_tree`, `diff_names`, `diff_file`, `diff_added_lines`, `head_commit`, `task_text`, `recent_commit_files`, `origin_url`, `diff_hunks`, `blob_text` |
+| `analysis` | `src/anchors.rs`, `src/anchors/**`, `src/route.rs`, `src/check.rs`, `src/debt.rs`, `tests/anchors.rs`, `tests/route.rs`, `tests/route_workspace.rs`, `tests/check.rs`, `tests/debt.rs`, `tests/fixtures/grammars/**` | `route-owner`, `route-overlaps`, `route-command`, `anchor-resolve`, `anchor-source-window`, `check-fingerprint`, `check-stamp`, `check-report`, `debt-scan`, `anchor-interface-lines`, `check-instructions` |
+| `pack` | `src/pack.rs`, `tests/pack.rs` | `pack`, `developer`, `render`, `fit`, `run`, `review`, `validator` |
+| `next` | `src/next.rs`, `src/plan.rs`, `src/status.rs`, `tests/plans.rs`, `tests/next.rs`, `tests/status.rs` | `next`, `next_run`, `status`, `status_run`, `review_due` |
+| `llm` | `src/llm.rs`, `baml_src/**`, `src/baml_client/**`, `src/llm_schema/**`, `tests/llm.rs` | `role-text`, `output-format`, `parse-answer`, `prepare-baml-env`, `direct-guards`, `direct-call`, `schema-freshness`, `schema-caps` |
+| `jobs` | `src/brief.rs`, `src/submit.rs`, `src/telemetry.rs`, `tests/brief.rs`, `tests/submit.rs`, `tests/submit_roles.rs`, `tests/developer.rs`, `tests/review.rs` | `brief-header`, `brief-path`, `brief-write`, `brief-build`, `submit-file`, `anchor-name-bare`, `write-and-retire`, `telemetry-append`, `telemetry-summary`, `card-patch`, `tester-bug`, `documenter-index`, `review-brief`, `review-submit`, `brief-handoff`, `job-name`, `command-allowlist`, `answer-too-long`, `first-review`, `finding-answer`, `architect-plan`, `validator-repro` |
+| `setup` | `src/init.rs`, `src/guide.rs`, `src/harness.rs`, `src/docs.rs`, `tests/init.rs`, `tests/init_draft.rs`, `tests/guide.rs`, `tests/docs.rs`, `tests/fixtures/docs/**` | `init`, `init-draft`, `agents-block`, `guide`, `harness-detect`, `harness-by-name`, `docs`, `init-ci` |
+| `eval` | `src/eval/**`, `tests/eval.rs`, `tests/eval_interrupt.rs`, `tests/fixtures/transcripts/**`, `evals/**` | `eval_run`, `execute`, `driver`, `pi_parse`, `pi_agent_dir`, `suite_load`, `grade_task`, `gate_misses`, `suite_verdict`, `ritual_steps`, `stewards_commands`, `shell_reads`, `existing_files`, `reviewed_units`, `would_exceed`, `without_developers`, `path_without_stewards`, `next_check`, `kill_leftovers`, `claude_parse`, `claude_config_dir`, `task_prompt`, `pinned_commit`, `hermes_parse`, `hermes_template`, `eval_redact_secrets`, `answers_given`, `eval_bug_fixed`, `eval_plan_outcome` |
+| `run` | `src/run.rs`, `tests/run.rs` | `run-allowed`, `run-check`, `run-run`, `run-shell-chars` |
+| `dist` | `.github/workflows/release.yml`, `install.sh`, `packaging/**`, `RELEASING.md`, `tests/completions.rs`, `licenses/**`, `about.toml`, `about.hbs` | `release-workflow`, `install-sh`, `aur-bump`, `aur-pkgbuild`, `release-checklist`, `completions-tests` |
+
 
 Flows: `next-to-submit` (`cli` → `next` → `analysis` → `pack` → `llm` →
 `model`), `init` (`cli` → `model` → `git` → `llm` → `model`). Decisions:
 facts in Rust, judgment in BAML; git through the CLI; text anchors first,
 tree-sitter behind the same function.
 
-## Module API (as built, stage 1)
+## Module API (as built)
 
 The code is the reference; this is the map. `src/lib.rs` declares every
 module and `src/main.rs` is a thin binary over it: clap, then one `run` per
@@ -2286,87 +2308,275 @@ command returning `anyhow::Result<ExitCode>`. A `CliError` anywhere becomes
 the JSON error; anything else is `internal`.
 
 ```rust
-// model.rs: the schemas as serde types, plus
-pub enum Role { Developer, Maintainer, Tester, Documenter, Validator, Architect, Reviewer }  // FromStr, as_str
-impl Anchor { pub fn parse(s: &str) -> Result<Anchor> }
-pub fn load_repo(root: &Path) -> Result<Loaded>     // checks .git and .stewards for the root it is given
-
-// workspace.rs: a stewards.toml above cwd wins over a nearer .git
-pub fn discover(cwd: &Path, only: Option<&str>) -> Result<Workspace>   // only = --repo
-pub fn here(g: &Global) -> Result<(PathBuf, Workspace)>                 // canonical cwd + discover
-impl Repo {
-    pub fn loaded(&self) -> Result<&Loaded>                              // the one no_stewards_dir
-    // the one way to change a file in a repo; unsafe_path on a link or a non-plain rel
-    pub fn write(&self, rel: &str, contents: &[u8]) -> Result<()>       // temp file renamed over
-    pub fn append(&self, rel: &str, contents: &[u8]) -> Result<()>      // creates when missing
-    pub fn remove(&self, rel: &str) -> Result<()>                       // regular file; missing is Ok
-}
-impl Workspace {
-    pub fn repo_containing(&self, path: &Path) -> Option<&Repo>          // deepest root
-    pub fn current_repo(&self, cwd: &Path) -> Result<&Repo>              // the one not_in_repo
-    pub fn loaded_repos(&self) -> Result<Vec<(&Repo, &Loaded)>>          // skips uninitialized siblings
-    pub fn display_name(&self, repo: &Repo, unit: &str) -> String
-}
-
-// git.rs: the only module that runs git
-pub fn ls_files(root) -> Result<Vec<String>>
-pub fn snapshot(root) -> Result<String>
-pub fn ls_tree(root, tree) -> Result<Vec<(String, String)>>
-pub fn has_object(root, sha) -> bool                 // resolves to a tree
-pub fn diff_names(root, from, to) -> Result<Vec<String>>
-pub fn diff_file(root, from, to, path) -> Result<String>
-pub fn diff_added_lines(root, from, to) -> Result<Vec<(String, u32, String)>>
-pub fn head_commit(root) -> Result<Option<String>>   // None = no commits yet
-pub fn task_text(root) -> Result<String>
-
 // anchors.rs
-pub enum Resolution { Found { line: u32 }, DeadPath, DeadName }
-pub fn resolve(root, a: &Anchor) -> Resolution
-pub fn source_window(root, a: &Anchor, before: usize, after: usize) -> Option<String>
+pub fn interface_lines(path: &str, text: &str, name: &str) -> Vec<u32>
+pub fn resolve(root: &Path, a: &Anchor) -> Resolution
+pub fn source_window(root: &Path, a: &Anchor, before: usize, after: usize) -> Option<(u32, String)>
 
-// route.rs
-impl Router {
-    pub fn new(units: &[UnitDef], docs_path: &str) -> Result<Router>
-    pub fn owner(&self, path: &str) -> Option<&str>
-    pub fn tool_owned(&self, path: &str) -> bool
-    pub fn overlaps(&self, files: &[String]) -> Vec<(String, Vec<String>)>
-}
+// anchors/runtime.rs
+pub fn unusable() -> Vec<(&'static Path, &'static str)>
 
-// model.rs also: impl Loaded { pub fn unit(&self, name: &str) -> Result<&UnitDef> }   // the one unknown_unit
+// brief.rs
+pub fn read_header(path: &Path) -> Result<Header>
+pub fn rel_path(unit: Option<&str>, role: Role, n: Option<usize>, snapshot: &str) -> String
+pub fn job_of(name: &str) -> Option<JobName>
+pub fn find(root: &Path, unit: Option<&str>, role: Role) -> Result<(String, Option<usize>)>
+pub fn answer_rel(brief_rel: &str) -> String
+pub fn result_rel(brief_rel: &str) -> String
+pub fn handoff(path: &Path) -> Result<String>
+pub fn build(repo: &Repo, unit: Option<&str>, role: Role, mode: Mode, task: &str, snapshot: &str) -> Result<String>
+pub fn build_validator(repo: &Repo, unit: &str, bug: Option<&str>, task: &str, snapshot: &str, result: Option<serde_json::Value>) -> Result<String>
+pub fn repro_result(repo: &Repo, unit: &str, repro: &str) -> Result<serde_json::Value>
+pub fn build_review(repo: &Repo, due: &[next::DueUnit], task: &str, snapshot: &str) -> Result<Vec<(String, ReviewPack)>>
+pub fn write_round(repo: &Repo, snapshot: &str, texts: &[&str]) -> Result<Vec<PathBuf>>
+pub fn write_text(repo: &Repo, unit: Option<&str>, role: Role, n: Option<usize>, snapshot: &str, text: &str) -> Result<PathBuf>
+pub fn write(repo: &Repo, unit: Option<&str>, role: Role, mode: Mode, task: &str, snapshot: &str) -> Result<(PathBuf, usize)>
+pub fn run(g: &Global, unit: Option<&str>, role: Role, task: Option<&str>, stdout: bool) -> anyhow::Result<ExitCode>
 
 // check.rs
-pub fn fingerprint(tree: &[(String, String)], unit: &str, router: &Router) -> String
-pub fn is_stale(reviewed: Option<&Reviewed>, current: &str) -> bool
-pub fn changed_since(..) / pub fn stale_files(..)    // a unit's changed files; all owned files with no usable tree
-pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed>
-pub fn check(ws, filter) -> Result<CheckReport>      // takes the snapshots, then
-pub fn check_at(ws, filter, snapshots: &[String]) -> Result<CheckReport>
 pub fn one_line(s: &str) -> String
+pub fn invisible(c: char) -> bool
+pub fn escape_invisible(text: &str) -> String
+pub fn unowned_ok(repo: &RepoConfig) -> Result<GlobSet>
+pub fn is_stale(reviewed: Option<&Reviewed>, current: &str) -> bool
+pub fn fingerprint(tree: &[(String, String)], unit: &str, router: &Router) -> String
+pub fn reviewed_at(repo: &Repo, unit: &str, tree: &str, marks: Option<&Reviewed>) -> Result<Reviewed>
+pub fn stamp(repo: &Repo, unit: &str, tree: &str) -> Result<Reviewed>
+pub fn in_snapshot(entries: &[(String, String)], path: &str) -> bool
+pub fn changed_since(root: &Path, snapshot: &str, entries: &[(String, String)], router: &Router, unit: &str, tree: Option<&str>) -> Result<Vec<String>>
+pub fn stale_files(root: &Path, snapshot: &str, entries: &[(String, String)], router: &Router, unit: &str, reviewed: Option<&Reviewed>) -> Result<Option<Vec<String>>>
+pub fn dead_anchors(root: &Path, entries: &[(String, String)], card: Option<&UnitCard>) -> Vec<String>
+pub fn check(ws: &Workspace, filter: Option<&str>) -> Result<CheckReport>
+pub fn check_at(ws: &Workspace, filter: Option<&str>, snapshots: &[String]) -> Result<CheckReport>
+pub fn run(g: &Global) -> Result<ExitCode>
+pub fn run_stamp(g: &Global, unit: &str) -> Result<ExitCode>
 
-// pack.rs
-pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool, snapshot: &str)
-    -> Result<Pack>                                  // --diff hunks run to `snapshot`
-impl Pack { pub fn render(&self) -> String; pub fn fit(&mut self, budget: usize) }
-
-// next.rs
-pub struct Job { unit, role, task, snapshot, reasons, units, changed, brief_path, handoff, waiting, command, debt_added }
-pub struct NextReport { jobs, architect, flow_checks, check }
-pub enum Briefs { None, Write, KeepWaiting }   // KeepWaiting: `review` leaves a current brief as it is
-pub fn next(ws: &Workspace, task: Option<&str>, briefs: Briefs, roles: bool) -> Result<NextReport>
-pub fn review_due(repo: &Repo, task: Option<&str>) -> Result<(String, String, Vec<String>)>  // snapshot, task, units
+// completions.rs
+pub fn run(shell: Shell, mut cli: clap::Command) -> anyhow::Result<ExitCode>
+pub fn run_man(cli: clap::Command) -> anyhow::Result<ExitCode>
 
 // debt.rs
 pub fn is_debt_line(line: &str) -> bool
 pub fn scan(repo: &Repo) -> Result<BTreeMap<Option<String>, Vec<DebtItem>>>
+pub fn run(g: &Global) -> Result<ExitCode>
+
+// docs.rs
+pub fn run(g: &Global, unit: Option<&str>) -> anyhow::Result<ExitCode>
+pub fn pages(loaded: &Loaded, unit: Option<&str>) -> anyhow::Result<Vec<(String, String)>>
+
+// eval/mod.rs
+pub fn as_str(self) -> &'static str  // Arm
+pub fn is_full(self) -> bool  // Arm
+pub fn as_str(self) -> &'static str  // Status
+pub fn sum(&self) -> u64  // Tokens
+pub fn context(&self) -> u64  // Tokens
+pub fn add(&mut self, other: Tokens)  // Tokens
+pub fn reviewed_units(output: &str) -> Option<Vec<ReviewedUnit>>
+pub fn is_handoff(text: &str) -> bool
+pub fn holds_handoff(text: &str) -> bool
+pub fn answers_given(shell_commands: &[String]) -> usize
+pub fn is_reviewer_submit(cmd: &[&str]) -> bool
+pub fn is_architect_submit(cmd: &[&str]) -> bool
+pub fn plan_stored(output: &str) -> bool
+pub fn ritual_steps(actions: &[Action]) -> RitualSteps
+pub fn reads_git_history(command: &str) -> bool
+pub fn stewards_commands(command: &str) -> Vec<Vec<&str>>
+pub fn shell_reads(command: &str) -> Vec<String>
+pub fn existing_files(dir: &Path, paths: &[String]) -> Vec<String>
+pub fn credential_secrets(files: &[PathBuf]) -> Vec<String>
+pub fn redact_text(text: &str, secrets: &[String]) -> String
+pub fn redact_secrets(driver: &dyn Driver, dir: &Path) -> Result<Vec<String>>
+pub fn fresh_session_env(cmd: &mut Command, env: &[(&str, OsString)])
+pub fn plan_outcome(dir: &Path, stored: bool) -> PlanOutcome
+pub fn would_exceed(max: f64, costs: &[f64]) -> bool
+pub fn execute(driver: &dyn Driver, plan: &Plan) -> Result<Summary>
+pub fn task_prompt(dir: &Path, task: u32) -> Result<String>
+pub fn adopted_knowledge(dir: &Path) -> Result<(Vec<String>, Vec<String>)>
+pub fn next_check(stewards: &Path, dir: &Path) -> Result<NextCheck>
+pub fn kill_leftovers(dir: &Path) -> Result<Option<Leftovers>>
+pub fn without_developers(agents_md: &str) -> Result<String>
+pub fn path_without_stewards(path: &OsStr, mirrors: &Path) -> Result<OsString>
+pub fn neutral_work_dir(tmp: &Path) -> PathBuf
+pub fn run(g: &Global, f: Flags) -> Result<ExitCode>
+
+// eval/claude.rs
+pub fn find(path: &OsStr, limit: Duration) -> Result<ClaudeCode>  // ClaudeCode
+pub fn isolate(&mut self, dir: &Path) -> Result<String>  // ClaudeCode
+pub fn config_dir(user: &Path, dir: &Path) -> Result<(String, Option<String>)>
+pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run>
+
+// eval/grade.rs
+pub fn median(xs: &[f64]) -> Option<f64>
+pub fn arm_stats(arm: Arm, runs: &[&RunRecord]) -> ArmStats
+pub fn gate_misses(r: &RunRecord) -> Vec<&'static str>
+pub fn grade_task(suite: &Suite, task: u32, records: &[RunRecord], arms: &[Arm], runs: u32) -> TaskGrade
+pub fn suite_verdict(grades: &[TaskGrade]) -> Verdict
+pub fn overhead_medians(grades: &[TaskGrade]) -> Vec<OverheadMedian>
+pub fn summarize(plan: &Plan, records: &[RunRecord], stopped: bool, unknown_cost: &[String], setup: SetupNotes) -> Summary
+pub fn render(s: &Summary) -> String
+
+// eval/hermes.rs
+pub fn find(path: &OsStr, limit: Duration) -> Result<Hermes>  // Hermes
+pub fn isolate(&mut self, dir: &Path) -> Result<String>  // Hermes
+pub fn template(bin: &Path, user: &Path, dir: &Path) -> Result<(String, Vec<String>)>
+pub fn fingerprint(dir: &Path) -> Result<Vec<String>>
+pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run>
+
+// eval/pi.rs
+pub fn find(path: &OsStr, limit: Duration) -> Result<Pi>  // Pi
+pub fn isolate(&mut self, dir: &Path, thinking: &str) -> Result<String>  // Pi
+pub fn agent_dir(user: &Path, home: &Path, dir: &Path, thinking: &str) -> Result<String>
+pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run>
+
+// eval/suite.rs
+pub fn load(evals: &Path, name: &str) -> Result<Suite>
+pub fn task(&self, number: u32) -> Option<&SuiteTask>  // Suite
+pub fn numbers(&self) -> Vec<u32>  // Suite
+pub fn check_tasks(&self, tasks: &[u32]) -> Result<()>  // Suite
+pub fn commit(&self) -> Option<&str>  // Suite
+
+// forge.rs
+pub fn of_origin(cli: &dyn Cli, origin: &str) -> Result<Forge>  // Forge
+pub fn ok(stdout: &str) -> Out  // Out
+pub fn new(rules: Vec<(&str, Out)>) -> Fake  // Fake
+pub fn post_comment(cli: &dyn Cli, forge: Forge, origin: &str, c: &Comment, github_actions: Option<&str>) -> Result<PrComment>
+pub fn post(root: &Path, pr: u64, marker: &str, title: &str, text: &str) -> Result<PrComment>
+pub fn error_line(e: &anyhow::Error) -> String
+
+// git.rs
+pub fn ls_files(root: &Path) -> Result<Vec<String>>
+pub fn snapshot(root: &Path) -> Result<String>
+pub fn ls_tree(root: &Path, tree: &str) -> Result<Vec<(String, String)>>
+pub fn has_object(root: &Path, sha: &str) -> bool
+pub fn is_tree(root: &Path, sha: &str) -> bool
+pub fn diff_names(root: &Path, from: &str, to: &str) -> Result<Vec<String>>
+pub fn diff_file(root: &Path, from: &str, to: &str, path: &str) -> Result<String>
+pub fn diff_added_lines(root: &Path, from: &str, to: &str) -> Result<Vec<(String, u32, String)>>
+pub fn diff_hunks(root: &Path, from: &str, to: &str) -> Result<Vec<Hunk>>
+pub fn blob_text(root: &Path, sha: &str) -> Result<String>
+pub fn head_commit(root: &Path) -> Result<Option<String>>
+pub fn origin_url(root: &Path) -> Option<String>
+pub fn task_text(root: &Path) -> Result<String>
+pub fn recent_commit_files(root: &Path, n: usize) -> Result<Vec<Vec<String>>>
+
+// guide.rs
+pub fn block() -> &'static str
+pub fn upsert_block(repo: &Repo) -> anyhow::Result<bool>
+pub fn run(g: &Global, harness: Option<&str>, all: bool, errors: bool, glossary: bool) -> anyhow::Result<ExitCode>
+
+// harness.rs
+pub fn detect() -> Option<&'static Harness>
+pub fn by_name(name: &str) -> anyhow::Result<&'static Harness>
+
+// init.rs
+pub fn run(g: &Global, draft: bool, ci: bool) -> Result<ExitCode>
+
+// llm.rs
+pub fn role_text(role: Role, mode: Mode) -> &'static str
+pub fn output_format(role: Role, mode: Mode) -> &'static str
+pub fn parse(role: Role, mode: Mode, text: &str) -> Result<Answer, Vec<FieldError>>
+pub fn direct_guards(role: Role) -> Result<(&'static str, String, String)>
+pub fn direct(role: Role, mode: Mode, unit: &str, brief_text: &str) -> Result<String>
+
+// model.rs
+pub fn parse(s: &str) -> Result<Anchor>  // Anchor
+pub fn as_str(&self) -> &'static str  // Role
+pub fn unit(&self, name: &str) -> Result<&UnitDef>  // Loaded
+pub fn card(&self, unit: &str) -> UnitCard  // Loaded
+pub fn load_repo(root: &Path) -> Result<Loaded>
+
+// next.rs
+pub fn checks_failed(&self) -> bool  // NextReport
+pub fn unowned_line(&self) -> Option<String>  // NextReport
+pub fn next(ws: &Workspace, task: Option<&str>, briefs: Briefs, roles: bool, run_checks: bool) -> Result<NextReport>
+pub fn review_due(repo: &Repo, task: Option<&str>) -> Result<(String, String, Vec<DueUnit>)>
+pub fn run(g: &Global, task: Option<&str>, no_brief: bool, roles: bool, no_run: bool, pr: Option<u64>) -> Result<ExitCode>
+
+// output.rs
+pub fn emit<T: Serialize + Human>(v: &T, human: bool) -> bool
+pub fn new(code: &'static str, message: impl Into<String>, fix: impl Into<String>) -> Self  // CliError
+pub fn emit(&self, human: bool)  // CliError
+pub fn with_note(e: anyhow::Error, note: String) -> anyhow::Error
+pub fn not_implemented(command: &str) -> anyhow::Result<std::process::ExitCode>
+
+// pack.rs
+pub fn pack(repo: &Repo, unit: Option<&str>, role: Role, task: &str, diff: bool, snapshot: &str) -> Result<Pack>
+pub fn validator(repo: &Repo, unit: &str, task: &str, snapshot: &str, bug: Option<&str>, repro: Option<serde_json::Value>) -> Result<Pack>
+pub fn developer(repo: &Repo, unit: &str, task: &str, n: usize, dev: &Task, snapshot: &str) -> Result<Pack>
+pub fn review(repo: &Repo, due: &[DueUnit], task: &str, snapshot: &str) -> Result<ReviewRound>
+pub fn render(&self) -> String  // ReviewPack
+pub fn render(&self) -> String  // Pack
+pub fn fit(&mut self, budget: usize)  // Pack
+pub fn run(g: &Global, unit: Option<&str>, role: Role, diff: bool, task: Option<&str>) -> Result<ExitCode>
+
+// plan.rs
+pub fn plans_and_flows(ws: &Workspace, repo: &Repo, loaded: &Loaded, snapshot: &str, run_checks: bool) -> Result<(Vec<PlanReport>, Vec<FlowCheck>)>
+
+// review.rs
+pub fn run(g: &Global, task: Option<&str>, roles: bool, pr: Option<u64>, answers: &[String]) -> Result<ExitCode>
+
+// route.rs
+pub fn new(units: &[UnitDef], docs_path: &str) -> Result<Router>  // Router
+pub fn tool_owned(&self, path: &str) -> bool  // Router
+pub fn owner(&self, path: &str) -> Option<&str>  // Router
+pub fn overlaps(&self, files: &[String]) -> Vec<(String, Vec<String>)>  // Router
+pub fn run(g: &Global, paths: &[String]) -> Result<ExitCode>
+
+// run.rs
+pub fn allowed(loaded: &Loaded, unit: Option<&str>) -> Vec<Allowed>
+pub fn check<'a>(cmd: &str, allowed: &'a [Allowed]) -> Result<&'a Allowed, String>
+pub fn run(root: &Path, allowed: &[Allowed], cmd: &str) -> Result<RunResult>
 
 // status.rs
 pub fn status(ws: &Workspace) -> Result<StatusReport>
+pub fn run(g: &Global, telemetry: bool) -> Result<ExitCode>
 
-// output.rs
-pub struct Global { human, repo, direct }
-pub trait Human { fn render(&self) -> String }
-pub fn emit<T: Serialize + Human>(v: &T, human: bool)
-pub struct CliError { code, message, fix }
+// submit.rs
+pub fn run(g: &Global, unit: Option<&str>, role: Role, file: &Path) -> Result<ExitCode>
+pub fn documenter(repo: &Repo, unit: &str, header: &Header, text: &str, before: &Before) -> Result<Submitted>
+pub fn reviewer(repo: &Repo, _unit: &str, header: &Header, text: &str, before: &Before) -> Result<Submitted>
+pub fn record(root: &Path, rels: &[String]) -> Result<Before>
+pub fn write_and_retire(repo: &Repo, before: &Before, writes: &[(String, String)], brief_rel: &str) -> Result<()>
+pub fn write_remove_and_retire(repo: &Repo, before: &Before, checked: &[&str], changes: &[(String, Option<String>)], brief_rel: &str) -> Result<()>
+pub fn pending(&self) -> bool  // StoredFinding
+pub fn answerable(&self) -> bool  // StoredFinding
+
+// telemetry.rs
+pub fn append(repo: &Repo, record: &Record) -> Result<()>
+pub fn rfc3339(t: SystemTime) -> String
+pub fn summary(root: &Path) -> Value
+pub fn human(summary: &Value) -> Vec<String>
+
+// tracker.rs
+pub fn new(responses: Vec<(u16, &str)>) -> FakeHttp  // FakeHttp
+pub fn backend<'a>(t: &Tracker, env: &dyn Fn(&str) -> Option<String>, cli: &'a dyn Cli, origin: Option<&str>, http: &'a dyn Transport) -> Result<Box<dyn Issues + 'a>>
+pub fn body(kind: TrackerKind, unit: &str, severity: &str, gap: &crate::model::Gap) -> String
+pub fn export<'a>(repo: &Repo, open: impl FnOnce(&Tracker) -> Result<Box<dyn Issues + 'a>>) -> Result<Exported>
+
+// user.rs
+pub fn model(&self, harness: &str, role: &str) -> Option<&str>  // Config
+pub fn grammars_dir() -> Option<PathBuf>
+pub fn load_config() -> Result<Config>
+pub fn load_memory() -> Result<Vec<Entry>>
+pub fn load_config_from(dir: &Path) -> Result<Config>
+pub fn load_memory_from(dir: &Path) -> Result<Vec<Entry>>
+pub fn memory_for<'a>(entries: &'a [Entry], role: &str, languages: &[String], budget_bytes: usize) -> Vec<&'a Entry>
+
+// validate.rs
+pub fn run(g: &Global, report: Option<&Path>, export: bool) -> Result<ExitCode>
+
+// workspace.rs
+pub fn discover(cwd: &Path, only: Option<&str>) -> anyhow::Result<Workspace>
+pub fn here(g: &Global) -> anyhow::Result<(PathBuf, Workspace)>
+pub fn loaded(&self) -> anyhow::Result<&Loaded>  // Repo
+pub fn repo_containing(&self, path: &Path) -> Option<&Repo>  // Workspace
+pub fn current_repo(&self, cwd: &Path) -> anyhow::Result<&Repo>  // Workspace
+pub fn loaded_repos(&self) -> anyhow::Result<Vec<(&Repo, &Loaded)>>  // Workspace
+pub fn display_name(&self, repo: &Repo, unit: &str) -> String  // Workspace
+pub fn write(&self, rel: &str, contents: &[u8]) -> anyhow::Result<()>  // Repo
+pub fn append(&self, rel: &str, contents: &[u8]) -> anyhow::Result<()>  // Repo
+pub fn read(&self, rel: &str, cap: u64) -> anyhow::Result<Vec<u8>>  // Repo
+pub fn remove(&self, rel: &str) -> anyhow::Result<()>  // Repo
 ```
 
 In a workspace a job's `command` is `stewards --repo <repo> brief <unit>
@@ -2392,17 +2602,17 @@ helpers in `tests/common`. One behavior per test.
 | 1 | BAML Rust client immature | `cargo update` breaks the generated client; runtime download fails | Pin `baml` and `baml-sys` exactly; validation is serde on the generated types, so only `--direct` touches the native lib; vendor the lib in releases; every LLM step behind `llm.rs` so templates + serde is a one-module swap | Two consecutive BAML releases break the client with no fix in 30 days → templates + serde |
 | 2 | Harness drift across the supported harnesses | Agent dirs, subagent tools, or env vars change | Per-harness facts in one `harness.rs` table with a last-verified date; evals on three; spot-check list for the rest per release | A harness drops repo AGENTS.md or shell → drop it |
 | 3 | Subagents ignore the pack | `pulled_anchors` large; tokens per job far above pack size | Pull rule stated twice; budget shown; token grader | Replaced by the 2026-11-12 decision, which dropped the main-context saving criterion: the stage-3 gate is now an agent completing the one-job ritual unprompted in the eval, with a measured overhead the user accepts; missing it → reopen delegation before stage 3 starts |
-| 4 | Cards rot despite `check` | Many `card_patch: null` while anchors drift; prose contradicts code | Fingerprint staleness; docs-accuracy grader; `next` re-reviews every stale unit | Docs-accuracy fails two releases running → regen-only cards |
+| 4 | Cards rot despite `check` | Many `card_patch: null` while anchors drift; prose contradicts code | Fingerprint staleness; dead-anchor check; `next` re-reviews every stale unit | A dead anchor, or a docs page out of date with its card, at a release → regen-only cards |
 | 5 | Prompt injection through cards or reports | A brief makes a subagent act outside its role | Data fencing, caps, allowlist, writes boundary; a hostile fixture card in the Rust tests (fence breakout, control characters, over-cap fields) | Any confirmed escape → stop-ship until fixed |
 | 6 | Scope for one builder | Stages slip; no dogfood by stage 2 | Each stage usable alone; cut order above | Stage 2 not dogfooding in its window → freeze at stages 1–2 |
-| 7 | Eval cost or flakiness | Runs exceed estimate; graders disagree | Haiku graders; 3-vote majority; medians; `--max-cost` | Suite flakes on an unchanged tree twice → graders redesigned first |
-| 8 | Codex driver untestable locally | `codex exec` 400s under the ChatGPT account | API-key auth for the runner, or Codex arm in CI only | No accepted model id in 30 days → manual spot-check |
+| 7 | Eval cost or flakiness | Runs exceed estimate; graders disagree | Report-only code graders (the LLM judges are not in 0.1.0); medians; `--max-cost` | Suite flakes on an unchanged tree twice → graders redesigned first |
+| 8 | Codex driver untestable locally (the driver is not in 0.1.0) | `codex exec` 400s under the ChatGPT account | API-key auth for the runner, or Codex arm in CI only | Revisit when a Codex driver is built |
 
 ## Cost estimate (list prices, 2026-10; assumptions stated)
 
 Opus 5.5 $4 in / $20 out per MTok, cache reads $0.20; Sonnet 5.5 $2 / $10,
 cache reads $0.20; Haiku 5.5 $0.10 / $0.50 (prompts ≤ 100K). Claude Code,
-Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
+Pi, and Hermes under subscriptions cost no API dollars; `--direct` does.
 
 - One full eval: 54 agent runs per harness at an assumed 150K input (≈60%
   cache reads) and 6K output each: ≈ $12 per harness on Sonnet, ≈ $25 on
@@ -2417,12 +2627,17 @@ Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
 
 ## First-session walkthrough (expected, Claude Code, `full` arm, task 1)
 
+Every JSON output also carries a `stewards` object (`version`, `schema`),
+left out below. Shapes and key names are what the commands print on
+`tests/fixtures/single` (2026-11-16); the unit names are the example's.
+
 ```
 > stewards status
-{ units: [api, client, cli], stale: [], warnings: [] }
+{ units: [{ unit: "api", purpose, paths, freshness, interfaces, covered, gaps, bugs, debt }, ...],
+  uninitialized: [], stamp_claim: "A stamp records that one reviewer, ..." }
 > cat docs/units/api.md                                                   # how api works, before its source
 > stewards route api/items.py
-{ unit: "api" }
+{ routes: [{ path: "api/items.py", unit: "api" }] }
 [Agent] edits api/items.py, api/store.py, api/tests/test_items.py itself  # plannable from the unit page
 > stewards review --task "add a count endpoint to api"
 { task: { text: "add a count endpoint to api", from: "given" }, reported: [],
@@ -2434,19 +2649,23 @@ Codex, and Pi under subscriptions cost no API dollars; `--direct` does.
   └ subagent: reads the hunks, runs `python -m unittest` in api, writes the answer,
     runs `stewards submit --role reviewer --file ...`, replies with what it printed
 > stewards review --task "add a count endpoint to api"
-{ reported: [ { file: "review-1-3f9a1c2e.result.json", role: reviewer, summary: "reviewer: api changes (1 finding; card: +interface count-items; 1 scenario upserted; not stamped)",
-                 units: [ { unit: "api", verdict: "changes", stamped: false } ],
+{ reported: [ { file: "review-1-3f9a1c2e.result.json", role: reviewer, unit: null,
+                 summary: "reviewer: api changes (1 finding; card: +interface count-items; 1 scenario upserted; not stamped)",
+                 units: [ { unit: "api", verdict: "changes", stamped: false, check_reported: true } ],
                  findings: [ { unit: "api", file: "api/store.py", line: 41,
                                cut: "the hand-rolled loop", replace_with: "len()",
-                               answer: "api: api/store.py:41: " } ] } ],
+                               answer: "api: api/store.py:41: " } ],
+                 notes: [], other: {} } ],
   next: null, then: "Fix the findings, then run stewards review again. A finding you will not apply: run stewards review --answer \"<its answer prefix><your reason>\" instead; ..." }   exit 1
 [Agent] fixes api/store.py:41 itself
 > stewards review --task "add a count endpoint to api"
 { reported: [], next: { jobs: [ { role: reviewer, reasons: ["api: stale"], handoff: "Read `...` and follow it." } ] }, then: "Start one subagent ..." }   exit 1
 [Agent] subagent with the handoff: "reviewer: api approve (card unchanged; stamped 8b1e044)"   # sets the tester and documenter marks too
 > stewards review --task "add a count endpoint to api"
-{ reported: [ { role: reviewer, units: [ { unit: "api", verdict: "approve", stamped: true } ] } ],
-  next: { jobs: [], check: { failures: [], warnings: [] } }, then: "done" }   exit 0
+{ reported: [ { role: reviewer, units: [ { unit: "api", verdict: "approve", stamped: true, check_reported: true } ], ... } ],
+  next: { jobs: [], architect: false, flow_checks: [], plans: [],
+          check: { failures: [], warnings: [...] }, unowned_changed: [] },
+  then: "done" }   exit 0
 ```
 
 The main agent never reads a brief or a card; every handoff is one
@@ -2459,24 +2678,25 @@ every unit the change touched; done is a
 
 Read this section, then the Build order, then start.
 
-**State (2026-11-12).** Stages 1 and 2 are built. `main` has stage 1.
-`feat/stage-2-roles` adds the harness table and `guide`, user config and
-memory, `docs`, `init` and `init --draft`, the BAML schemas with `llm.rs`,
-`brief`, `submit` for all six roles (the reviewer, a seventh, came after
-the thin eval), the developer loop, and telemetry:
-about 500 tests. Stewards is adopted on this repository: nine units, their
-cards and test cards, `docs/units/`, and the `AGENTS.md` block are
-committed, written through the tool by role subagents handed only a brief
-path. `feat/stage-2b-proof` holds the eval fixture. CI runs on every push
-to a stage branch. Repo `wromansky/stewards` (public since 2026-11-12),
+**State (2026-11-16, the 0.1.0 plan's last task).** Every stage is built, and
+the plan's ten tasks are on the branch this text ships with (Build order):
+the allowlisted runner, tree-sitter anchors for the eleven static grammars
+and runtime grammars, stored plans with step and flow checks, `validate`
+(`--report`, `--export`), `next --pr`, `review --pr`, `init --ci`, the
+report-only eval graders, completions, the man page, the release workflow,
+the install script, the AUR package, and `RELEASING.md`. `render`, hooks, and
+the plugin shell are cut. Stewards is adopted on this repository: twelve
+units (the table under "stewards' own units"), their cards and test cards,
+`docs/units/`, and the `AGENTS.md` block are committed, written through the
+tool by role subagents. Repo `wromansky/stewards` (public since 2026-11-12),
 auto-delete of merged branches on.
 
-**Next action.** Stage 2b's runner, Pi driver, and thin eval are built and
-ran (below); the per-change ritual is now one review job, listed with its
-handoff by `stewards review` (2026-11-13, below), and the eval gates on
-it. Rerun the thin eval with it, and check the delegation result on a
-second harness. The task list in the build session is
-the plan; Build cycle says how waves run.
+**Next action.** Release 0.1.0 by `RELEASING.md`, in its order: the one-time
+repository setup, then each release's steps. Before the tag, run `stewards review` until it exits 0. Then
+the manual eval pass on the `fixture` and `self` suites, the history scrub,
+the tag, and the release workflow. The task list of the 0.1.0 plan
+(`docs/build/stage3/PLAN.md`) is the record of what was built and why;
+Build cycle says how waves run.
 
 **What the thin eval showed (2026-11-12).** Four passes, one run per arm
 per task, Pi on `anthropic/claude-sonnet-5-5` at medium thinking: three on
@@ -2656,14 +2876,13 @@ developers sharing a
 compiled unit can see each other's half-written files in a build, which is
 why the maintainer splits only independent work; one open job per (unit,
 role), so a unit's bugs are judged one per round. Deferred ideas (a ZeroClaw renderer went with
-`render`, cut from 0.1.0): a documented one-time Borg `manage_roles` setup,
-a Hermes eval driver if briefed-harness performance needs measuring.
+`render`, cut from 0.1.0): a documented one-time Borg `manage_roles` setup.
 
 ## Facts
 
 ### Harness table (the contract, checked per harness; last verified 2026-10-21)
 
-| harness | role-file format (rendered) | spawn tool / fresh child | model pin | parallel | env detection |
+| harness | role-file format | spawn tool / fresh child | model pin | parallel | env detection |
 |---|---|---|---|---|---|
 | Claude Code | `.claude/agents/*.md`, `~/.claude/agents/` | Agent tool | per file | yes (20) | `CLAUDE_CODE` |
 | Cursor | reads `.claude/agents/`, `.codex/agents/`, `.cursor/agents/` | Task tool | per file | yes | UNVERIFIED |

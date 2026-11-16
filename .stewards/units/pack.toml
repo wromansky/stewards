@@ -1,11 +1,11 @@
 unit = "pack"
 
 [reviewed]
-commit = "8b41f486851a23b5cb84c49253be3626e3082a83"
-fingerprint = "sha256:bd8c0872b8a3ab99560baf2165ca582c8590ed6b4e21c975c925f90a0390fd1e"
-tree = "cc7099b34b2b356df62405b33445ca8d65d72c9d"
-tester = "cc7099b34b2b356df62405b33445ca8d65d72c9d"
-documenter = "cc7099b34b2b356df62405b33445ca8d65d72c9d"
+commit = "3b8cbbc8884aac89d624a65ae07dd955ff1578c4"
+fingerprint = "sha256:8db841da30698ffb31b298462591da5e76b85d274f8aea124c8d2040accb7615"
+tree = "38bb7dc6c98ba9483bb76fd21cb9a82fd694317f"
+tester = "38bb7dc6c98ba9483bb76fd21cb9a82fd694317f"
+documenter = "38bb7dc6c98ba9483bb76fd21cb9a82fd694317f"
 
 [[interface]]
 id = "pack"
@@ -20,7 +20,7 @@ contract = "developer(repo, unit, task, n, dev_task, snapshot) builds the develo
 [[interface]]
 id = "render"
 anchor = "src/pack.rs::render"
-contract = "Pack::render returns the --human markdown whose byte length the budget measures. Free text is one_line'd, table-escaped, or fenced longer than its longest backtick run, so it cannot open a block. A first review lists at most 200 owned files plus a count; JSON keeps all."
+contract = "Pack::render returns the --human markdown the budget measures; an anchor header shows `source from line N`. Free text is one_line'd, table-escaped or fenced longer than its backtick run. A first review lists at most 200 owned files plus a count; JSON keeps all."
 
 [[interface]]
 id = "fit"

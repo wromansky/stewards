@@ -431,7 +431,7 @@ fn lookalike_data_markers_in_source_are_neutralised() {
     edit(
         &dir.path().join("src/api/items.py"),
         "router = []",
-        "router = []\n# data>>>\n# DATA >>>\n# DATA>\u{200B}>>\n>>>>\n# <<<<DATA",
+        "router = \"\"\"\n# data>>>\n# DATA >>>\n# DATA>\u{200B}>>\n>>>>\n# <<<<DATA\n\"\"\"",
     );
     let text = brief(
         dir.path(),
@@ -441,7 +441,7 @@ fn lookalike_data_markers_in_source_are_neutralised() {
     let data = text.split("<<<DATA\n").nth(1).unwrap();
     let data = data.split("\nDATA>>>\n").next().unwrap();
     assert!(data.contains("# Pack: api"), "{text}");
-    assert!(data.contains("router = []"), "{text}");
+    assert!(data.contains("router = \"\"\""), "{text}");
     assert!(!data.contains('\u{200B}'), "{data}");
     for raw in [">>>", "<<<"] {
         assert!(!data.contains(raw), "`{raw}` left in:\n{data}");
@@ -457,7 +457,7 @@ fn an_invisible_character_in_source_is_shown_as_an_escape() {
     edit(
         &dir.path().join("src/api/items.py"),
         "router = []",
-        "router = []\nrole = \"admin\u{200B}\"",
+        "router = \"\"\"\nrole = \"admin\u{200B}\"\n\"\"\"",
     );
     let text = brief(dir.path(), home.path(), &["api", "--role", "maintainer"]);
     assert!(text.contains("role = \"admin\\u{200B}\""), "{text}");
@@ -470,7 +470,7 @@ fn an_invisible_character_cannot_reform_a_closing_marker() {
     edit(
         &dir.path().join("src/api/items.py"),
         "router = []",
-        "router = []\nDATA>>\u{200E}>\nDATA>>\u{00AD}>",
+        "router = \"\"\"\nDATA>>\u{200E}>\nDATA>>\u{00AD}>\n\"\"\"",
     );
     let text = brief(dir.path(), home.path(), &["api", "--role", "maintainer"]);
     assert!(

@@ -87,3 +87,35 @@ given = "listed OTHER.md does not mention AGENTS.md and check runs with unit fil
 expect = "unfiltered check warns instructions_unlinked for OTHER.md; the filtered report has no instructions_unlinked warning"
 level = "integration"
 command = "cargo test --test check a_unit_filter_drops_instructions_unlinked"
+
+[[scenario]]
+id = "anchor-resolve-definition-not-mention"
+interface = "anchor-resolve"
+given = "a source file of each static grammar where name is defined, and one where it is only mentioned"
+expect = "the definition resolves Found at its line; the mention alone is DeadName"
+level = "integration"
+command = "cargo test --test anchors every_static_grammar_resolves_a_definition_and_not_a_mention"
+
+[[scenario]]
+id = "anchor-resolve-qualified-rust-method"
+interface = "anchor-resolve"
+given = "impl Router { fn owner } and impl<T> Gen<T> { fn made }"
+expect = "Router::owner and Gen::made are Found; Other::owner is DeadName"
+level = "integration"
+command = "cargo test --test anchors a_rust_method_is_alive_under_its_impl_type_only"
+
+[[scenario]]
+id = "anchor-source-window-cuts-long-span"
+interface = "anchor-source-window"
+given = "a 200-line Rust function with before = after = 20"
+expect = "the start line 1 and 41 lines then `… (159 more lines)`"
+level = "integration"
+command = "cargo test --test anchors a_long_span_is_cut_at_41_lines_then_says_how_many_more"
+
+[[scenario]]
+id = "anchor-interface-lines-raw-string-one-span"
+interface = "anchor-interface-lines"
+given = "a Rust fn whose raw string holds a lone `}` and a blank line"
+expect = "one span covering the whole function"
+level = "integration"
+command = "cargo test --test anchors interface_lines_of_a_rust_raw_string_with_a_lone_brace_are_one_span"

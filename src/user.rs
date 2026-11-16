@@ -43,6 +43,11 @@ fn user_dir() -> PathBuf {
     }
 }
 
+/// Where runtime tree-sitter grammars live: `<stewards home>/grammars`.
+pub fn grammars_dir() -> PathBuf {
+    user_dir().join("grammars")
+}
+
 pub fn load_config() -> Result<Config> {
     load_config_from(&user_dir())
 }

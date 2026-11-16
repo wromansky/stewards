@@ -1,5 +1,7 @@
-// Anchor resolution and source windows: tree-sitter definitions for the static grammars, a
-// whole-word text rule for every other file.
+// Anchor resolution and source windows: tree-sitter definitions for the static grammars and the
+// runtime ones in the user's stewards home, a whole-word text rule for every other file.
+pub mod runtime;
+
 use std::ops::Range;
 use std::path::{Component, Path};
 use std::sync::OnceLock;
@@ -13,6 +15,12 @@ pub enum Resolution {
     Found { line: u32 },
     DeadPath,
     DeadName,
+}
+
+/// What `definitions` parses and queries with: a static grammar's or a runtime one's.
+struct Lang {
+    language: Language,
+    query: &'static Query,
 }
 
 /// A static grammar: the extensions it parses and the queries that say what a definition is.
@@ -120,9 +128,26 @@ fn extension(path: &str) -> Option<&str> {
     Path::new(path).extension()?.to_str()
 }
 
-fn grammar_of(path: &str) -> Option<&'static Grammar> {
+impl Grammar {
+    fn lang(&'static self) -> Lang {
+        let language = (self.language)();
+        let query = self.query.get_or_init(|| {
+            Query::new(&language, &self.queries.join("\n")).expect("anchor query compiles")
+        });
+        Lang { language, query }
+    }
+}
+
+/// The grammar of `path`'s extension: a static one, else a runtime one that loaded.
+fn grammar_of(path: &str) -> Option<Lang> {
     let ext = extension(path)?;
-    GRAMMARS.iter().find(|g| g.exts.contains(&ext))
+    match GRAMMARS.iter().find(|g| g.exts.contains(&ext)) {
+        Some(g) => Some(g.lang()),
+        None => runtime::lookup(ext).map(|r| Lang {
+            language: r.language.clone(),
+            query: &r.query,
+        }),
+    }
 }
 
 /// A definition (or, with `container`, a scope) of a grammar language.
@@ -196,18 +221,15 @@ fn hcl_name(block: Node, text: &str) -> Option<String> {
 }
 
 /// The definitions and containers of `text` in file order; empty when the grammar can't parse.
-fn definitions(g: &Grammar, text: &str) -> Vec<Def> {
-    let language = (g.language)();
+fn definitions(g: &Lang, text: &str) -> Vec<Def> {
     let mut parser = Parser::new();
-    if parser.set_language(&language).is_err() {
+    if parser.set_language(&g.language).is_err() {
         return vec![];
     }
     let Some(tree) = parser.parse(text, None) else {
         return vec![];
     };
-    let query = g.query.get_or_init(|| {
-        Query::new(&language, &g.queries.join("\n")).expect("anchor query compiles")
-    });
+    let query = g.query;
     let capture = |i: u32| query.capture_names()[i as usize];
     let mut defs = vec![];
     let mut cursor = QueryCursor::new();
@@ -408,7 +430,7 @@ fn text_lines(text: &str, name: &str) -> Vec<u32> {
 /// `BLOCK_LANGUAGES`. Empty when the lines can't be found: another language, `name` not defined.
 pub fn interface_lines(path: &str, text: &str, name: &str) -> Vec<u32> {
     if let Some(g) = grammar_of(path) {
-        let defs = definitions(g, text);
+        let defs = definitions(&g, text);
         let mut lines: Vec<u32> = matching(&defs, name)
             .iter()
             .flat_map(|d| d.lines.0..=d.lines.1)
@@ -432,7 +454,7 @@ pub fn resolve(root: &Path, a: &Anchor) -> Resolution {
         return Resolution::DeadPath;
     };
     let line = match grammar_of(&a.path) {
-        Some(g) => matching(&definitions(g, &text), &a.name)
+        Some(g) => matching(&definitions(&g, &text), &a.name)
             .first()
             .map(|d| d.line),
         None => occurrences(&text, &a.name)
@@ -459,7 +481,7 @@ pub fn source_window(
         let first = line.saturating_sub(before);
         return Some((first as u32 + 1, lines.get(first..=last)?.join("\n")));
     };
-    let (first, last) = matching(&definitions(g, &text), &a.name).first()?.lines;
+    let (first, last) = matching(&definitions(&g, &text), &a.name).first()?.lines;
     let cap = before + after + 1;
     let span = lines.get(first as usize - 1..last as usize)?;
     let mut shown = span[..span.len().min(cap)].join("\n");

@@ -119,3 +119,11 @@ given = "runs with bug_fixed and plan outcomes varying"
 expect = "the summary reports bug fixed and plan counts and no verdict changes"
 level = "integration"
 command = "cargo test --test eval the_summary_reports_bug_fixed_and_plan_and_no_verdict_changes"
+
+[[scenario]]
+id = "eval-claude-shared-config-dir"
+interface = "claude_config_dir"
+given = "a ClaudeCode with shared true and a fake claude binary"
+expect = "args hold --setting-sources project,local --strict-mcp-config, CLAUDE_CONFIG_DIR is not set, the transcript is kept"
+level = "integration"
+command = "cargo test --test eval claude_driver_in_the_users_own_config_dir_sets_no_config_dir_and_drops_user_settings"

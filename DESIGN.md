@@ -1887,7 +1887,13 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `settings.json` with only the user's `model` and `.credentials.json`
   linked to the user's (shared OAuth refreshes, as for Pi): no user
   `CLAUDE.md`, agents, commands, hooks, plugins, or MCP servers (those live
-  in the user's `.claude.json`, not copied). Claude Code 1.0.128 does not
+  in the user's `.claude.json`, not copied). Where the user's directory has
+  no `.credentials.json` (macOS keeps the login in the Keychain, which a
+  session with another config directory does not read), sessions run in
+  the user's own directory with `--setting-sources project,local
+  --strict-mcp-config`: no user settings, hooks, plugins, or MCP servers,
+  but the user's `CLAUDE.md`, rules, skills, agents and commands are
+  loaded in every arm, and the summary says so. Claude Code 1.0.128 does not
   read a project `AGENTS.md`, so for this driver every arm copy with an
   `AGENTS.md` (`block-only`, `full`, and the adoption copy before its
   session) also gets a one-line `CLAUDE.md`, `@AGENTS.md`, which imports

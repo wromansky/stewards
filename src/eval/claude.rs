@@ -24,6 +24,8 @@ pub struct ClaudeCode {
     pub config_dir: Option<PathBuf>,
     /// The user's own `model` setting: the children's model when no `--model` is given.
     pub default_model: Option<String>,
+    /// `config_dir` is the user's own directory, not a copy: see `isolate`.
+    pub shared: bool,
 }
 
 impl ClaudeCode {
@@ -37,6 +39,7 @@ impl ClaudeCode {
                 limit,
                 config_dir: None,
                 default_model: None,
+                shared: false,
             })
             .ok_or_else(|| {
                 CliError::new(
@@ -50,7 +53,10 @@ impl ClaudeCode {
 
     /// Builds the eval's config directory at `dir` from the user's (`CLAUDE_CONFIG_DIR`, else
     /// `~/.claude`), so sessions load none of the user's personal setup, and returns what it holds
-    /// in plain words. See `config_dir`.
+    /// in plain words. See `config_dir`. Where the user's directory has no `.credentials.json`
+    /// (macOS keeps the login in the Keychain, which a session with another config directory
+    /// does not read), sessions run in the user's own directory instead, with user settings and
+    /// MCP servers switched off by flags.
     pub fn isolate(&mut self, dir: &Path) -> Result<String> {
         let user = match std::env::var_os("CLAUDE_CONFIG_DIR") {
             Some(d) => PathBuf::from(d),
@@ -58,6 +64,19 @@ impl ClaudeCode {
                 PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".claude")
             }
         };
+        if !user.join(".credentials.json").exists() {
+            self.default_model = std::fs::read_to_string(user.join("settings.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v["model"].as_str().map(String::from));
+            let note = format!(
+                "Claude Code runs in the user's own config dir {} (it has no .credentials.json to link: the login is in the Keychain), with `--setting-sources project,local --strict-mcp-config`: no user settings, hooks, plugins, or MCP servers, but the user's CLAUDE.md, rules, skills, agents and commands are loaded in every arm; children on the session's model (CLAUDE_CODE_SUBAGENT_MODEL). Each arm copy with an AGENTS.md also gets a committed one-line CLAUDE.md, `@AGENTS.md`. Thinking is not set by the runner (MAX_THINKING_TOKENS is removed); each session's effective setting is recorded from its thinking blocks. cost_usd: null; the harness's figure is kept as harness_reported_cost_usd.",
+                user.display()
+            );
+            self.config_dir = Some(user);
+            self.shared = true;
+            return Ok(note);
+        }
         let (note, model) = config_dir(&user, dir)?;
         self.config_dir = Some(dir.to_path_buf());
         self.default_model = model;
@@ -130,6 +149,9 @@ impl Driver for ClaudeCode {
         if let Some(m) = model {
             cmd.args(["--model", m]);
         }
+        if self.shared {
+            cmd.args(["--setting-sources", "project,local", "--strict-mcp-config"]);
+        }
         cmd.arg("--")
             .arg(prompt)
             .stdin(Stdio::null())
@@ -139,7 +161,7 @@ impl Driver for ClaudeCode {
         // what an enclosing Claude Code sets for its shell; the `CLAUDE_CODE` prefix misses it
         cmd.env_remove("CLAUDECODE");
         cmd.env_remove("MAX_THINKING_TOKENS");
-        if let Some(c) = &self.config_dir {
+        if let (Some(c), false) = (&self.config_dir, self.shared) {
             cmd.env("CLAUDE_CONFIG_DIR", c);
         }
         if let Some(m) = model.or(self.default_model.as_deref()) {

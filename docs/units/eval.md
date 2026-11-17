@@ -37,8 +37,8 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers, the 
 | path\_without\_stewards | PATH with each directory holding stewards replaced by a mirror linking everything else in it. | [src/eval/mod.rs\:\:path\_without\_stewards](../../src/eval/mod.rs#L2214) |
 | next\_check | Runs stewards next --no-brief --no-run in a dir\: exit code and job count; writes no briefs, runs no commands. | [src/eval/mod.rs\:\:next\_check](../../src/eval/mod.rs#L967) |
 | kill\_leftovers | Kills every process whose cwd is under dir, or whose HERMES\_HOME (no other variable) is under it, until none remain or 10 s pass; reports killed and survivors. Lists via /proc on Linux, lsof and ps -E on macOS; None where it cannot list. | [src/eval/mod.rs\:\:kill\_leftovers](../../src/eval/mod.rs#L1841) |
-| claude\_parse | A Claude Code session file plus its stdout.log to a Run\: main tokens from result.usage, total from summed modelUsage, null without a result line; cost\_usd null, figure kept as harness\_reported\_cost\_usd; Read/Grep/Bash reads per record cwd, a Glob listing opens nothing; sidechain children. | [src/eval/claude.rs\:\:parse](../../src/eval/claude.rs#L156) |
-| claude\_config\_dir | Writes an isolated Claude Code config dir\: settings.json with only the user's model, .credentials.json linked when present; never writes the user's dir; returns a plain note and the user's model. | [src/eval/claude.rs\:\:config\_dir](../../src/eval/claude.rs#L24) |
+| claude\_parse | A Claude Code session file plus its stdout.log to a Run\: main tokens from result.usage, total from summed modelUsage, null without a result line; cost\_usd null, figure kept as harness\_reported\_cost\_usd; Read/Grep/Bash reads per record cwd, a Glob listing opens nothing; sidechain children. | [src/eval/claude.rs\:\:parse](../../src/eval/claude.rs#L178) |
+| claude\_config\_dir | Writes an isolated Claude Code config dir\: settings.json with the user's model, .credentials.json linked. Without one (macOS) sessions run in the user's own dir with --setting-sources project,local --strict-mcp-config; returns a note and model. | [src/eval/claude.rs\:\:config\_dir](../../src/eval/claude.rs#L24) |
 | task\_prompt | The task file \<dir\>/NN-\* verbatim; an error when none; a usage error when it contains \`think\` in any case. | [src/eval/mod.rs\:\:task\_prompt](../../src/eval/mod.rs#L1509) |
 | pinned\_commit | A repo suite's commit\: HEAD is the evals/ checkout's commit, refused when src/, baml\_src/ or .stewards/ have uncommitted changes; a sha as given; either refused when an absent probe's text is in its file there. Refusals are eval\_setup\_incomplete. | [src/eval/mod.rs\:\:pinned\_commit](../../src/eval/mod.rs#L2063) |
 | hermes\_parse | A Hermes sessions export to a Run\: the first-started top-level row is the task's, other top-level rows uncounted and flagged; only source subagent rows are children; a refused delegate\_task launches nothing; peak context from agent.log or None; cost\_usd null. | [src/eval/hermes.rs\:\:parse](../../src/eval/hermes.rs#L235) |
@@ -67,6 +67,7 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers, the 
 | eval-pagination-repro-fixture-root | eval\_bug\_fixed | the medium-api-pagination repro run with FIXTURE\_ROOT on a fixture copy, before and after fix.patch | it fails on the unfixed copy and passes once the fix is applied | integration |
 | eval-plan-closed | eval\_plan\_outcome | a stored plan with and without a .stewards/plans/\*.toml left in the dir | closed only when stored and no plan file is left | integration |
 | eval-report-only-graders | grade\_task | runs with bug\_fixed and plan outcomes varying | the summary reports bug fixed and plan counts and no verdict changes | integration |
+| eval-claude-shared-config-dir | claude\_config\_dir | a ClaudeCode with shared true and a fake claude binary | args hold --setting-sources project,local --strict-mcp-config, CLAUDE\_CONFIG\_DIR is not set, the transcript is kept | integration |
 
 ## Flows
 
@@ -85,7 +86,8 @@ _None._
 | gap | Hermes runs have no trusted cost | Hermes prices DeepSeek at off-peak rates in every hour, so cost\_usd is null, its figure is harness\_reported\_cost\_usd, and --max-cost is refused for hermes. |
 | gap | Hermes execute\_code shell commands are unseen | Commands an execute\_code script runs through terminal() are not in shell\_commands, files opened, or ritual steps. |
 | gap | Hermes files\_opened does not follow a cd across terminal calls | simplified\: only a call's workdir and a leading cd are followed; upgrade if files\_opened disagrees with the transcripts. |
+| gap | Claude Code on macOS loads the user's CLAUDE.md in every arm | Without a user .credentials.json the session runs in the user's own config dir; --setting-sources project,local drops user settings, hooks, plugins and --strict-mcp-config drops MCP servers, but user CLAUDE.md, rules, skills, agents and commands still load in bare and block-only arms. Stated in the summary note and DESIGN.md. Upgrade path\: link the Keychain login into an isolated dir. |
 
 ## Last reviewed
 
-eddec768e7aa566a8c00d7c81ecfced3657bfb74
+b712515bdee1115d4ea9fe708e7a8f3a4c19ed8d

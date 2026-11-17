@@ -2245,6 +2245,7 @@ fn claude_driver_passes_the_model_and_config_dir_and_keeps_the_persisted_session
         limit: Duration::from_secs(20),
         config_dir: Some(tmp.path().join("a")),
         default_model: Some("user-default".into()),
+        shared: false,
     };
     let dir = tmp.path().join("run/repo");
     std::fs::create_dir_all(&dir).unwrap();
@@ -2274,6 +2275,47 @@ fn claude_driver_passes_the_model_and_config_dir_and_keeps_the_persisted_session
     assert!(!vars.contains("CLAUDECODE="), "{vars}");
     // no inherited thinking budget
     assert!(!vars.contains("MAX_THINKING_TOKENS="), "{vars}");
+}
+
+/// With no credentials file to link (macOS: the login is in the Keychain), the session runs in
+/// the user's own config directory with user settings and MCP servers switched off.
+#[test]
+fn claude_driver_in_the_users_own_config_dir_sets_no_config_dir_and_drops_user_settings() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    let user = tmp.path().join("u");
+    let bin = tmp.path().join("claude");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\necho \"$@\" > ../args\nenv > ../env\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s1\"}}'\nmkdir -p {u}/projects/-r\necho '{{\"type\":\"user\"}}' > {u}/projects/-r/s1.jsonl\n",
+            u = user.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let claude = ClaudeCode {
+        bin,
+        limit: Duration::from_secs(20),
+        config_dir: Some(user),
+        default_model: None,
+        shared: true,
+    };
+    let dir = tmp.path().join("run/repo");
+    std::fs::create_dir_all(&dir).unwrap();
+    let sessions = tmp.path().join("sessions");
+    let env = [("PATH", std::env::var_os("PATH").unwrap())];
+    let s = claude
+        .start(&dir, "hi", Some("m-1"), "medium", &sessions, &env)
+        .unwrap();
+    assert_eq!(s.transcript, Some(sessions.join("s1.jsonl")));
+    let args = std::fs::read_to_string(tmp.path().join("run/args")).unwrap();
+    assert!(
+        args.contains("--setting-sources project,local --strict-mcp-config -- hi"),
+        "{args}"
+    );
+    let vars = std::fs::read_to_string(tmp.path().join("run/env")).unwrap();
+    assert!(!vars.contains("CLAUDE_CONFIG_DIR="), "{vars}");
 }
 
 /// A copy of a recorded sample with each `(from, to)` replaced in every file, and its transcript.
@@ -2328,6 +2370,7 @@ fn every_driver_maps_its_subagent_sample_the_same_way() {
         limit: Duration::from_secs(1),
         config_dir: None,
         default_model: None,
+        shared: false,
     };
     let hermes = Hermes {
         bin: PathBuf::new(),
@@ -3623,6 +3666,7 @@ fn every_drivers_credential_secrets_are_redacted_in_its_kept_session_files() {
         limit,
         config_dir: Some(t.join("claude")),
         default_model: None,
+        shared: false,
     };
     let hermes = Hermes {
         bin: t.join("hermes-bin"),

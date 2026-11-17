@@ -1,11 +1,11 @@
 unit = "eval"
 
 [reviewed]
-commit = "eddec768e7aa566a8c00d7c81ecfced3657bfb74"
-fingerprint = "sha256:0da015a236ef9ce962af6de9ec903cca179dc4b844976c6348a3840a5cc9534a"
-tree = "154ad9651ea870f023d975b6b56d114fbce31905"
-tester = "154ad9651ea870f023d975b6b56d114fbce31905"
-documenter = "154ad9651ea870f023d975b6b56d114fbce31905"
+commit = "b712515bdee1115d4ea9fe708e7a8f3a4c19ed8d"
+fingerprint = "sha256:dfe176578de8607c45c4f436aaccf1a8f5a80f13a1c52007b7c63a17b0642d21"
+tree = "deaa076656693bab275c07f4d5546714e6ec6d97"
+tester = "deaa076656693bab275c07f4d5546714e6ec6d97"
+documenter = "deaa076656693bab275c07f4d5546714e6ec6d97"
 
 [[interface]]
 id = "eval_run"
@@ -110,7 +110,7 @@ contract = "A Claude Code session file plus its stdout.log to a Run: main tokens
 [[interface]]
 id = "claude_config_dir"
 anchor = "src/eval/claude.rs::config_dir"
-contract = "Writes an isolated Claude Code config dir: settings.json with only the user's model, .credentials.json linked when present; never writes the user's dir; returns a plain note and the user's model."
+contract = "Writes an isolated Claude Code config dir: settings.json with the user's model, .credentials.json linked. Without one (macOS) sessions run in the user's own dir with --setting-sources project,local --strict-mcp-config; returns a note and model."
 
 [[interface]]
 id = "task_prompt"
@@ -385,6 +385,12 @@ kind = "gap"
 title = "Hermes files_opened does not follow a cd across terminal calls"
 anchor = "src/eval/hermes.rs::files_opened"
 note = "simplified: only a call's workdir and a leading cd are followed; upgrade if files_opened disagrees with the transcripts."
+
+[[gap]]
+kind = "gap"
+title = "Claude Code on macOS loads the user's CLAUDE.md in every arm"
+anchor = "src/eval/claude.rs::isolate"
+note = "Without a user .credentials.json the session runs in the user's own config dir; --setting-sources project,local drops user settings, hooks, plugins and --strict-mcp-config drops MCP servers, but user CLAUDE.md, rules, skills, agents and commands still load in bare and block-only arms. Stated in the summary note and DESIGN.md. Upgrade path: link the Keychain login into an isolated dir."
 
 [doc]
 overview = "The eval unit is the runner behind `stewards eval`. It measures whether coding agents do better with stewards than without: it drives a harness (Pi, Claude Code or Hermes Agent) over a suite of tasks in several arms, parses every session transcript into a run record, checks that the full arm followed the ritual, and reports cost and token overhead. The graders never branch on the harness. It also holds the material it runs on under evals/: the fixture, task prompts, suite manifests, arms.sh, and one reproduction per seeded bug."

@@ -862,11 +862,70 @@ fn task_flag_overrides_the_task() {
 }
 
 #[test]
-fn pr_flag_is_not_implemented() {
+fn pr_posts_the_report_as_one_comment_updated_in_place() {
     let repo = fixture("single");
-    let (code, v) = run(repo.path(), &["next", "--roles", "--pr", "1"]);
-    assert_eq!(code, 2);
-    assert_eq!(v["error"]["code"], "not_implemented");
+    common::set_origin(repo.path(), "https://github.com/o/r.git");
+    let own = json!([{"id": 5, "body": "<!-- stewards:next -->\nold", "user": {"login": "me"}}]);
+    let gh = common::fake_gh(&own.to_string(), true);
+    let (code, v) = common::run_with_path(
+        repo.path(),
+        gh.path(),
+        &["next", "--roles", "--no-brief", "--pr", "3"],
+    );
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["pr_comment"]["updated"], true);
+    assert_eq!(
+        v["pr_comment"]["url"],
+        "https://github.com/o/r/pull/3#issuecomment-9"
+    );
+    let log = fs::read_to_string(gh.path().join("log")).unwrap();
+    assert!(
+        log.contains("api -X PATCH repos/o/r/issues/comments/5"),
+        "{log}"
+    );
+    let body = fs::read_to_string(gh.path().join("body")).unwrap();
+    let body: Value = serde_json::from_str(&body).unwrap();
+    let body = body["body"].as_str().unwrap();
+    assert!(body.starts_with("<!-- stewards:next -->\n"), "{body}");
+    assert!(body.contains("## Jobs"), "{body}");
+}
+
+#[test]
+fn a_failed_post_keeps_the_report_and_the_exit_code() {
+    let repo = fixture("single");
+    common::set_origin(repo.path(), "git@github.com:o/r.git");
+    let (plain_code, plain) = run(repo.path(), &["next", "--no-brief"]);
+    let gh = common::fake_gh("[]", false);
+    let (code, v) =
+        common::run_with_path(repo.path(), gh.path(), &["next", "--no-brief", "--pr", "3"]);
+    assert_eq!(code, plain_code, "{v}");
+    assert_eq!(v["jobs"], plain["jobs"]);
+    assert_eq!(v["pr_comment"], Value::Null);
+    assert!(v.as_object().unwrap().contains_key("pr_comment"));
+    let why = v["pr_comment_error"].as_str().unwrap();
+    assert!(
+        why.starts_with("tracker_auth:") && !why.contains('\n'),
+        "{why}"
+    );
+}
+
+#[test]
+fn the_posted_text_has_no_handoff_or_local_path() {
+    let repo = fixture("single");
+    common::set_origin(repo.path(), "https://github.com/o/r.git");
+    let gh = common::fake_gh("[]", true);
+    let (_, v) = common::run_with_path(repo.path(), gh.path(), &["next", "--roles", "--pr", "3"]);
+    // the report itself still carries the handoffs
+    assert!(v["jobs"][0]["handoff"].is_string(), "{v}");
+    let body = fs::read_to_string(gh.path().join("body")).unwrap();
+    let body: Value = serde_json::from_str(&body).unwrap();
+    let body = body["body"].as_str().unwrap();
+    assert!(
+        !body.contains("handoff") && !body.contains(".stewards/briefs"),
+        "{body}"
+    );
+    let root = repo.path().canonicalize().unwrap();
+    assert!(!body.contains(root.to_str().unwrap()), "{body}");
 }
 
 #[test]

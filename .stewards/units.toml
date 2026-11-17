@@ -1,7 +1,7 @@
 [[unit]]
 name = "cli"
 purpose = "The stewards binary: clap command parsing and dispatch, global flags (--human, --repo, -C, --direct), the JSON envelope and markdown output, CLI errors, and the shared test helpers."
-paths = ["src/main.rs", "src/lib.rs", "src/output.rs", "src/completions.rs", "src/render.rs", "src/review.rs", "src/validate.rs", "tests/skeleton.rs", "tests/common/**"]
+paths = ["src/main.rs", "src/lib.rs", "src/output.rs", "src/completions.rs", "src/review.rs", "src/validate.rs", "tests/validate.rs", "src/forge.rs", "tests/forge.rs", "src/tracker.rs", "tests/tracker.rs", "tests/skeleton.rs", "tests/common/**"]
 
 [[unit]]
 name = "model"
@@ -26,7 +26,7 @@ paths = ["src/pack.rs", "tests/pack.rs"]
 [[unit]]
 name = "next"
 purpose = "Workspace state reports: status (units, freshness, coverage, gaps, debt) and next (which review jobs are due, optionally writing their briefs)."
-paths = ["src/next.rs", "src/status.rs", "tests/next.rs", "tests/status.rs"]
+paths = ["src/next.rs", "src/plan.rs", "src/status.rs", "tests/plans.rs", "tests/next.rs", "tests/status.rs"]
 
 [[unit]]
 name = "llm"

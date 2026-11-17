@@ -7,9 +7,10 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::check::{escape_invisible, one_line};
+use crate::forge::{self, PrComment};
 use crate::model::{Loaded, Role};
 use crate::next::{self, Briefs, NextReport};
-use crate::output::{CliError, Global, Human, emit, not_implemented};
+use crate::output::{CliError, Global, Human, emit};
 use crate::route::Router;
 use crate::submit::{self, ShownFinding, TASK_CHANGE_CAP, UnitVerdict};
 use crate::workspace::{Repo, Workspace, here, safe_path};
@@ -220,6 +221,47 @@ struct Review {
     /// What `next` lists now, each job with its handoff; `None` while reported findings are to be
     /// fixed first or result files are left to read.
     next: Option<NextReport>,
+    /// With `--pr`: the PR or MR comment this call created or edited; `null` when posting failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pr_comment: Option<Option<PrComment>>,
+    /// With `--pr`, when posting failed: why, on one line. The exit code is the command's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pr_comment_error: Option<String>,
+}
+
+impl Review {
+    /// What this call reported, for the PR comment: per unit verdicts, each finding and note as
+    /// `file:line: cut -> replace_with`, the jobs listed, and the `then` line.
+    fn pr_text(&self) -> String {
+        let mut out = vec![];
+        for r in &self.reported {
+            out.extend(
+                r.units
+                    .iter()
+                    .map(|u| format!("unit {}: {}", u.unit, u.verdict)),
+            );
+            for (kind, list) in [("finding", &r.findings), ("note", &r.notes)] {
+                out.extend(list.iter().map(|f| {
+                    format!(
+                        "{kind} {}: {}:{}: {} -> {}",
+                        f.unit, f.file, f.line, f.cut, f.replace_with
+                    )
+                }));
+            }
+        }
+        if out.is_empty() {
+            out.push("No results.".into());
+        }
+        for j in self.next.iter().flat_map(|n| &n.jobs) {
+            out.push(
+                format!("job {} {}", j.unit, j.role.as_str())
+                    .trim()
+                    .to_string(),
+            );
+        }
+        out.push(format!("then: {}", self.then));
+        out.join("\n")
+    }
 }
 
 impl Human for Review {
@@ -282,6 +324,15 @@ impl Human for Review {
             Some(n) => out.push(format!("\n{}", n.render())),
             None => out.push("\n## Jobs\n\nNone until the above is done.".into()),
         }
+        out.extend(self.pr_comment.iter().flatten().map(|c| {
+            let verb = if c.updated { "updated" } else { "posted" };
+            format!("\nComment {verb}: {}", one_line(&c.url))
+        }));
+        out.extend(
+            self.pr_comment_error
+                .as_ref()
+                .map(|e| format!("\nComment not posted: {}", one_line(e))),
+        );
         out.join("\n")
     }
 }
@@ -419,11 +470,8 @@ pub fn run(
     pr: Option<u64>,
     answers: &[String],
 ) -> Result<ExitCode> {
-    if pr.is_some() {
-        return not_implemented("review --pr");
-    }
     let command = if roles { "review --roles" } else { "review" };
-    let (_, ws) = here(g)?;
+    let (cwd, ws) = here(g)?;
     record_answers(&ws, answers)?;
     let repos = ws.loaded_repos()?;
     let (task, from) = match task {
@@ -531,18 +579,38 @@ pub fn run(
             None => String::new(),
         },
     };
-    let written = emit(
-        &Review {
-            task: Task { text, from },
-            hint: task.is_none().then_some(TASK_HINT),
-            reported: c.reported,
-            left: c.left,
-            not_results_unshown: c.not_results_unshown,
-            then,
-            next: report,
-        },
-        g.human,
-    );
+    let mut review = Review {
+        task: Task { text, from },
+        hint: task.is_none().then_some(TASK_HINT),
+        reported: c.reported,
+        left: c.left,
+        not_results_unshown: c.not_results_unshown,
+        then,
+        next: report,
+        pr_comment: None,
+        pr_comment_error: None,
+    };
+    if let Some(pr) = pr {
+        // a failed post must not hide the report or change the exit code
+        let text = review.pr_text();
+        let posted = ws.current_repo(&cwd).and_then(|repo| {
+            forge::post(
+                &repo.root,
+                pr,
+                "<!-- stewards:review -->",
+                "### stewards review",
+                &text,
+            )
+        });
+        match posted {
+            Ok(c) => review.pr_comment = Some(Some(c)),
+            Err(e) => {
+                review.pr_comment = Some(None);
+                review.pr_comment_error = Some(forge::error_line(&e));
+            }
+        }
+    }
+    let written = emit(&review, g.human);
     // only once the output is out: a failed write loses nothing. A file that cannot be removed
     // is reported again by the next call.
     if written {

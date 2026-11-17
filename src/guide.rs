@@ -197,7 +197,7 @@ const fn e(code: &'static str, when: &'static str, fix: &'static str) -> ErrorRo
     ErrorRow { code, when, fix }
 }
 
-static ERRORS: [ErrorRow; 31] = [
+static ERRORS: [ErrorRow; 32] = [
     e(
         "not_a_git_repo",
         "no `.git` above cwd",
@@ -270,8 +270,13 @@ static ERRORS: [ErrorRow; 31] = [
     ),
     e(
         "tracker_auth",
-        "`gh`/`glab` not logged in, or Jira or Linear env missing",
-        "`gh auth login` / `glab auth login` / set `JIRA_URL`, `JIRA_TOKEN` / set `LINEAR_API_KEY`",
+        "`gh`/`glab` not logged in, Jira or Linear env missing, `JIRA_URL` not https or with user info, or the tracker refused the credentials (HTTP 401/403)",
+        "`gh auth login` / `glab auth login` / set `JIRA_URL`, `JIRA_TOKEN` (and `JIRA_EMAIL` for Jira Cloud) / set `LINEAR_API_KEY`",
+    ),
+    e(
+        "tracker_failed",
+        "`validate --export`: any other tracker failure; the message gives the kind, the HTTP status, the tracker's error on one line (at most 300 characters), and how many issues this call already filed and recorded",
+        "check [tracker] project and the tracker, then run stewards validate --export again; filed issues are recorded on the cards",
     ),
     e(
         "harness_unknown",
@@ -335,8 +340,8 @@ static ERRORS: [ErrorRow; 31] = [
     ),
     e(
         "harness_missing",
-        "`eval` and the harness binary (`pi`, `claude`) is not on PATH, or pi-subagents is not installed in the Pi agent directory",
-        "install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`), or Claude Code (`npm install -g @anthropic-ai/claude-code`)",
+        "`eval` and the harness binary (`pi`, `claude`, or `hermes`) is not on PATH, or pi-subagents is not installed in the Pi agent directory",
+        "install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`), Claude Code (`npm install -g @anthropic-ai/claude-code`), or Hermes Agent (https://hermes-agent.nousresearch.com/docs)",
     ),
     e(
         "eval_setup_incomplete",

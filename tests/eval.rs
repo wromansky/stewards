@@ -11,11 +11,11 @@ use stewards::eval::grade::{grade_task, median, overhead_medians, render, summar
 use stewards::eval::hermes::{Hermes, fingerprint, parse as hermes_parse, template};
 use stewards::eval::pi::{Pi, agent_dir, parse};
 use stewards::eval::{
-    ADOPT_PROMPT, Action, Arm, Driver, Plan, RITUAL_STEPS, ReviewedUnit, RitualSteps, Run,
-    RunRecord, RunRole, Session, SetupNotes, Source, Status, Suite, Tokens, UnitReview, Verdict,
-    adopted_knowledge, execute, existing_files, neutral_work_dir, next_check,
-    path_without_stewards, reads_git_history, reviewed_units, ritual_steps, shell_reads,
-    stewards_commands, task_prompt, without_developers, would_exceed,
+    ADOPT_PROMPT, Action, Arm, Driver, Plan, PlanOutcome, RITUAL_STEPS, ReviewedUnit, RitualSteps,
+    Run, RunRecord, RunRole, Session, SetupNotes, Source, Status, Suite, Tokens, UnitReview,
+    Verdict, adopted_knowledge, execute, existing_files, neutral_work_dir, next_check,
+    path_without_stewards, plan_outcome, reads_git_history, reviewed_units, ritual_steps,
+    shell_reads, stewards_commands, task_prompt, without_developers, would_exceed,
 };
 use stewards::eval::{credential_secrets, redact_secrets};
 use stewards::output::CliError;
@@ -602,6 +602,7 @@ fn run_with(main: u64, total: u64, files: usize, ritual: RitualSteps) -> Run {
         subagent_sessions: 1,
         uncounted_sessions: vec![],
         reviews: vec![],
+        plan_stored: false,
         git_history_commands: vec![],
         stop_reason: Some("stop".into()),
         failed_children: vec![],
@@ -627,6 +628,8 @@ fn record(task: u32, arm: Arm, role: RunRole, run: u32, result: Run) -> RunRecor
         leftovers: None,
         next_check: None,
         changed: true,
+        bug_fixed: None,
+        plan: None,
         reviews: vec![],
         answers: 0,
         result: Some(result),
@@ -697,7 +700,7 @@ fn the_gate_passes_only_when_every_full_run_has_all_four_facts() {
         g.reasons,
         [
             "full run 1: changed nothing",
-            "full run 3: `stewards review` never ran; the runner's `stewards next --no-brief` did not exit 0",
+            "full run 3: `stewards review` never ran; the runner's `stewards next --no-brief --no-run` did not exit 0",
         ]
     );
 }
@@ -3710,4 +3713,221 @@ fn the_runner_keeps_no_credential_value_in_session_files_or_run_records() {
     }
     assert!(redacted > 0);
     assert!(files.iter().any(|f| f.starts_with(results.join("runs"))));
+}
+
+// ---- the report-only graders: bug fixed, plan stored and closed ----
+
+const ARCHITECT_CMD: &str = "stewards submit --role architect --file .stewards/briefs/arch.json";
+const STORED: &str = r#"{"summary":"architect: 0 purposes set; 0 unit proposals for you to review; 0 flows upserted; 0 decisions; plan add-priority-2026-11-16 stored (2 steps): make each step's change, then run stewards review"}"#;
+const NOT_STORED: &str = r#"{"summary":"architect: 0 purposes set; 0 unit proposals for you to review; 0 flows upserted; 0 decisions"}"#;
+
+/// `sample` copied, with its child's one shell command replaced by `command` and that command's
+/// output by `output`; the copy's main transcript file.
+fn child_ran(driver: &str, sample: &Path, tmp: &Path, command: &str, output: &str) -> PathBuf {
+    let dir = tmp.join(format!("{driver}-child"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    copy_dir(sample, &dir);
+    let main = main_file(&dir);
+    let file = match driver {
+        "pi" => main
+            .with_extension("")
+            .join("b5d51927-cb55-4247-a969-9448b23c2c26/run-0/session.jsonl"),
+        _ => main.clone(),
+    };
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut out = vec![];
+    for line in text.lines() {
+        let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+        match driver {
+            "claude" if v["isSidechain"] == true => {
+                for b in v["message"]["content"].as_array_mut().into_iter().flatten() {
+                    if b["name"] == "Bash" {
+                        b["input"]["command"] = command.into();
+                    }
+                    if b["type"] == "tool_result" {
+                        b["content"] = output.into();
+                    }
+                }
+            }
+            "hermes" if v["source"] == "subagent" => {
+                for m in v["messages"].as_array_mut().into_iter().flatten() {
+                    if let Some(c) = m["tool_calls"].get_mut(0) {
+                        c["function"]["arguments"] =
+                            serde_json::json!({ "command": command }).to_string().into();
+                    }
+                    if m["role"] == "tool" {
+                        m["content"] =
+                            serde_json::json!({"output": output, "exit_code": 0, "error": null})
+                                .to_string()
+                                .into();
+                    }
+                }
+            }
+            _ => {}
+        }
+        out.push(v.to_string());
+    }
+    if driver == "pi" {
+        // the recorded child ran no command: it gets this one
+        out.push(serde_json::json!({"type": "message", "id": "c1", "parentId": null, "timestamp": "2026-11-12T19:28:00.000Z",
+            "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "c1", "name": "bash",
+                "arguments": {"command": command}}], "stopReason": "toolUse"}}).to_string());
+        out.push(serde_json::json!({"type": "message", "id": "r1", "parentId": null, "timestamp": "2026-11-12T19:28:01.000Z",
+            "message": {"role": "toolResult", "toolCallId": "c1", "toolName": "bash",
+                "content": [{"type": "text", "text": output}]}}).to_string());
+    }
+    std::fs::write(&file, out.join("\n") + "\n").unwrap();
+    main
+}
+
+#[test]
+fn a_childs_architect_submit_that_printed_plan_stored_is_seen_on_every_driver() {
+    let tmp = TempDir::new().unwrap();
+    for (driver, sample) in [
+        ("pi", sample("subagent")),
+        ("claude", claude_sample("subagent")),
+        ("hermes", hermes_sample("subagent")),
+    ] {
+        let stored = |command: &str, output: &str| {
+            let t = child_ran(driver, &sample, tmp.path(), command, output);
+            match driver {
+                "pi" => parse(&t, 1.0, false),
+                "claude" => claude_parse(&t, 1.0, false),
+                _ => hermes_parse(&t, 1.0, false),
+            }
+            .unwrap()
+            .plan_stored
+        };
+        assert!(stored(ARCHITECT_CMD, STORED), "{driver}");
+        assert!(!stored(ARCHITECT_CMD, NOT_STORED), "{driver}: no plan");
+        assert!(!stored("echo child", STORED), "{driver}: not a submit");
+    }
+}
+
+#[test]
+fn a_plan_is_closed_when_stored_and_no_plan_file_is_left() {
+    let tmp = TempDir::new().unwrap();
+    let plans = tmp.path().join(".stewards/plans");
+    std::fs::create_dir_all(&plans).unwrap();
+    std::fs::write(plans.join("add-priority.toml"), "title = \"x\"\n").unwrap();
+    let left = plan_outcome(tmp.path(), true);
+    assert!(left.stored && !left.closed);
+    std::fs::remove_file(plans.join("add-priority.toml")).unwrap();
+    let closed = plan_outcome(tmp.path(), true);
+    assert!(closed.stored && closed.closed);
+    let none = plan_outcome(tmp.path(), false);
+    assert!(!none.stored && !none.closed);
+}
+
+#[test]
+fn the_manifest_names_repro_and_expects_plan_and_an_unknown_repro_is_usage() {
+    let suite = fixture_suite();
+    assert_eq!(
+        suite.task(2).unwrap().repro.as_deref(),
+        Some("medium-api-pagination")
+    );
+    assert!(suite.task(5).unwrap().expects_plan);
+    assert!(suite.task(1).unwrap().repro.is_none() && !suite.task(1).unwrap().expects_plan);
+
+    let tmp = TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("suites")).unwrap();
+    let text = std::fs::read_to_string(evals().join("suites/fixture.toml"))
+        .unwrap()
+        .replace("medium-api-pagination", "no-such-repro");
+    std::fs::write(tmp.path().join("suites/fixture.toml"), text).unwrap();
+    let err = Suite::load(tmp.path(), "fixture").unwrap_err();
+    let e = err.downcast_ref::<CliError>().unwrap();
+    assert_eq!(e.code, "usage", "{e}");
+    assert!(e.to_string().contains("no-such-repro"), "{e}");
+}
+
+fn repro(root: &Path) -> bool {
+    std::process::Command::new("bash")
+        .arg(evals().join("repros/medium-api-pagination/repro.sh"))
+        .env("FIXTURE_ROOT", root)
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[test]
+fn the_pagination_repro_fails_on_the_fixture_and_passes_with_the_fix_applied() {
+    let tmp = TempDir::new().unwrap();
+    copy_dir(&evals().join("fixture"), tmp.path());
+    assert!(!repro(tmp.path()));
+    let applied = std::process::Command::new("patch")
+        .args(["-p1", "-i"])
+        .arg(evals().join("repros/medium-api-pagination/fix.patch"))
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(applied.status.success(), "{applied:?}");
+    assert!(repro(tmp.path()));
+}
+
+#[test]
+fn the_runners_next_check_passes_no_run() {
+    let tmp = TempDir::new().unwrap();
+    let fake = tmp.path().join("fake-stewards");
+    let argv = tmp.path().join("argv");
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\necho \"$@\" > {}\necho '{{}}'\n", argv.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    next_check(&fake, tmp.path()).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&argv).unwrap().trim(),
+        "next --no-brief --no-run"
+    );
+}
+
+#[test]
+fn the_summary_reports_bug_fixed_and_plan_and_no_verdict_changes() {
+    let gated = steps(&["review", "handoff", "check_green"]);
+    let mut recs = records(2, 3000, 9000, gated.clone());
+    for r in &mut recs {
+        r.bug_fixed = Some(r.arm == Arm::Full || r.run == 1);
+    }
+    let g = grade_task(&fixture_suite(), 2, &recs, &ARMS, 3);
+    assert_eq!(g.verdict, Verdict::Pass, "{:?}", g.reasons);
+    let counts: Vec<_> = g
+        .bug_fixed
+        .iter()
+        .map(|f| (f.arm, f.fixed, f.runs))
+        .collect();
+    assert_eq!(counts, [(Arm::Bare, 1, 3), (Arm::Full, 3, 3)]);
+    assert!(g.plan.is_none());
+
+    let mut plan_recs = records(5, 3000, 9000, gated);
+    let mut n = 0;
+    for r in plan_recs.iter_mut().filter(|r| r.arm == Arm::Full) {
+        n += 1;
+        r.plan = Some(PlanOutcome {
+            stored: n < 3,
+            closed: n == 1,
+        });
+    }
+    let g = grade_task(&fixture_suite(), 5, &plan_recs, &ARMS, 3);
+    let p = g.plan.unwrap();
+    assert_eq!((p.stored, p.closed, p.runs), (2, 1, 3));
+    assert_eq!(g.verdict, Verdict::Pass, "{:?}", g.reasons);
+
+    let mut p = plan(Path::new("/tmp"), 3, None);
+    p.arms = ARMS.to_vec();
+    p.tasks = vec![2, 5];
+    p.suite = fixture_suite();
+    recs.extend(plan_recs);
+    let text = render(&summarize(&p, &recs, false, &[], SetupNotes::default()));
+    assert!(
+        text.contains("bug fixed bare 1/3, full 3/3 (report-only)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("plan stored 2/3, closed 1/3 (report-only)"),
+        "{text}"
+    );
 }

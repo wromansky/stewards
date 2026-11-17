@@ -9,11 +9,12 @@ use crate::check::{escape_invisible, invisible, one_line};
 use crate::git;
 use crate::guide;
 use crate::llm::{self, Mode};
-use crate::model::Role;
+use crate::model::{GapKind, Role};
 use crate::next;
 use crate::output::{CliError, Global, Human, emit};
 use crate::pack::{self, Pack, ReviewPack};
 use crate::route::Router;
+use crate::run;
 use crate::submit;
 use crate::user::{self, Entry};
 use crate::workspace::{Repo, here};
@@ -384,7 +385,8 @@ fn render(
     out
 }
 
-/// Packs and renders the brief; a validator brief takes the unit's first unjudged bug.
+/// Packs and renders the brief; a validator brief takes the unit's first unjudged bug and runs
+/// its repro first.
 pub fn build(
     repo: &Repo,
     unit: Option<&str>,
@@ -394,20 +396,72 @@ pub fn build(
     snapshot: &str,
 ) -> Result<String> {
     check_root(&repo.root)?;
+    if role == Role::Validator
+        && let Some(unit) = unit
+    {
+        let first = repo.loaded()?.cards.get(unit).and_then(|c| {
+            c.gaps
+                .iter()
+                .find(|g| g.kind == GapKind::Bug && g.severity.is_none())
+        });
+        let result = first
+            .and_then(|g| g.repro.as_deref())
+            .map(|r| repro_result(repo, unit, r))
+            .transpose()?;
+        return build_validator(repo, unit, None, task, snapshot, result);
+    }
     let diff = mode == Mode::Review || role == Role::Tester;
     let pack = pack::pack(repo, unit, role, task, diff, snapshot)?;
-    // the pack holds a validator's first unjudged bug
-    if role == Role::Validator && pack.bug.is_none() {
+    frame(repo, &pack, mode, snapshot, None)
+}
+
+/// The validator's brief for the bug titled `bug` (the first unjudged one when `None`), with the
+/// `result` of running its repro (`None`: not run).
+pub fn build_validator(
+    repo: &Repo,
+    unit: &str,
+    bug: Option<&str>,
+    task: &str,
+    snapshot: &str,
+    result: Option<serde_json::Value>,
+) -> Result<String> {
+    check_root(&repo.root)?;
+    let pack = pack::validator(repo, unit, task, snapshot, bug, result)?;
+    if pack.bug.is_none() {
         bail!(CliError::new(
             "usage",
-            format!(
-                "unit `{}` has no unjudged bug to validate",
-                unit.unwrap_or_default()
-            ),
+            format!("unit `{unit}` has no unjudged bug to validate"),
             "record one with `stewards validate --report <file>`",
         ));
     }
-    frame(repo, &pack, mode, snapshot, None)
+    frame(repo, &pack, Mode::Review, snapshot, None)
+}
+
+/// Runs `repro` on `unit`'s allowlist from the repo root: the run's result plus `reproduced`,
+/// true only when the command exited non-zero (a timeout or a command that could not start
+/// proves nothing, and `reason` says which). A repro the allowlist no longer allows is not run.
+pub fn repro_result(repo: &Repo, unit: &str, repro: &str) -> Result<serde_json::Value> {
+    let allowed = run::allowed(repo.loaded()?, Some(unit));
+    let mut v = match run::run(&repo.root, &allowed, repro) {
+        Ok(r) => serde_json::to_value(r)?,
+        Err(e) => {
+            let c = e.downcast::<CliError>()?;
+            serde_json::json!({"command": repro, "output": format!("not run: {}", c.message)})
+        }
+    };
+    let reproduced = v["exit_code"].as_i64().is_some_and(|c| c != 0);
+    v["reproduced"] = reproduced.into();
+    if !reproduced {
+        v["reason"] = if v["timed_out"] == true {
+            "timed out"
+        } else if v["exit_code"] == 0 {
+            "the command exited 0"
+        } else {
+            "the command did not run to an exit code"
+        }
+        .into();
+    }
+    Ok(v)
 }
 
 /// The review briefs of the `due` units (units.toml order) with their packs: every due unit in

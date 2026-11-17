@@ -13,8 +13,8 @@ use serde_json::Value;
 
 use super::{
     Action, Driver, FAILED_STOPS, ReviewSubmit, Run, Session, Tokens, fresh_session_env,
-    is_reviewer_submit, reads_git_history, records, repo_relative, reviewed_units, ritual_steps,
-    run_session, shell_reads, stewards_commands,
+    is_architect_submit, is_reviewer_submit, plan_stored, reads_git_history, records,
+    repo_relative, reviewed_units, ritual_steps, run_session, shell_reads, stewards_commands,
 };
 use crate::output::CliError;
 
@@ -463,6 +463,18 @@ fn review_submits(rows: &Rows) -> Vec<(f64, ReviewSubmit)> {
         .collect()
 }
 
+/// Whether one session ran an architect `submit` whose `terminal` output says `plan <id> stored`.
+fn architect_stored(rows: &Rows) -> bool {
+    calls(rows).iter().any(|c| {
+        c.name == "terminal"
+            && stewards_commands(c.args["command"].as_str().unwrap_or_default())
+                .iter()
+                .any(|cmd| is_architect_submit(cmd))
+            && result_of(rows, c)
+                .is_some_and(|(_, v)| v["output"].as_str().is_some_and(plan_stored))
+    })
+}
+
 /// The distinct paths one session opened (see `Run::files_opened`), relative to `root` (the main
 /// session's `cwd`), in order: each `read_file` `path`, each content `search_files` `path` (a
 /// directory is dropped later by `existing_files`; `target: files` or `find` is a listing and
@@ -673,6 +685,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
     let mut all_actions = vec![];
     let mut tree_files: Vec<String> = vec![];
     let mut reviews = vec![];
+    let mut plan_stored = false;
     let mut git_history_commands = vec![];
     let mut failed = vec![];
     let mut cost: Option<f64> = None;
@@ -692,6 +705,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         all_actions.extend(actions(rows, i > 0));
         if i > 0 {
             reviews.extend(review_submits(rows));
+            plan_stored |= architect_stored(rows);
             if let Some(stop) = last_stop(rows).filter(|r| FAILED_STOPS.contains(&r.as_str())) {
                 failed.push(format!("{} stopped with `{stop}`", id(rows[0])));
             }
@@ -739,6 +753,7 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         subagent_sessions: sessions.len() - 1,
         uncounted_sessions: tops[1..].iter().map(|s| id(s).to_string()).collect(),
         reviews: reviews.into_iter().map(|(_, r)| r).collect(),
+        plan_stored,
         git_history_commands,
         stop_reason,
         failed_children: failed,

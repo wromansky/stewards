@@ -153,7 +153,43 @@ pub fn pack(
     diff: bool,
     snapshot: &str,
 ) -> Result<Pack> {
-    assemble(repo, unit, role, task, diff, snapshot, None)
+    assemble(repo, unit, role, task, diff, snapshot, Extra::default())
+}
+
+/// The validator's pack for the bug titled `bug` (the first unjudged one when `None`), with the
+/// result of running its repro (`None`: not run).
+pub fn validator(
+    repo: &Repo,
+    unit: &str,
+    task: &str,
+    snapshot: &str,
+    bug: Option<&str>,
+    repro: Option<serde_json::Value>,
+) -> Result<Pack> {
+    let extra = Extra {
+        bug,
+        repro,
+        ..Extra::default()
+    };
+    assemble(
+        repo,
+        Some(unit),
+        Role::Validator,
+        task,
+        false,
+        snapshot,
+        extra,
+    )
+}
+
+/// What only one role's pack takes.
+#[derive(Default)]
+struct Extra<'a> {
+    /// The developer's task number and task.
+    dev: Option<(usize, &'a Task)>,
+    /// The validator's bug title and repro result.
+    bug: Option<&'a str>,
+    repro: Option<serde_json::Value>,
 }
 
 /// The developer's pack for task `n` of `unit`'s task list.
@@ -172,7 +208,10 @@ pub fn developer(
         task,
         false,
         snapshot,
-        Some((n, dev)),
+        Extra {
+            dev: Some((n, dev)),
+            ..Extra::default()
+        },
     )
 }
 
@@ -183,8 +222,9 @@ fn assemble(
     task: &str,
     diff: bool,
     snapshot: &str,
-    dev: Option<(usize, &Task)>,
+    extra: Extra,
 ) -> Result<Pack> {
+    let dev = extra.dev;
     match (role, unit) {
         (Role::Architect, Some(u)) => bail!(usage(
             format!("the architect's pack takes no unit, got `{u}`"),
@@ -376,11 +416,13 @@ fn assemble(
             p.test_commands = Some(test_commands(&loaded.repo.commands));
             p.bug = card
                 .and_then(|c| {
-                    c.gaps
-                        .iter()
-                        .find(|g| g.kind == GapKind::Bug && g.severity.is_none())
+                    c.gaps.iter().find(|g| match extra.bug {
+                        Some(t) => g.kind == GapKind::Bug && g.title == t,
+                        None => g.kind == GapKind::Bug && g.severity.is_none(),
+                    })
                 })
                 .cloned();
+            p.repro_result = extra.repro;
             None
         }
         Role::Architect => unreachable!("the architect has no unit"),
@@ -543,7 +585,15 @@ pub fn review(repo: &Repo, due: &[DueUnit], task: &str, snapshot: &str) -> Resul
     let room = |r: &ReviewPack| REVIEW_BUDGET.saturating_sub(r.render().len() + 1);
     let mut groups = vec![empty()];
     for (unit, reasons) in due {
-        let mut p = assemble(repo, Some(unit), Role::Reviewer, task, true, snapshot, None)?;
+        let mut p = assemble(
+            repo,
+            Some(unit),
+            Role::Reviewer,
+            task,
+            true,
+            snapshot,
+            Extra::default(),
+        )?;
         p.due_because = Some(reasons.clone());
         p.bytes = p.render().len();
         let mut r = groups.last_mut().expect("one group at least");
@@ -898,6 +948,12 @@ impl Pack {
                     field(bug.anchor.as_deref())
                 ),
             );
+        }
+        if self.role == Role::Validator && self.bug.is_some() {
+            let body = self.repro_result.as_ref().map_or("not run\n".into(), |r| {
+                fenced("json", &serde_json::to_string_pretty(r).unwrap_or_default())
+            });
+            out += &format!("\n## Repro result\n\n{body}");
         }
         out
     }

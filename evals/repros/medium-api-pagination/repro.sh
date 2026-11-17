@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-here="$(cd "$(dirname "$0")/../../.." && pwd)"
-cd "$here/evals/fixture/api"
+root="${FIXTURE_ROOT:-$(cd "$(dirname "$0")/../../fixture" && pwd)}"
+cd "$root/api"
 
 python3 - <<'PY'
 import items

@@ -70,7 +70,7 @@ pub enum Source {
 }
 
 /// One task's facts.
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SuiteTask {
     pub number: u32,
@@ -81,6 +81,12 @@ pub struct SuiteTask {
     pub setup: Option<u32>,
     /// Main-session files opened is compared with this `bare` task's.
     pub files_opened_vs_bare: Option<u32>,
+    /// A directory under `evals/repros` whose `repro.sh` the runner runs after each run of the
+    /// task (report-only `bug_fixed`).
+    pub repro: Option<String>,
+    /// The task should end with a stored plan that closed (report-only `plan`).
+    #[serde(default)]
+    pub expects_plan: bool,
 }
 
 impl Suite {
@@ -106,6 +112,13 @@ impl Suite {
         let text = std::fs::read_to_string(&file).with_context(|| file.display().to_string())?;
         let mut suite: Suite = toml::from_str(&text).with_context(|| file.display().to_string())?;
         suite.name = name.to_string();
+        for repro in suite.tasks.iter().filter_map(|t| t.repro.as_ref()) {
+            if !evals.join("repros").join(repro).join("repro.sh").is_file() {
+                return Err(usage(format!(
+                    "suite `{name}` names repro `{repro}`, which has no evals/repros/{repro}/repro.sh"
+                )));
+            }
+        }
         Ok(suite)
     }
 

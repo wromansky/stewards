@@ -108,6 +108,9 @@ enum Command {
     Check,
     /// Record and judge bug reports; export them as issues
     Validate {
+        /// A bug report: one JSON object, e.g. {"unit": "api", "title": "count off by one",
+        /// "repro": "<a commands.test prefix> tests/api -k count", "evidence": "expected 2, got 3",
+        /// "interface": null}; recorded on the unit's card, its repro run, a validator briefed
         #[arg(long)]
         report: Option<PathBuf>,
         #[arg(long)]

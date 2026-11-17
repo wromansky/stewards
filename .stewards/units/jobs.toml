@@ -1,11 +1,11 @@
 unit = "jobs"
 
 [reviewed]
-commit = "f1f0d1739d2f18c534c514967edc69aff44907ed"
-fingerprint = "sha256:a336d0e23a2d2dd055dbccf8597024bf8455c82c23915e76da271de5a11a1a44"
-tree = "5d2b5da0a87e100ad345ba8e3dad3a6b88e7cc53"
-tester = "5d2b5da0a87e100ad345ba8e3dad3a6b88e7cc53"
-documenter = "5d2b5da0a87e100ad345ba8e3dad3a6b88e7cc53"
+commit = "7f0dcb538e81f430289b537528d6eab648c6851a"
+fingerprint = "sha256:21d933ef8dd6bdf49ed6b3616e356845cc7767b5bab5b6dfd2113983c9c95536"
+tree = "ceae01517666c8672eab384f79f8123c5b64daa1"
+tester = "ceae01517666c8672eab384f79f8123c5b64daa1"
+documenter = "ceae01517666c8672eab384f79f8123c5b64daa1"
 
 [[interface]]
 id = "brief-header"
@@ -112,6 +112,11 @@ id = "architect-plan"
 anchor = "src/submit.rs::plan_id"
 contract = "An architect plan needs at least one step, each step a known unit and a check that passes the allowlist; it is stored at .stewards/plans/<yyyy-mm-dd>-<slug>.toml, with -2, -3 on a taken id; card_changed if another submit takes the id first."
 
+[[interface]]
+id = "validator-repro"
+anchor = "src/brief.rs::build_validator"
+contract = "A validator brief for a bug picked by title (else the first unjudged one) carries repro_result; brief::build runs the repro first (repro_result: allowlisted runner, plus reproduced true only on a non-zero exit, else a reason) and a bug with no repro runs nothing."
+
 [[anchor]]
 path = "src/brief.rs"
 name = "Header"
@@ -195,6 +200,10 @@ name = "write_round"
 [[anchor]]
 path = "src/submit.rs"
 name = "check_command"
+
+[[anchor]]
+path = "src/brief.rs"
+name = "repro_result"
 
 [[gap]]
 kind = "future"

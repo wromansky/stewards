@@ -143,8 +143,10 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   single-backtick code span; a repo path with a backtick, a control or
   line separator character, or an invisible character is refused, so no
   directory name can end the span or add an instruction), and the agent
-  passes that sentence unchanged as the whole task of a general-purpose
-  subagent that can run shell and write files. The brief carries the role
+  passes that sentence unchanged as the whole task of a subagent that can
+  run shell and write files (whichever agent type the harness has for
+  that; the text names none, since Haiku on Pi read "general-purpose" as
+  an agent name Pi does not have). The brief carries the role
   text, so every harness, known or not, gets the same guidance, word for
   word: `guide` names no harness's subagent tool (a name is wrong as soon as
   a harness renames it; checked 2026-11-13, one harness's tool had two names
@@ -1313,7 +1315,7 @@ Ritual
 - Before reporting done: when your edits are finished, run `stewards review --task "<what you changed and why>"` as its own step (never alongside an edit). It prints one handoff per review to run: start one subagent per handoff, giving it exactly that sentence as its whole task (you can start them together); when they have finished, run `stewards review` again to read the findings. Fix them, or answer one you will not apply with the `--answer` it prints, and repeat until it exits 0. Done means it exits 0.
 - On request or before a release: `stewards review --roles` does the same with the deeper per-unit jobs.
 
-A handoff is always one sentence, ``Read `<path>` and follow it.``: pass it unchanged to a general-purpose subagent that can run shell and write files. Every role works this way.
+A handoff is always one sentence, ``Read `<path>` and follow it.``: pass it unchanged to a subagent that can run shell and write files (whichever agent type your harness has for that). Every role works this way.
 
 Editing
 - Think first: state assumptions; ask when the request has two readings.
@@ -1534,8 +1536,8 @@ instruction file pointing at it, listed as `instruction_files`);
 `--harness <name>` names a harness instead of the
 one detected from env, `--all` prints every variant. Every harness, known
 or not (an unknown one is the normal case, not an error), gets the same
-generic paragraph: start a fresh-context, general-purpose subagent that
-can run shell and write files, give it the handoff stewards printed
+generic paragraph: start a fresh-context subagent that
+can run shell and write files (whichever agent type your harness has for that), give it the handoff stewards printed
 (``Read `<absolute brief path>` and follow it.``) unchanged as its whole
 task, and wait for its reply: what `submit` printed. Nothing is added
 for a harness in the `harness.rs` table.

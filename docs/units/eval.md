@@ -37,7 +37,7 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers, the 
 | path\_without\_stewards | PATH with each directory holding stewards replaced by a mirror linking everything else in it. | [src/eval/mod.rs\:\:path\_without\_stewards](../../src/eval/mod.rs#L2214) |
 | next\_check | Runs stewards next --no-brief --no-run in a dir\: exit code and job count; writes no briefs, runs no commands. | [src/eval/mod.rs\:\:next\_check](../../src/eval/mod.rs#L967) |
 | kill\_leftovers | Kills every process whose cwd is under dir, or whose HERMES\_HOME (no other variable) is under it, until none remain or 10 s pass; reports killed and survivors. Lists via /proc on Linux, lsof and ps -E on macOS; None where it cannot list. | [src/eval/mod.rs\:\:kill\_leftovers](../../src/eval/mod.rs#L1841) |
-| claude\_parse | A Claude Code session file plus its stdout.log to a Run\: main tokens from result.usage, total from summed modelUsage, null without a result line; cost\_usd null, figure kept as harness\_reported\_cost\_usd; Read/Grep/Bash reads per record cwd, a Glob listing opens nothing; sidechain children. | [src/eval/claude.rs\:\:parse](../../src/eval/claude.rs#L178) |
+| claude\_parse | A Claude Code session file (keep\_transcript appends its subagents/agent-\*.jsonl) plus stdout.log to a Run\: tokens from the result line, null without; cost\_usd null; reads per record cwd; children grouped by agentId, else parent chain; launch is Agent (Task before). | [src/eval/claude.rs\:\:parse](../../src/eval/claude.rs#L178) |
 | claude\_config\_dir | Writes an isolated Claude Code config dir\: settings.json with the user's model, .credentials.json linked. Without one (macOS) sessions run in the user's own dir with --setting-sources project,local --strict-mcp-config; returns a note and model. | [src/eval/claude.rs\:\:config\_dir](../../src/eval/claude.rs#L24) |
 | task\_prompt | The task file \<dir\>/NN-\* verbatim; an error when none; a usage error when it contains \`think\` in any case. | [src/eval/mod.rs\:\:task\_prompt](../../src/eval/mod.rs#L1509) |
 | pinned\_commit | A repo suite's commit\: HEAD is the evals/ checkout's commit, refused when src/, baml\_src/ or .stewards/ have uncommitted changes; a sha as given; either refused when an absent probe's text is in its file there. Refusals are eval\_setup\_incomplete. | [src/eval/mod.rs\:\:pinned\_commit](../../src/eval/mod.rs#L2063) |
@@ -68,6 +68,7 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers, the 
 | eval-plan-closed | eval\_plan\_outcome | a stored plan with and without a .stewards/plans/\*.toml left in the dir | closed only when stored and no plan file is left | integration |
 | eval-report-only-graders | grade\_task | runs with bug\_fixed and plan outcomes varying | the summary reports bug fixed and plan counts and no verdict changes | integration |
 | eval-claude-shared-config-dir | claude\_config\_dir | a ClaudeCode with shared true and a fake claude binary | args hold --setting-sources project,local --strict-mcp-config, CLAUDE\_CONFIG\_DIR is not set, the transcript is kept | integration |
+| eval-claude-agent-launch-handoff | claude\_parse | a claude-code session whose parent launches a child with the Agent tool and whose child records carry agentId, one linked through an attachment record | handoff and reviewer\_submit are true and subagent\_sessions is 1 | integration |
 
 ## Flows
 
@@ -90,4 +91,4 @@ _None._
 
 ## Last reviewed
 
-b712515bdee1115d4ea9fe708e7a8f3a4c19ed8d
+8e66fb73e3f6047b790302f020b64c2cf54fadbc

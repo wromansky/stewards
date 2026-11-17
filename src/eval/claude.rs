@@ -216,6 +216,20 @@ impl ClaudeCode {
         };
         let kept = sessions.join(name);
         std::fs::copy(&found, &kept)?;
+        // Claude Code 2.1.326 keeps each child's records in its own file, not in the session's
+        let children = found.with_extension("").join("subagents");
+        let mut children: Vec<PathBuf> = std::fs::read_dir(children)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+            .collect();
+        children.sort();
+        let mut out = std::fs::OpenOptions::new().append(true).open(&kept)?;
+        for child in children {
+            std::io::copy(&mut File::open(child)?, &mut out)?;
+        }
         Ok(Some(kept))
     }
 }
@@ -282,14 +296,15 @@ fn bash_commands<'a>(recs: &[&'a Value]) -> impl Iterator<Item = (&'a Value, &'a
         .map(|b| (b, b["input"]["command"].as_str().unwrap_or_default()))
 }
 
-/// The ritual actions of one session (a child's when `child`): `Bash` commands and `Task`
-/// launches, whose `prompt` is the child's task.
+/// The ritual actions of one session (a child's when `child`): `Bash` commands and `Task` or
+/// `Agent` launches, whose `prompt` is the child's task.
 fn actions(recs: &[&Value], child: bool) -> Vec<Action> {
     tool_uses(recs)
         .filter_map(|b| {
             let input = &b["input"];
             match b["name"].as_str() {
-                Some("Task") => Some(Action::Dispatch {
+                // `Task` before Claude Code 2.1.305, `Agent` since
+                Some("Task" | "Agent") => Some(Action::Dispatch {
                     tasks: input["prompt"]
                         .as_str()
                         .map(String::from)
@@ -466,8 +481,9 @@ fn stream_result(transcript: &Path) -> Option<Value> {
 /// `modelUsage`, which also names side requests (titles, summaries) outside the parent and its
 /// children. `thinking_levels` are the sessions' effective settings (see `thinking`), and a
 /// session without one is in `sessions_without_thinking`. The main stop reason is `error` when
-/// the stream's `result` line says `is_error`, else `last_stop`. Children are named by their first record's
-/// `uuid`. `reviews` are the children's reviewer `submit` outputs, ordered by their results'
+/// the stream's `result` line says `is_error`, else `last_stop`. Children are named by their
+/// records' `agentId` (Claude Code 2.1.326, whose child files `keep_transcript` appends), else
+/// by their first record's `uuid`. `reviews` are the children's reviewer `submit` outputs, ordered by their results'
 /// timestamps.
 pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run> {
     let (all, truncated_lines) = records(transcript, truncation_ok)?;
@@ -485,9 +501,20 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         }
         let id = r["uuid"].as_str().unwrap_or_default();
         let parent = r["parentUuid"].as_str();
-        let root = match roots.iter().find(|(u, _)| Some(*u) == parent) {
-            Some((_, root)) => *root,
-            None => {
+        // 2.1.326 names the child on every record, and links some through records of other
+        // types, so the chain alone would split one child in two
+        let root = match (
+            r["agentId"].as_str(),
+            roots.iter().find(|(u, _)| Some(*u) == parent),
+        ) {
+            (Some(agent), _) => {
+                if !sessions.iter().any(|(n, _)| n == agent) {
+                    sessions.push((agent.to_string(), vec![]));
+                }
+                agent
+            }
+            (None, Some((_, root))) => *root,
+            (None, None) => {
                 sessions.push((id.to_string(), vec![]));
                 id
             }

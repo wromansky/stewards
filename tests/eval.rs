@@ -2615,6 +2615,51 @@ fn claude_files_opened_count_read_and_grep_and_follow_each_records_cwd() {
     assert_eq!(run.files_opened_tree, run.files_opened);
 }
 
+/// Claude Code 2.1.326 launches a child with `Agent` (not `Task`), names it by `agentId` on every
+/// record, and links some of its records through an `attachment` record: the launch is a handoff
+/// and the child's commands are one child's.
+#[test]
+fn a_claude_agent_launch_is_a_handoff_and_agent_id_records_are_one_child() {
+    let tmp = TempDir::new().unwrap();
+    let handoff = "Read `/r/.stewards/briefs/review-1-f6f0a5f3.md` and follow it.";
+    let t = claude_session(
+        tmp.path(),
+        &[(
+            "/r",
+            serde_json::json!([tool_use(
+                "1",
+                "Agent",
+                serde_json::json!({"subagent_type": "general-purpose", "prompt": handoff})
+            )]),
+        )],
+        &[],
+    );
+    let child = |uuid: &str, parent: &str, command: &str| {
+        serde_json::json!({"type": "assistant", "isSidechain": true, "agentId": "c1",
+            "uuid": uuid, "parentUuid": parent, "cwd": "/r",
+            "message": {"id": uuid, "model": "claude-haiku-5-5", "role": "assistant",
+                "content": [tool_use(uuid, "Bash", serde_json::json!({"command": command}))]}})
+        .to_string()
+    };
+    let lines = [
+        child("c-a", "none", "stewards status"),
+        // not a user or assistant record: the parent chain breaks here
+        r#"{"type":"attachment","isSidechain":true,"agentId":"c1","uuid":"c-x","parentUuid":"c-a"}"#.to_string(),
+        child("c-b", "c-x", "stewards submit --role reviewer"),
+    ];
+    let mut text = std::fs::read_to_string(&t).unwrap();
+    text.push_str(&(lines.join("\n") + "\n"));
+    std::fs::write(&t, text).unwrap();
+    let run = claude_parse(&t, 0.0, false).unwrap();
+    assert!(run.ritual_steps["handoff"], "{:?}", run.ritual_steps);
+    assert!(
+        run.ritual_steps["reviewer_submit"],
+        "{:?}",
+        run.ritual_steps
+    );
+    assert_eq!(run.subagent_sessions, 1);
+}
+
 /// A session with a non-empty thinking block thought; one with an empty block (as Haiku 5.5 emits
 /// without a budget) or none did not.
 #[test]

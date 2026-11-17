@@ -33,14 +33,14 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers, the 
 | existing\_files | The regular files among opened paths, in order and distinct; a last-component glob is expanded against the listing (dot names only by a dot pattern); directories and missing paths dropped. | [src/eval/mod.rs\:\:existing\_files](../../src/eval/mod.rs#L618) |
 | reviewed\_units | Units, verdicts and counts of blocking findings (contested ones included), notes and contested findings from a reviewer submit's JSON output; None for any other output. | [src/eval/mod.rs\:\:reviewed\_units](../../src/eval/mod.rs#L228) |
 | would\_exceed | True when spent plus the mean cost so far is over max; false with no cost known, so the first session always runs. | [src/eval/mod.rs\:\:would\_exceed](../../src/eval/mod.rs#L1065) |
-| without\_developers | AGENTS.md with the developer Changing line cut to its first sentence; an error when that line is absent. | [src/eval/mod.rs\:\:without\_developers](../../src/eval/mod.rs#L1918) |
-| path\_without\_stewards | PATH with each directory holding stewards replaced by a mirror linking everything else in it. | [src/eval/mod.rs\:\:path\_without\_stewards](../../src/eval/mod.rs#L2154) |
+| without\_developers | AGENTS.md with the developer Changing line cut to its first sentence; an error when that line is absent. | [src/eval/mod.rs\:\:without\_developers](../../src/eval/mod.rs#L1978) |
+| path\_without\_stewards | PATH with each directory holding stewards replaced by a mirror linking everything else in it. | [src/eval/mod.rs\:\:path\_without\_stewards](../../src/eval/mod.rs#L2214) |
 | next\_check | Runs stewards next --no-brief --no-run in a dir\: exit code and job count; writes no briefs, runs no commands. | [src/eval/mod.rs\:\:next\_check](../../src/eval/mod.rs#L967) |
-| kill\_leftovers | Kills every process whose cwd is under dir, or whose HERMES\_HOME (no other variable) is under it, until none remain or 10 s pass; reports killed and survivors; None without /proc. | [src/eval/mod.rs\:\:kill\_leftovers](../../src/eval/mod.rs#L1841) |
+| kill\_leftovers | Kills every process whose cwd is under dir, or whose HERMES\_HOME (no other variable) is under it, until none remain or 10 s pass; reports killed and survivors. Lists via /proc on Linux, lsof and ps -E on macOS; None where it cannot list. | [src/eval/mod.rs\:\:kill\_leftovers](../../src/eval/mod.rs#L1841) |
 | claude\_parse | A Claude Code session file plus its stdout.log to a Run\: main tokens from result.usage, total from summed modelUsage, null without a result line; cost\_usd null, figure kept as harness\_reported\_cost\_usd; Read/Grep/Bash reads per record cwd, a Glob listing opens nothing; sidechain children. | [src/eval/claude.rs\:\:parse](../../src/eval/claude.rs#L156) |
 | claude\_config\_dir | Writes an isolated Claude Code config dir\: settings.json with only the user's model, .credentials.json linked when present; never writes the user's dir; returns a plain note and the user's model. | [src/eval/claude.rs\:\:config\_dir](../../src/eval/claude.rs#L24) |
 | task\_prompt | The task file \<dir\>/NN-\* verbatim; an error when none; a usage error when it contains \`think\` in any case. | [src/eval/mod.rs\:\:task\_prompt](../../src/eval/mod.rs#L1509) |
-| pinned\_commit | A repo suite's commit\: HEAD is the evals/ checkout's commit, refused when src/, baml\_src/ or .stewards/ have uncommitted changes; a sha as given; either refused when an absent probe's text is in its file there. Refusals are eval\_setup\_incomplete. | [src/eval/mod.rs\:\:pinned\_commit](../../src/eval/mod.rs#L2003) |
+| pinned\_commit | A repo suite's commit\: HEAD is the evals/ checkout's commit, refused when src/, baml\_src/ or .stewards/ have uncommitted changes; a sha as given; either refused when an absent probe's text is in its file there. Refusals are eval\_setup\_incomplete. | [src/eval/mod.rs\:\:pinned\_commit](../../src/eval/mod.rs#L2063) |
 | hermes\_parse | A Hermes sessions export to a Run\: the first-started top-level row is the task's, other top-level rows uncounted and flagged; only source subagent rows are children; a refused delegate\_task launches nothing; peak context from agent.log or None; cost\_usd null. | [src/eval/hermes.rs\:\:parse](../../src/eval/hermes.rs#L235) |
 | hermes\_template | Writes the eval's template Hermes home\: config.yaml lifting the one-shot subagent cap and auto-approving children, .env linked, installs/ built; never writes the user's home; each session gets a fresh home linking it and its daemon is killed after. | [src/eval/hermes.rs\:\:template](../../src/eval/hermes.rs#L33) |
 | eval\_redact\_secrets | After each session, replaces every secret value (name holds key, token, secret, password, access or refresh; 8+ chars) of the driver's credential\_files with \[redacted\] in every text file under the kept sessions dir at any depth and in the run record; links not followed. | [src/eval/mod.rs\:\:redact\_secrets](../../src/eval/mod.rs#L761) |
@@ -54,7 +54,7 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers, the 
 |---|---|---|---|---|
 | eval-claude-plain-main-equals-total | claude\_parse | the recorded claude-code plain session with no subagent | main tokens equal total tokens, both from the stream's result line | integration |
 | eval-claude-no-result-null-tokens | claude\_parse | a claude-code session whose stdout.log has no result line | main\_tokens and total\_tokens are null | integration |
-| eval-timed-out-null-tokens | execute | a replayed session that timed out | its run record has null main\_tokens and total\_tokens; on Linux its leftover process is killed (leftovers.killed is 1) | integration |
+| eval-timed-out-null-tokens | execute | a replayed session that timed out | its run record has null main\_tokens and total\_tokens; its leftover process is killed (leftovers.killed is 1) on Linux and macOS | integration |
 | eval-think-prompt-refused | task\_prompt | a task file containing THINK | a usage error naming the file; no shipped suite task contains think | integration |
 | eval-claude-max-cost-refused | eval\_run | no run with a cost, and stewards eval --harness claude-code --max-cost | spent\_usd is null, and --max-cost is a usage error for claude-code | integration |
 | eval-context-file-committed | driver | a driver with a context\_file and arm copies with and without AGENTS.md | the file is committed only into copies with an AGENTS.md, history keeps its shape | integration |
@@ -79,7 +79,7 @@ _None._
 | gap | Ritual steps are best-effort from transcripts | A stewards command is seen only as the program of a separator-split segment\: timeout/env/time prefixes, \`if stewards\`, \`{ ...; }\`, \`bash -c\`, and backticks are misread or missed (stated in RITUAL\_NOTE). |
 | gap | shell\_reads misreads a later cd or a for list | simplified\: only a leading cd is followed; upgrade if files\_opened disagrees with the transcripts. |
 | gap | reviewed\_units ignores --human output | simplified\: only JSON submit output is read; upgrade if reviewers start passing --human. |
-| gap | Leftover processes are killed only on Linux | Uses /proc/\<pid\>/cwd and /proc/\<pid\>/environ (HERMES\_HOME); without /proc nothing is killed and leftovers is None. |
+| gap | Leftover processes are killed only on Linux | Superseded\: macOS now lists leftovers through lsof and ps -E. Remaining ceiling on macOS\: ps prints the environment space separated, so a HERMES\_HOME holding a space is cut short, and a system binary (SIP) shows no environment; upgrade path is sysctl KERN\_PROCARGS2 through libc. |
 | gap | Claude Code runs have no trusted cost | Claude Code 1.0.128 prices unknown model ids at another model's rates, so cost\_usd is null, spent\_usd is null for a claude-code eval, and --max-cost is refused for it. |
 | future | Only the Pi, Claude Code and Hermes harnesses are driven | Any other --harness is not\_implemented; a new one needs a Driver and a branch in run. |
 | gap | Hermes runs have no trusted cost | Hermes prices DeepSeek at off-peak rates in every hour, so cost\_usd is null, its figure is harness\_reported\_cost\_usd, and --max-cost is refused for hermes. |
@@ -88,4 +88,4 @@ _None._
 
 ## Last reviewed
 
-1006636d574fdf1b23c99bd28b7bc5f434270106
+eddec768e7aa566a8c00d7c81ecfced3657bfb74

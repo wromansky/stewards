@@ -20,7 +20,7 @@ command = "cargo test --test eval a_claude_session_without_a_result_line_has_nul
 id = "eval-timed-out-null-tokens"
 interface = "execute"
 given = "a replayed session that timed out"
-expect = "its run record has null main_tokens and total_tokens; on Linux its leftover process is killed (leftovers.killed is 1)"
+expect = "its run record has null main_tokens and total_tokens; its leftover process is killed (leftovers.killed is 1) on Linux and macOS"
 level = "integration"
 command = "cargo test --test eval a_timed_out_run_is_recorded_not_dropped_and_its_leftover_process_killed"
 

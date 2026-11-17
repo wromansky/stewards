@@ -1990,10 +1990,13 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   minutes, then the harness's process group is killed
   and the session recorded `timed_out`. After every session (normal exit,
   failure, timeout, or interrupt) the runner kills every process whose
-  `/proc/<pid>/cwd` is under that session's `<n>/` directory, or whose
-  `HERMES_HOME` (from `/proc/<pid>/environ`; no other variable, so a
+  working directory is under that session's `<n>/` directory, or whose
+  `HERMES_HOME` (no other variable, so a
   process that only visited the directory, with it in `OLDPWD`, is left
-  alone) is a path under it (Pi starts shell commands and background subagents in their own process
+  alone) is a path under it (on Linux from `/proc/<pid>/cwd` and
+  `/proc/<pid>/environ`; on macOS from `lsof` and `ps -E`, which shows no
+  environment for a system binary; Hermes's own daemon kill reads `/proc`
+  and so does nothing on macOS) (Pi starts shell commands and background subagents in their own process
   groups, Claude Code its shell commands, its subagents running inside its
   own process; the Hermes agent runs in a gateway daemon that `hermes
   chat` starts in its own session, with Hermes's source tree as its working

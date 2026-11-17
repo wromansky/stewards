@@ -1,11 +1,11 @@
 unit = "eval"
 
 [reviewed]
-commit = "1006636d574fdf1b23c99bd28b7bc5f434270106"
-fingerprint = "sha256:a79b669f0fa774e6dec1b59669392466864bec6259005b35f61cfc53da02cd39"
-tree = "f44c512261101be81666b8cf4cf0338041bd2da0"
-tester = "f44c512261101be81666b8cf4cf0338041bd2da0"
-documenter = "f44c512261101be81666b8cf4cf0338041bd2da0"
+commit = "eddec768e7aa566a8c00d7c81ecfced3657bfb74"
+fingerprint = "sha256:0da015a236ef9ce962af6de9ec903cca179dc4b844976c6348a3840a5cc9534a"
+tree = "154ad9651ea870f023d975b6b56d114fbce31905"
+tester = "154ad9651ea870f023d975b6b56d114fbce31905"
+documenter = "154ad9651ea870f023d975b6b56d114fbce31905"
 
 [[interface]]
 id = "eval_run"
@@ -100,7 +100,7 @@ contract = "Runs stewards next --no-brief --no-run in a dir: exit code and job c
 [[interface]]
 id = "kill_leftovers"
 anchor = "src/eval/mod.rs::kill_leftovers"
-contract = "Kills every process whose cwd is under dir, or whose HERMES_HOME (no other variable) is under it, until none remain or 10 s pass; reports killed and survivors; None without /proc."
+contract = "Kills every process whose cwd is under dir, or whose HERMES_HOME (no other variable) is under it, until none remain or 10 s pass; reports killed and survivors. Lists via /proc on Linux, lsof and ps -E on macOS; None where it cannot list."
 
 [[interface]]
 id = "claude_parse"
@@ -354,7 +354,7 @@ note = "simplified: only JSON submit output is read; upgrade if reviewers start 
 kind = "gap"
 title = "Leftover processes are killed only on Linux"
 anchor = "src/eval/mod.rs::kill_leftovers"
-note = "Uses /proc/<pid>/cwd and /proc/<pid>/environ (HERMES_HOME); without /proc nothing is killed and leftovers is None."
+note = "Superseded: macOS now lists leftovers through lsof and ps -E. Remaining ceiling on macOS: ps prints the environment space separated, so a HERMES_HOME holding a space is cut short, and a system binary (SIP) shows no environment; upgrade path is sysctl KERN_PROCARGS2 through libc."
 
 [[gap]]
 kind = "gap"

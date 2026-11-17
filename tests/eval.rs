@@ -1035,7 +1035,7 @@ fn the_eval_agent_dir_holds_only_auth_the_package_store_and_pi_subagents() {
     );
 }
 
-// kill_leftovers finds processes through /proc: Linux only.
+// counts through /proc: Linux only.
 #[cfg(target_os = "linux")]
 /// Number of live (non-zombie) processes whose cwd is under `dir`.
 fn alive_under(dir: &Path) -> usize {
@@ -1052,7 +1052,7 @@ fn alive_under(dir: &Path) -> usize {
         .count()
 }
 
-// kill_leftovers finds processes through /proc: Linux only.
+// uses alive_under: Linux only.
 #[cfg(target_os = "linux")]
 #[test]
 fn pi_driver_passes_thinking_and_the_agent_dir_and_a_timed_out_sessions_detached_child_is_killed() {
@@ -1062,7 +1062,7 @@ fn pi_driver_passes_thinking_and_the_agent_dir_and_a_timed_out_sessions_detached
     // records its argv and env, writes a session file, starts a detached child, then hangs
     std::fs::write(
         &bin,
-        "#!/bin/sh\necho \"$@\" > ../args\nenv > ../env\nwhile [ \"$1\" != --session-dir ]; do shift; done\necho '{\"type\":\"session\",\"id\":\"s\",\"timestamp\":\"t\",\"cwd\":\"/r\"}' > \"$2/s.jsonl\"\nsetsid sleep 300 >/dev/null 2>&1 &\nexec sleep 30\n",
+        "#!/bin/sh\necho \"$@\" > ../args\nenv > ../env\nwhile [ \"$1\" != --session-dir ]; do shift; done\necho '{\"type\":\"session\",\"id\":\"s\",\"timestamp\":\"t\",\"cwd\":\"/r\"}' > \"$2/s.jsonl\"\nperl -MPOSIX -e 'setsid; exec @ARGV' sleep 300 >/dev/null 2>&1 &\nexec sleep 30\n",
     )
     .unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1266,7 +1266,10 @@ impl Driver for Replay {
             common::stamp_units(dir, self.adopt_stamps);
         }
         std::process::Command::new("sh")
-            .args(["-c", "setsid sleep 300 >/dev/null 2>&1 &"])
+            .args([
+                "-c",
+                "perl -MPOSIX -e 'setsid; exec @ARGV' sleep 300 >/dev/null 2>&1 &",
+            ])
             .current_dir(dir)
             .status()?;
         std::fs::create_dir_all(sessions)?;
@@ -1402,9 +1405,7 @@ fn a_timed_out_run_is_recorded_not_dropped_and_its_leftover_process_killed() {
     assert_eq!(runs[0]["result"]["main_tokens"], serde_json::Value::Null);
     assert_eq!(runs[0]["result"]["total_tokens"], serde_json::Value::Null);
     assert!(runs[0]["result"]["cost_usd"].is_number());
-    if cfg!(target_os = "linux") {
-        assert_eq!(runs[0]["leftovers"]["killed"], 1);
-    }
+    assert_eq!(runs[0]["leftovers"]["killed"], 1);
     assert_eq!(runs[0]["next_check"], serde_json::Value::Null);
     assert_eq!(runs[0]["changed"], false);
     // the replayed worker child ran at high, not the requested medium
@@ -1534,9 +1535,7 @@ fn full_arm_sets_the_hand_drawn_units_and_stops_when_adoption_is_not_clean() {
         serde_json::json!(["AGENTS.md", "api/test_new.py"])
     );
     assert_eq!(summary["adoption"]["label"], "001-adopt");
-    if cfg!(target_os = "linux") {
-        assert_eq!(summary["adoption"]["leftovers"]["killed"], 1);
-    }
+    assert_eq!(summary["adoption"]["leftovers"]["killed"], 1);
     // the runner's own check: exit 1 with jobs listed
     let check = next_check(&p.stewards, &adopted).unwrap();
     assert_eq!(check.exit_code, Some(1));
@@ -3430,7 +3429,7 @@ fn hermes_driver_runs_each_session_in_its_own_home_and_kills_the_daemon() {
     );
 }
 
-// kill_leftovers finds processes through /proc: Linux only.
+// macOS shows no environment for a system binary such as sleep: Linux only.
 #[cfg(target_os = "linux")]
 /// A daemon a session started elsewhere is found by the `HERMES_HOME` under the run directory its
 /// environment names; a process that merely visited the run directory (`OLDPWD`) is left alone.

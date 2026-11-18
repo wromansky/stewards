@@ -3,8 +3,10 @@
 Source: `main` at `79b68b5` (2026-11-17), the eval pass r9 in `docs/build/eval-summaries/`, and
 `docs/build/stage3/FOLLOWUPS.md`. The ten stage 3 tasks are merged. The user's decision of
 2026-11-17: the project is not close to a real 0.1.0, and nothing is published to crates.io or the
-AUR for a while. This plan lists the seven gaps found while doing the pre-release work. It is a
-draft for the user to cut, reorder, or extend; no task has started.
+AUR for a while. This plan lists the seven gaps found while doing the pre-release work, and four
+more from a feature comparison with an earlier tool of the same kind. The user's priority
+(2026-11-17): weak-model performance comes first, because the intended use is a local model of
+about 27B parameters. It is a draft for the user to cut, reorder, or extend; no task has started.
 
 The review process is unchanged (`docs/build/RESUME.md`, "How a branch goes through review").
 
@@ -20,10 +22,72 @@ The review process is unchanged (`docs/build/RESUME.md`, "How a branch goes thro
 | 6 | Small open items | nine lines in FOLLOWUPS | `stage3/FOLLOWUPS.md` |
 | 7 | GitHub still serves the pre-scrub history | the 32 merged pull request refs hold the old commits | FOLLOWUPS, last line |
 
+## Four more gaps, from the comparison
+
+| # | gap | what is true today |
+|---|---|---|
+| 8 | No named agent per unit | every role is a general subagent given a brief; rendered harness agent files were cut from 0.1.0, so the main agent must pick an agent type itself (it picked a missing one on Pi) |
+| 9 | Bug handling is thin | no duplicate handling by root cause, no reuse of earlier evidence when a unit's boundary is unchanged, no test levels by kind of component |
+| 10 | Two cases have no rule | a brand-new repository (when to adopt), and a read-only reference repository in a workspace |
+| 11 | Nothing written for a person deciding to adopt | README only; no "why", no measured comparison |
+
 ## Order
 
-Wave A needs nothing from the user but a go: 6, 4, 2. Wave B needs accounts or money: 1, 3.
-Wave C is the user's own action or decision: 5, 7. Inside a wave the tasks are independent.
+Wave W is first: gaps 2 and 8, aimed at one named local model. Then Wave A (6, 4), which needs
+nothing from the user but a go. Wave B needs accounts or money: 1, 3. Wave C is the user's own
+action or decision: 5, 7. Wave D is later work: 9, 10, 11. Inside a wave the tasks are independent
+unless a task says otherwise.
+
+### Wave W: a local 27B model completes the loop
+
+What is known today, all from Haiku 5.5, which is stronger than the target: with thinking off,
+adoption stalls after the first `review --roles` round (2 of 2 on Pi); the main agent asked for an
+agent type the harness lacks; one session stopped to ask instead of acting. Nothing has been run on
+a local model. `--direct` knows three hosted providers and no local endpoint. The review brief
+budget is a constant 48,000 bytes; a role pack's budget is set per role in `[budgets]`.
+
+**W1. Fix the target and make it runnable.** Name the model, its server (Ollama, llama.cpp,
+LM Studio), its context window as served, and the harness that will drive it. Then:
+- the eval runner accepts that model through the chosen harness (Pi with a local provider is the
+  likely first; check whether its subagents work with a local model at all);
+- `--direct` gains an OpenAI-compatible endpoint (`[models.direct] <role> = "local/<model>"` with a
+  base URL in the user config), so stewards can run a role itself where the harness cannot
+  delegate;
+- the summary records the context window and tokens per second beside the model.
+Done when: `stewards eval --suite fixture --task 1 --arm bare` completes on the local model.
+Needs from the user: the model and server; the machine it runs on.
+Extra review: security review of the new endpoint setting (a URL the tool sends repo content to).
+
+**W2. Baseline, and a list of how it fails.** Run adoption alone, then the fixture suite at one
+run, on the local model. Read every transcript and sort each failure into one of: tool call
+malformed; stopped to ask; wrong agent type; context overflow or truncation; typed answer refused
+by `submit`; looped; gave up; wrong but confident. Count them.
+Done when: the counts are in `docs/build/eval-summaries/` with the summaries. No fixes in this task.
+
+**W3. Fixes, in the order the counts say, each proved against the eval before the next.**
+Candidates known now, cheapest first:
+- *Fewer decisions for the main agent.* Every `then` line names the exact next command and says
+  the round belongs to the same task. `init --draft` states the whole loop once.
+- *Named agents (gap 8).* `init` renders one agent file per role for the detected harness, so a
+  handoff is "start `<name>` with this sentence" and no agent type is chosen. Restores the cut
+  `render` in its smallest form.
+- *Briefs that fit.* `[budgets]` and the review brief budget are set from the model's context
+  window (a user config key), not constants; a brief over the window is split, never truncated by
+  the harness.
+- *Answers a weak model can produce.* When `submit` refuses a typed answer, the error names the
+  field and shows the smallest valid example for that role; count refusals per role in telemetry.
+- *No delegation at all.* Where the harness or model cannot start a subagent, `review --direct`
+  runs each brief through the local endpoint itself and the session only reads the findings.
+- *Smaller rounds.* Adoption does documenter and validator jobs one unit at a time when the
+  window is small.
+Done when: adoption completes 3 of 3 and the fixture gate passes on at least 3 of the 4 edit
+tasks at `--runs 3`, on the local model, thinking off if the model has the setting.
+
+**W4. Keep it true.** A `weak` suite manifest pinned to the local model, run before any release;
+DESIGN.md Evals states the supported floor ("tested on <model> at <window>") and what is known
+not to work below it.
+
+Wave W replaces task A3 below.
 
 ### Wave A
 
@@ -104,7 +168,21 @@ Done when: the command the block names installs a working binary on Linux and ma
   the `release` environment and the `v*` tag ruleset must be created again).
 Done when: an old commit id from before 2026-11-17 no longer resolves on GitHub.
 
+### Wave D (later)
+
+**D1. Bug handling (gap 9).** A root-cause key on each judged bug, so a second report of the same
+cause links to the first instead of filing again; the validator pack shows earlier evidence when
+the unit's stamp is unchanged; scenario levels per kind of component. Start only after B1 shows how
+real trackers behave.
+
+**D2. Two missing rules (gap 10).** One sentence each in the block and the guide: adopt a new
+repository once its layout and tests are stable; in a workspace, a read-only repository is asked
+through its own units, not read.
+
+**D3. A page for the person deciding (gap 11).** After B2: what it costs, what it caught, on which
+models, from the eval numbers only.
+
 ## What a 0.1.0 would then mean
 
-Proposed bar, for the user to change: A1 to A3 and B1 done, B2 answered in writing, C1 chosen.
-C2 is independent of the version.
+Proposed bar, for the user to change: Wave W done on the named local model, A1, A2 and B1 done,
+B2 answered in writing, C1 chosen. C2 and Wave D are independent of the version.

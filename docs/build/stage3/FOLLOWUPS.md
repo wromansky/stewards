@@ -1,2 +1,9 @@
 - stored review task showed 'from none' on a later round of the same loop (s3-runner, 2026-11-15): find out when review-task.txt is dropped mid-loop
 - release.yml: cargo package and the token step share a job/runner (reviewer note, 2026-11-15); add to RELEASING.md Known limits or split if crates.io upload from a .crate is feasible
+- eval results directory is named by start time to the second: two evals started in the same second share it and the later one overwrites `summary.json`/`summary.md` (seen 2026-11-17; run files and session folders did not collide)
+- Pi adoption with Haiku and thinking off stops after the first `review --roles` round and asks before running the documenter and validator handoffs (2 of 2 attempts, 2026-11-17); medium thinking completes it
+- plan grader on Pi reported fixture task 5 `plan stored 0/1, closed 0/1` where Claude Code reported 1/1 and 1/1 (2026-11-17): find out whether the Pi run stored no plan or the Pi reader misses it
+- a Claude Code 2.1.326 eval session sat idle for about 25 minutes after its final message before exiting (fixture, 2026-11-17): find what it waited on
+- macOS: `ps -E` shows no environment for system binaries, and Hermes's own daemon kill reads `/proc`, so a Hermes gateway daemon is found there only through its working directory
+- the GitLab CI template from `init --ci` does not install `glab`
+- GitHub still serves pre-scrub commits through the merged pull request refs (history scrub pushed 2026-11-17): ask GitHub Support to purge them, or recreate the repository

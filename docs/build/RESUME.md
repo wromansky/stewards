@@ -15,6 +15,7 @@ State as of 2026-11-17. Everything merged is on `main`. This folder holds the pl
 - Open PRs: #29 (evals on macOS: leftover cleanup, the Claude Code login, the transcript reader for Claude Code 2.1.326) and #30 on top of it (handoff wording that names no agent type, the eval summaries of pass r9, follow-ups). Both are reviewed; merge #29 first.
 - The release is on hold by the user's decision (2026-11-17): the project is not close to a real 0.1.0, and nothing goes to crates.io or the AUR for a while. Do not tag. Until the crate is published, the `cargo install stewards` line in the AGENTS.md block does not work.
 - Done from `RELEASING.md` so far: the `release` environment (owner as required reviewer) and a `v*` tag ruleset exist; no secrets are set. Checks 1 to 4 passed on 2026-11-17, the eval pass is below, and the history scrub was pushed on 2026-11-17 (work address and a company name removed from every commit of `main` and the two open branches; trees unchanged). GitHub still serves the old commits through the merged pull request refs.
+- Next: `stage4/PLAN.md`, the seven gaps between what is built and a real 0.1.0, in three waves. It is a draft for the user to cut or reorder; nothing in it has started.
 - `stage3/FOLLOWUPS.md` lists small open items.
 
 ## How a branch goes through review

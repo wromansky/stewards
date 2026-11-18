@@ -23,7 +23,7 @@ Ritual
 - Before reporting done: when your edits are finished, run `stewards review --task "<what you changed and why>"` as its own step (never alongside an edit). It prints one handoff per review to run: start one subagent per handoff, giving it exactly that sentence as its whole task (you can start them together); when they have finished, run `stewards review` again to read the findings. Fix them, or answer one you will not apply with the `--answer` it prints, and repeat until it exits 0. Done means it exits 0.
 - On request or before a release: `stewards review --roles` does the same with the deeper per-unit jobs.
 
-A handoff is always one sentence, ``Read `<path>` and follow it.``: pass it unchanged to a general-purpose subagent that can run shell and write files. Every role works this way.
+A handoff is always one sentence, ``Read `<path>` and follow it.``: pass it unchanged to a subagent that can run shell and write files (whichever agent type your harness has for that). Every role works this way.
 
 Editing
 - Think first: state assumptions; ask when the request has two readings.

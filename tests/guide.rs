@@ -65,7 +65,7 @@ fn nothing_detected_prints_the_generic_paragraph() {
     assert_eq!(code, Some(0));
     assert_eq!(v["harness"], Value::Null);
     assert!(v["delegation"].as_str().unwrap().starts_with(
-        "Start a fresh-context, general-purpose subagent that can run shell and write files"
+        "Start a fresh-context subagent that can run shell and write files (whichever agent type your harness has for that)"
     ));
 }
 

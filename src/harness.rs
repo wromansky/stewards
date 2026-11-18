@@ -34,7 +34,7 @@ pub struct Harness {
 }
 
 /// How to delegate a brief, the same in every harness, known or not.
-pub const DELEGATION: &str = "Start a fresh-context, general-purpose subagent that can run shell and write files, give it the handoff stewards printed (``Read `<absolute brief path>` and follow it.``) unchanged as its whole task, and wait for its reply: what `submit` printed.";
+pub const DELEGATION: &str = "Start a fresh-context subagent that can run shell and write files (whichever agent type your harness has for that), give it the handoff stewards printed (``Read `<absolute brief path>` and follow it.``) unchanged as its whole task, and wait for its reply: what `submit` printed.";
 
 const VERIFIED: &str = "2026-10-21";
 

@@ -7,3 +7,4 @@
 - macOS: `ps -E` shows no environment for system binaries, and Hermes's own daemon kill reads `/proc`, so a Hermes gateway daemon is found there only through its working directory
 - the GitLab CI template from `init --ci` does not install `glab`
 - GitHub still serves pre-scrub commits through the merged pull request refs (history scrub pushed 2026-11-17): ask GitHub Support to purge them, or recreate the repository
+- a session can submit the reviewer's answer for its own change and the unit is stamped (r10, session 021: 9 role answers submitted by the main session, 0 subagents, runner check clean): the tool cannot tell who submitted; decide whether `submit --role reviewer` should need something only a fresh child has

@@ -1,11 +1,11 @@
 unit = "eval"
 
 [reviewed]
-commit = "1006636d574fdf1b23c99bd28b7bc5f434270106"
-fingerprint = "sha256:a79b669f0fa774e6dec1b59669392466864bec6259005b35f61cfc53da02cd39"
-tree = "f44c512261101be81666b8cf4cf0338041bd2da0"
-tester = "f44c512261101be81666b8cf4cf0338041bd2da0"
-documenter = "f44c512261101be81666b8cf4cf0338041bd2da0"
+commit = "8e66fb73e3f6047b790302f020b64c2cf54fadbc"
+fingerprint = "sha256:57cd4ede6d649677beae5a4a1b563411039b3534cd70e1d2831f8d91b30f09a5"
+tree = "33fadc8a9d0898a61ba39754396687acaa6e207a"
+tester = "33fadc8a9d0898a61ba39754396687acaa6e207a"
+documenter = "33fadc8a9d0898a61ba39754396687acaa6e207a"
 
 [[interface]]
 id = "eval_run"
@@ -100,17 +100,17 @@ contract = "Runs stewards next --no-brief --no-run in a dir: exit code and job c
 [[interface]]
 id = "kill_leftovers"
 anchor = "src/eval/mod.rs::kill_leftovers"
-contract = "Kills every process whose cwd is under dir, or whose HERMES_HOME (no other variable) is under it, until none remain or 10 s pass; reports killed and survivors; None without /proc."
+contract = "Kills every process whose cwd is under dir, or whose HERMES_HOME (no other variable) is under it, until none remain or 10 s pass; reports killed and survivors. Lists via /proc on Linux, lsof and ps -E on macOS; None where it cannot list."
 
 [[interface]]
 id = "claude_parse"
 anchor = "src/eval/claude.rs::parse"
-contract = "A Claude Code session file plus its stdout.log to a Run: main tokens from result.usage, total from summed modelUsage, null without a result line; cost_usd null, figure kept as harness_reported_cost_usd; Read/Grep/Bash reads per record cwd, a Glob listing opens nothing; sidechain children."
+contract = "A Claude Code session file (keep_transcript appends its subagents/agent-*.jsonl) plus stdout.log to a Run: tokens from the result line, null without; cost_usd null; reads per record cwd; children grouped by agentId, else parent chain; launch is Agent (Task before)."
 
 [[interface]]
 id = "claude_config_dir"
 anchor = "src/eval/claude.rs::config_dir"
-contract = "Writes an isolated Claude Code config dir: settings.json with only the user's model, .credentials.json linked when present; never writes the user's dir; returns a plain note and the user's model."
+contract = "Writes an isolated Claude Code config dir: settings.json with the user's model, .credentials.json linked. Without one (macOS) sessions run in the user's own dir with --setting-sources project,local --strict-mcp-config; returns a note and model."
 
 [[interface]]
 id = "task_prompt"
@@ -354,7 +354,7 @@ note = "simplified: only JSON submit output is read; upgrade if reviewers start 
 kind = "gap"
 title = "Leftover processes are killed only on Linux"
 anchor = "src/eval/mod.rs::kill_leftovers"
-note = "Uses /proc/<pid>/cwd and /proc/<pid>/environ (HERMES_HOME); without /proc nothing is killed and leftovers is None."
+note = "Superseded: macOS now lists leftovers through lsof and ps -E. Remaining ceiling on macOS: ps prints the environment space separated, so a HERMES_HOME holding a space is cut short, and a system binary (SIP) shows no environment; upgrade path is sysctl KERN_PROCARGS2 through libc."
 
 [[gap]]
 kind = "gap"
@@ -385,6 +385,12 @@ kind = "gap"
 title = "Hermes files_opened does not follow a cd across terminal calls"
 anchor = "src/eval/hermes.rs::files_opened"
 note = "simplified: only a call's workdir and a leading cd are followed; upgrade if files_opened disagrees with the transcripts."
+
+[[gap]]
+kind = "gap"
+title = "Claude Code on macOS loads the user's CLAUDE.md in every arm"
+anchor = "src/eval/claude.rs::isolate"
+note = "Without a user .credentials.json the session runs in the user's own config dir; --setting-sources project,local drops user settings, hooks, plugins and --strict-mcp-config drops MCP servers, but user CLAUDE.md, rules, skills, agents and commands still load in bare and block-only arms. Stated in the summary note and DESIGN.md. Upgrade path: link the Keychain login into an isolated dir."
 
 [doc]
 overview = "The eval unit is the runner behind `stewards eval`. It measures whether coding agents do better with stewards than without: it drives a harness (Pi, Claude Code or Hermes Agent) over a suite of tasks in several arms, parses every session transcript into a run record, checks that the full arm followed the ritual, and reports cost and token overhead. The graders never branch on the harness. It also holds the material it runs on under evals/: the fixture, task prompts, suite manifests, arms.sh, and one reproduction per seeded bug."

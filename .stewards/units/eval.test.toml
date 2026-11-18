@@ -20,7 +20,7 @@ command = "cargo test --test eval a_claude_session_without_a_result_line_has_nul
 id = "eval-timed-out-null-tokens"
 interface = "execute"
 given = "a replayed session that timed out"
-expect = "its run record has null main_tokens and total_tokens; on Linux its leftover process is killed (leftovers.killed is 1)"
+expect = "its run record has null main_tokens and total_tokens; its leftover process is killed (leftovers.killed is 1) on Linux and macOS"
 level = "integration"
 command = "cargo test --test eval a_timed_out_run_is_recorded_not_dropped_and_its_leftover_process_killed"
 
@@ -119,3 +119,19 @@ given = "runs with bug_fixed and plan outcomes varying"
 expect = "the summary reports bug fixed and plan counts and no verdict changes"
 level = "integration"
 command = "cargo test --test eval the_summary_reports_bug_fixed_and_plan_and_no_verdict_changes"
+
+[[scenario]]
+id = "eval-claude-shared-config-dir"
+interface = "claude_config_dir"
+given = "a ClaudeCode with shared true and a fake claude binary"
+expect = "args hold --setting-sources project,local --strict-mcp-config, CLAUDE_CONFIG_DIR is not set, the transcript is kept"
+level = "integration"
+command = "cargo test --test eval claude_driver_in_the_users_own_config_dir_sets_no_config_dir_and_drops_user_settings"
+
+[[scenario]]
+id = "eval-claude-agent-launch-handoff"
+interface = "claude_parse"
+given = "a claude-code session whose parent launches a child with the Agent tool and whose child records carry agentId, one linked through an attachment record"
+expect = "handoff and reviewer_submit are true and subagent_sessions is 1"
+level = "integration"
+command = "cargo test --test eval a_claude_agent_launch_is_a_handoff_and_agent_id_records_are_one_child"

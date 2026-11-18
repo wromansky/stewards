@@ -1035,7 +1035,7 @@ fn the_eval_agent_dir_holds_only_auth_the_package_store_and_pi_subagents() {
     );
 }
 
-// kill_leftovers finds processes through /proc: Linux only.
+// counts through /proc: Linux only.
 #[cfg(target_os = "linux")]
 /// Number of live (non-zombie) processes whose cwd is under `dir`.
 fn alive_under(dir: &Path) -> usize {
@@ -1052,7 +1052,7 @@ fn alive_under(dir: &Path) -> usize {
         .count()
 }
 
-// kill_leftovers finds processes through /proc: Linux only.
+// uses alive_under: Linux only.
 #[cfg(target_os = "linux")]
 #[test]
 fn pi_driver_passes_thinking_and_the_agent_dir_and_a_timed_out_sessions_detached_child_is_killed() {
@@ -1062,7 +1062,7 @@ fn pi_driver_passes_thinking_and_the_agent_dir_and_a_timed_out_sessions_detached
     // records its argv and env, writes a session file, starts a detached child, then hangs
     std::fs::write(
         &bin,
-        "#!/bin/sh\necho \"$@\" > ../args\nenv > ../env\nwhile [ \"$1\" != --session-dir ]; do shift; done\necho '{\"type\":\"session\",\"id\":\"s\",\"timestamp\":\"t\",\"cwd\":\"/r\"}' > \"$2/s.jsonl\"\nsetsid sleep 300 >/dev/null 2>&1 &\nexec sleep 30\n",
+        "#!/bin/sh\necho \"$@\" > ../args\nenv > ../env\nwhile [ \"$1\" != --session-dir ]; do shift; done\necho '{\"type\":\"session\",\"id\":\"s\",\"timestamp\":\"t\",\"cwd\":\"/r\"}' > \"$2/s.jsonl\"\nperl -MPOSIX -e 'setsid; exec @ARGV' sleep 300 >/dev/null 2>&1 &\nexec sleep 30\n",
     )
     .unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1266,7 +1266,10 @@ impl Driver for Replay {
             common::stamp_units(dir, self.adopt_stamps);
         }
         std::process::Command::new("sh")
-            .args(["-c", "setsid sleep 300 >/dev/null 2>&1 &"])
+            .args([
+                "-c",
+                "perl -MPOSIX -e 'setsid; exec @ARGV' sleep 300 >/dev/null 2>&1 &",
+            ])
             .current_dir(dir)
             .status()?;
         std::fs::create_dir_all(sessions)?;
@@ -1402,9 +1405,7 @@ fn a_timed_out_run_is_recorded_not_dropped_and_its_leftover_process_killed() {
     assert_eq!(runs[0]["result"]["main_tokens"], serde_json::Value::Null);
     assert_eq!(runs[0]["result"]["total_tokens"], serde_json::Value::Null);
     assert!(runs[0]["result"]["cost_usd"].is_number());
-    if cfg!(target_os = "linux") {
-        assert_eq!(runs[0]["leftovers"]["killed"], 1);
-    }
+    assert_eq!(runs[0]["leftovers"]["killed"], 1);
     assert_eq!(runs[0]["next_check"], serde_json::Value::Null);
     assert_eq!(runs[0]["changed"], false);
     // the replayed worker child ran at high, not the requested medium
@@ -1534,9 +1535,7 @@ fn full_arm_sets_the_hand_drawn_units_and_stops_when_adoption_is_not_clean() {
         serde_json::json!(["AGENTS.md", "api/test_new.py"])
     );
     assert_eq!(summary["adoption"]["label"], "001-adopt");
-    if cfg!(target_os = "linux") {
-        assert_eq!(summary["adoption"]["leftovers"]["killed"], 1);
-    }
+    assert_eq!(summary["adoption"]["leftovers"]["killed"], 1);
     // the runner's own check: exit 1 with jobs listed
     let check = next_check(&p.stewards, &adopted).unwrap();
     assert_eq!(check.exit_code, Some(1));
@@ -2246,6 +2245,7 @@ fn claude_driver_passes_the_model_and_config_dir_and_keeps_the_persisted_session
         limit: Duration::from_secs(20),
         config_dir: Some(tmp.path().join("a")),
         default_model: Some("user-default".into()),
+        shared: false,
     };
     let dir = tmp.path().join("run/repo");
     std::fs::create_dir_all(&dir).unwrap();
@@ -2275,6 +2275,47 @@ fn claude_driver_passes_the_model_and_config_dir_and_keeps_the_persisted_session
     assert!(!vars.contains("CLAUDECODE="), "{vars}");
     // no inherited thinking budget
     assert!(!vars.contains("MAX_THINKING_TOKENS="), "{vars}");
+}
+
+/// With no credentials file to link (macOS: the login is in the Keychain), the session runs in
+/// the user's own config directory with user settings and MCP servers switched off.
+#[test]
+fn claude_driver_in_the_users_own_config_dir_sets_no_config_dir_and_drops_user_settings() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    let user = tmp.path().join("u");
+    let bin = tmp.path().join("claude");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\necho \"$@\" > ../args\nenv > ../env\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s1\"}}'\nmkdir -p {u}/projects/-r\necho '{{\"type\":\"user\"}}' > {u}/projects/-r/s1.jsonl\n",
+            u = user.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let claude = ClaudeCode {
+        bin,
+        limit: Duration::from_secs(20),
+        config_dir: Some(user),
+        default_model: None,
+        shared: true,
+    };
+    let dir = tmp.path().join("run/repo");
+    std::fs::create_dir_all(&dir).unwrap();
+    let sessions = tmp.path().join("sessions");
+    let env = [("PATH", std::env::var_os("PATH").unwrap())];
+    let s = claude
+        .start(&dir, "hi", Some("m-1"), "medium", &sessions, &env)
+        .unwrap();
+    assert_eq!(s.transcript, Some(sessions.join("s1.jsonl")));
+    let args = std::fs::read_to_string(tmp.path().join("run/args")).unwrap();
+    assert!(
+        args.contains("--setting-sources project,local --strict-mcp-config -- hi"),
+        "{args}"
+    );
+    let vars = std::fs::read_to_string(tmp.path().join("run/env")).unwrap();
+    assert!(!vars.contains("CLAUDE_CONFIG_DIR="), "{vars}");
 }
 
 /// A copy of a recorded sample with each `(from, to)` replaced in every file, and its transcript.
@@ -2329,6 +2370,7 @@ fn every_driver_maps_its_subagent_sample_the_same_way() {
         limit: Duration::from_secs(1),
         config_dir: None,
         default_model: None,
+        shared: false,
     };
     let hermes = Hermes {
         bin: PathBuf::new(),
@@ -2571,6 +2613,51 @@ fn claude_files_opened_count_read_and_grep_and_follow_each_records_cwd() {
         ["a.py", "b.py", "api/items.py", "README.md", "api/x.py"]
     );
     assert_eq!(run.files_opened_tree, run.files_opened);
+}
+
+/// Claude Code 2.1.326 launches a child with `Agent` (not `Task`), names it by `agentId` on every
+/// record, and links some of its records through an `attachment` record: the launch is a handoff
+/// and the child's commands are one child's.
+#[test]
+fn a_claude_agent_launch_is_a_handoff_and_agent_id_records_are_one_child() {
+    let tmp = TempDir::new().unwrap();
+    let handoff = "Read `/r/.stewards/briefs/review-1-f6f0a5f3.md` and follow it.";
+    let t = claude_session(
+        tmp.path(),
+        &[(
+            "/r",
+            serde_json::json!([tool_use(
+                "1",
+                "Agent",
+                serde_json::json!({"subagent_type": "general-purpose", "prompt": handoff})
+            )]),
+        )],
+        &[],
+    );
+    let child = |uuid: &str, parent: &str, command: &str| {
+        serde_json::json!({"type": "assistant", "isSidechain": true, "agentId": "c1",
+            "uuid": uuid, "parentUuid": parent, "cwd": "/r",
+            "message": {"id": uuid, "model": "claude-haiku-5-5", "role": "assistant",
+                "content": [tool_use(uuid, "Bash", serde_json::json!({"command": command}))]}})
+        .to_string()
+    };
+    let lines = [
+        child("c-a", "none", "stewards status"),
+        // not a user or assistant record: the parent chain breaks here
+        r#"{"type":"attachment","isSidechain":true,"agentId":"c1","uuid":"c-x","parentUuid":"c-a"}"#.to_string(),
+        child("c-b", "c-x", "stewards submit --role reviewer"),
+    ];
+    let mut text = std::fs::read_to_string(&t).unwrap();
+    text.push_str(&(lines.join("\n") + "\n"));
+    std::fs::write(&t, text).unwrap();
+    let run = claude_parse(&t, 0.0, false).unwrap();
+    assert!(run.ritual_steps["handoff"], "{:?}", run.ritual_steps);
+    assert!(
+        run.ritual_steps["reviewer_submit"],
+        "{:?}",
+        run.ritual_steps
+    );
+    assert_eq!(run.subagent_sessions, 1);
 }
 
 /// A session with a non-empty thinking block thought; one with an empty block (as Haiku 5.5 emits
@@ -3430,7 +3517,7 @@ fn hermes_driver_runs_each_session_in_its_own_home_and_kills_the_daemon() {
     );
 }
 
-// kill_leftovers finds processes through /proc: Linux only.
+// macOS shows no environment for a system binary such as sleep: Linux only.
 #[cfg(target_os = "linux")]
 /// A daemon a session started elsewhere is found by the `HERMES_HOME` under the run directory its
 /// environment names; a process that merely visited the run directory (`OLDPWD`) is left alone.
@@ -3624,6 +3711,7 @@ fn every_drivers_credential_secrets_are_redacted_in_its_kept_session_files() {
         limit,
         config_dir: Some(t.join("claude")),
         default_model: None,
+        shared: false,
     };
     let hermes = Hermes {
         bin: t.join("hermes-bin"),

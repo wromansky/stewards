@@ -961,7 +961,7 @@ pub struct RunRecord {
     pub transcript: Option<PathBuf>,
     /// The fixture copy the session ran in (deleted after the run unless `--keep-work`).
     pub workdir: PathBuf,
-    /// `None` where `/proc` is missing, so nothing could be found or killed.
+    /// `None` where the processes could not be listed, so nothing could be found or killed.
     pub leftovers: Option<Leftovers>,
     /// `full` arms only.
     pub next_check: Option<NextCheck>,
@@ -1835,37 +1835,17 @@ pub fn next_check(stewards: &Path, dir: &Path) -> Result<NextCheck> {
 
 /// Kills every process whose working directory is under `dir`, or whose `HERMES_HOME` is a path
 /// under it (Hermes's gateway daemon, which a session starts elsewhere; no other variable is read,
-/// so a process that merely visited `dir`, with it in `OLDPWD`, is left alone), from Linux
-/// `/proc/<pid>/cwd` and `/proc/<pid>/environ`, again until none is left or 10 s pass. `None`
-/// where there is no `/proc`.
+/// so a process that merely visited `dir`, with it in `OLDPWD`, is left alone), again until none
+/// is left or 10 s pass. The processes come from [`leftover_pids`]; `None` where it cannot list
+/// them.
 pub fn kill_leftovers(dir: &Path) -> Result<Option<Leftovers>> {
-    use std::os::unix::ffi::OsStrExt;
-    if !Path::new("/proc/self/cwd").exists() {
-        return Ok(None);
-    }
     let dir = dir.canonicalize()?;
-    let in_env = |pid: u32| {
-        std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| {
-            env.split(|b| *b == 0).any(|kv| {
-                kv.strip_prefix(b"HERMES_HOME=")
-                    .is_some_and(|v| Path::new(OsStr::from_bytes(v)).starts_with(&dir))
-            })
-        })
-    };
-    let me = std::process::id();
     let mut killed = HashSet::new();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        // a zombie has no cwd link, so it is not counted as alive
-        let pids: Vec<u32> = std::fs::read_dir("/proc")?
-            .flatten()
-            .filter_map(|e| e.file_name().to_str()?.parse().ok())
-            .filter(|&pid| {
-                pid != me
-                    && std::fs::read_link(format!("/proc/{pid}/cwd"))
-                        .is_ok_and(|cwd| cwd.starts_with(&dir) || in_env(pid))
-            })
-            .collect();
+        let Some(pids) = leftover_pids(&dir)? else {
+            return Ok(None);
+        };
         if pids.is_empty() || Instant::now() >= deadline {
             return Ok(Some(Leftovers {
                 killed: killed.len(),
@@ -1879,6 +1859,86 @@ pub fn kill_leftovers(dir: &Path) -> Result<Option<Leftovers>> {
         killed.extend(pids);
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// The live processes, other than this one, [`kill_leftovers`] is to kill for the canonical
+/// `dir`, from Linux `/proc/<pid>/cwd` and `/proc/<pid>/environ`. `None` where there is no `/proc`.
+#[cfg(not(target_os = "macos"))]
+fn leftover_pids(dir: &Path) -> Result<Option<Vec<u32>>> {
+    use std::os::unix::ffi::OsStrExt;
+    if !Path::new("/proc/self/cwd").exists() {
+        return Ok(None);
+    }
+    let in_env = |pid: u32| {
+        std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| {
+            env.split(|b| *b == 0).any(|kv| {
+                kv.strip_prefix(b"HERMES_HOME=")
+                    .is_some_and(|v| Path::new(OsStr::from_bytes(v)).starts_with(dir))
+            })
+        })
+    };
+    let me = std::process::id();
+    // a zombie has no cwd link, so it is not counted as alive
+    Ok(Some(
+        std::fs::read_dir("/proc")?
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse().ok())
+            .filter(|&pid| {
+                pid != me
+                    && std::fs::read_link(format!("/proc/{pid}/cwd"))
+                        .is_ok_and(|cwd| cwd.starts_with(dir) || in_env(pid))
+            })
+            .collect(),
+    ))
+}
+
+/// The same on macOS, which has no `/proc`: working directories from `lsof -a -d cwd -Fpn`
+/// (`p<pid>` then `n<path>` lines; a zombie is not listed), environments from
+/// `ps -axEww -o pid=,command=`. `None` when `lsof` cannot be run.
+#[cfg(target_os = "macos")]
+fn leftover_pids(dir: &Path) -> Result<Option<Vec<u32>>> {
+    // lsof exits 1 when it cannot read some other user's process: its output is still used
+    let Ok(lsof) = Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-Fpn"])
+        .output()
+    else {
+        return Ok(None);
+    };
+    let me = std::process::id();
+    let mut pids = HashSet::new();
+    let mut pid = None;
+    for line in String::from_utf8_lossy(&lsof.stdout).lines() {
+        if let Some(p) = line.strip_prefix('p') {
+            pid = p.parse::<u32>().ok();
+        } else if line
+            .strip_prefix('n')
+            .is_some_and(|cwd| Path::new(cwd).starts_with(dir))
+        {
+            pids.extend(pid);
+        }
+    }
+    // simplified: ps prints the environment after the arguments, space separated, so a
+    // HERMES_HOME holding a space is cut short and an argument spelled HERMES_HOME=<dir> also
+    // matches; ps shows no environment for a system binary (SIP). Upgrade path: sysctl
+    // KERN_PROCARGS2 through libc.
+    let var = format!("HERMES_HOME={}", dir.display());
+    if let Ok(ps) = Command::new("ps")
+        .args(["-axEww", "-o", "pid=,command="])
+        .output()
+    {
+        for line in String::from_utf8_lossy(&ps.stdout).lines() {
+            let mut words = line.split_whitespace();
+            let pid = words.next().and_then(|p| p.parse::<u32>().ok());
+            if words.any(|w| {
+                w.strip_prefix(&var)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            }) {
+                pids.extend(pid);
+            }
+        }
+    }
+    pids.remove(&me);
+    Ok(Some(pids.into_iter().collect()))
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {

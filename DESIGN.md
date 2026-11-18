@@ -1887,7 +1887,13 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   `settings.json` with only the user's `model` and `.credentials.json`
   linked to the user's (shared OAuth refreshes, as for Pi): no user
   `CLAUDE.md`, agents, commands, hooks, plugins, or MCP servers (those live
-  in the user's `.claude.json`, not copied). Claude Code 1.0.128 does not
+  in the user's `.claude.json`, not copied). Where the user's directory has
+  no `.credentials.json` (macOS keeps the login in the Keychain, which a
+  session with another config directory does not read), sessions run in
+  the user's own directory with `--setting-sources project,local
+  --strict-mcp-config`: no user settings, hooks, plugins, or MCP servers,
+  but the user's `CLAUDE.md`, rules, skills, agents and commands are
+  loaded in every arm, and the summary says so. Claude Code 1.0.128 does not
   read a project `AGENTS.md`, so for this driver every arm copy with an
   `AGENTS.md` (`block-only`, `full`, and the adoption copy before its
   session) also gets a one-line `CLAUDE.md`, `@AGENTS.md`, which imports
@@ -1990,10 +1996,13 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   minutes, then the harness's process group is killed
   and the session recorded `timed_out`. After every session (normal exit,
   failure, timeout, or interrupt) the runner kills every process whose
-  `/proc/<pid>/cwd` is under that session's `<n>/` directory, or whose
-  `HERMES_HOME` (from `/proc/<pid>/environ`; no other variable, so a
+  working directory is under that session's `<n>/` directory, or whose
+  `HERMES_HOME` (no other variable, so a
   process that only visited the directory, with it in `OLDPWD`, is left
-  alone) is a path under it (Pi starts shell commands and background subagents in their own process
+  alone) is a path under it (on Linux from `/proc/<pid>/cwd` and
+  `/proc/<pid>/environ`; on macOS from `lsof` and `ps -E`, which shows no
+  environment for a system binary; Hermes's own daemon kill reads `/proc`
+  and so does nothing on macOS) (Pi starts shell commands and background subagents in their own process
   groups, Claude Code its shell commands, its subagents running inside its
   own process; the Hermes agent runs in a gateway daemon that `hermes
   chat` starts in its own session, with Hermes's source tree as its working

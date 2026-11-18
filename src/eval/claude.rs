@@ -24,6 +24,8 @@ pub struct ClaudeCode {
     pub config_dir: Option<PathBuf>,
     /// The user's own `model` setting: the children's model when no `--model` is given.
     pub default_model: Option<String>,
+    /// `config_dir` is the user's own directory, not a copy: see `isolate`.
+    pub shared: bool,
 }
 
 impl ClaudeCode {
@@ -37,6 +39,7 @@ impl ClaudeCode {
                 limit,
                 config_dir: None,
                 default_model: None,
+                shared: false,
             })
             .ok_or_else(|| {
                 CliError::new(
@@ -50,7 +53,10 @@ impl ClaudeCode {
 
     /// Builds the eval's config directory at `dir` from the user's (`CLAUDE_CONFIG_DIR`, else
     /// `~/.claude`), so sessions load none of the user's personal setup, and returns what it holds
-    /// in plain words. See `config_dir`.
+    /// in plain words. See `config_dir`. Where the user's directory has no `.credentials.json`
+    /// (macOS keeps the login in the Keychain, which a session with another config directory
+    /// does not read), sessions run in the user's own directory instead, with user settings and
+    /// MCP servers switched off by flags.
     pub fn isolate(&mut self, dir: &Path) -> Result<String> {
         let user = match std::env::var_os("CLAUDE_CONFIG_DIR") {
             Some(d) => PathBuf::from(d),
@@ -58,6 +64,19 @@ impl ClaudeCode {
                 PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".claude")
             }
         };
+        if !user.join(".credentials.json").exists() {
+            self.default_model = std::fs::read_to_string(user.join("settings.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v["model"].as_str().map(String::from));
+            let note = format!(
+                "Claude Code runs in the user's own config dir {} (it has no .credentials.json to link: the login is in the Keychain), with `--setting-sources project,local --strict-mcp-config`: no user settings, hooks, plugins, or MCP servers, but the user's CLAUDE.md, rules, skills, agents and commands are loaded in every arm; children on the session's model (CLAUDE_CODE_SUBAGENT_MODEL). Each arm copy with an AGENTS.md also gets a committed one-line CLAUDE.md, `@AGENTS.md`. Thinking is not set by the runner (MAX_THINKING_TOKENS is removed); each session's effective setting is recorded from its thinking blocks. cost_usd: null; the harness's figure is kept as harness_reported_cost_usd.",
+                user.display()
+            );
+            self.config_dir = Some(user);
+            self.shared = true;
+            return Ok(note);
+        }
         let (note, model) = config_dir(&user, dir)?;
         self.config_dir = Some(dir.to_path_buf());
         self.default_model = model;
@@ -130,6 +149,9 @@ impl Driver for ClaudeCode {
         if let Some(m) = model {
             cmd.args(["--model", m]);
         }
+        if self.shared {
+            cmd.args(["--setting-sources", "project,local", "--strict-mcp-config"]);
+        }
         cmd.arg("--")
             .arg(prompt)
             .stdin(Stdio::null())
@@ -139,7 +161,7 @@ impl Driver for ClaudeCode {
         // what an enclosing Claude Code sets for its shell; the `CLAUDE_CODE` prefix misses it
         cmd.env_remove("CLAUDECODE");
         cmd.env_remove("MAX_THINKING_TOKENS");
-        if let Some(c) = &self.config_dir {
+        if let (Some(c), false) = (&self.config_dir, self.shared) {
             cmd.env("CLAUDE_CONFIG_DIR", c);
         }
         if let Some(m) = model.or(self.default_model.as_deref()) {
@@ -194,6 +216,20 @@ impl ClaudeCode {
         };
         let kept = sessions.join(name);
         std::fs::copy(&found, &kept)?;
+        // Claude Code 2.1.326 keeps each child's records in its own file, not in the session's
+        let children = found.with_extension("").join("subagents");
+        let mut children: Vec<PathBuf> = std::fs::read_dir(children)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+            .collect();
+        children.sort();
+        let mut out = std::fs::OpenOptions::new().append(true).open(&kept)?;
+        for child in children {
+            std::io::copy(&mut File::open(child)?, &mut out)?;
+        }
         Ok(Some(kept))
     }
 }
@@ -260,14 +296,15 @@ fn bash_commands<'a>(recs: &[&'a Value]) -> impl Iterator<Item = (&'a Value, &'a
         .map(|b| (b, b["input"]["command"].as_str().unwrap_or_default()))
 }
 
-/// The ritual actions of one session (a child's when `child`): `Bash` commands and `Task`
-/// launches, whose `prompt` is the child's task.
+/// The ritual actions of one session (a child's when `child`): `Bash` commands and `Task` or
+/// `Agent` launches, whose `prompt` is the child's task.
 fn actions(recs: &[&Value], child: bool) -> Vec<Action> {
     tool_uses(recs)
         .filter_map(|b| {
             let input = &b["input"];
             match b["name"].as_str() {
-                Some("Task") => Some(Action::Dispatch {
+                // `Task` before Claude Code 2.1.305, `Agent` since
+                Some("Task" | "Agent") => Some(Action::Dispatch {
                     tasks: input["prompt"]
                         .as_str()
                         .map(String::from)
@@ -444,8 +481,9 @@ fn stream_result(transcript: &Path) -> Option<Value> {
 /// `modelUsage`, which also names side requests (titles, summaries) outside the parent and its
 /// children. `thinking_levels` are the sessions' effective settings (see `thinking`), and a
 /// session without one is in `sessions_without_thinking`. The main stop reason is `error` when
-/// the stream's `result` line says `is_error`, else `last_stop`. Children are named by their first record's
-/// `uuid`. `reviews` are the children's reviewer `submit` outputs, ordered by their results'
+/// the stream's `result` line says `is_error`, else `last_stop`. Children are named by their
+/// records' `agentId` (Claude Code 2.1.326, whose child files `keep_transcript` appends), else
+/// by their first record's `uuid`. `reviews` are the children's reviewer `submit` outputs, ordered by their results'
 /// timestamps.
 pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<Run> {
     let (all, truncated_lines) = records(transcript, truncation_ok)?;
@@ -463,9 +501,20 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
         }
         let id = r["uuid"].as_str().unwrap_or_default();
         let parent = r["parentUuid"].as_str();
-        let root = match roots.iter().find(|(u, _)| Some(*u) == parent) {
-            Some((_, root)) => *root,
-            None => {
+        // 2.1.326 names the child on every record, and links some through records of other
+        // types, so the chain alone would split one child in two
+        let root = match (
+            r["agentId"].as_str(),
+            roots.iter().find(|(u, _)| Some(*u) == parent),
+        ) {
+            (Some(agent), _) => {
+                if !sessions.iter().any(|(n, _)| n == agent) {
+                    sessions.push((agent.to_string(), vec![]));
+                }
+                agent
+            }
+            (None, Some((_, root))) => *root,
+            (None, None) => {
                 sessions.push((id.to_string(), vec![]));
                 id
             }

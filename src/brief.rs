@@ -213,6 +213,15 @@ pub fn result_rel(brief_rel: &str) -> String {
     format!("{stem}.result.json")
 }
 
+/// Every brief's first line, for the session that ran the command and then opens the brief it
+/// was told to hand off: a weak model follows the handoff sentence itself and reviews its own
+/// change. stewards cannot tell who submits (a subagent's command has the same parent process
+/// and environment in Claude Code), so this is asked, not checked.
+pub const FOR_SUBAGENT: &str = "This brief is for a subagent that was given only its handoff sentence. If you ran the `stewards` command that printed that sentence, stop here: do not follow this brief or write its answer. Start a subagent and give it the sentence as its whole task.";
+
+/// What `brief` tells the session that ran it to do with the handoffs it printed.
+pub const THEN: &str = "Start one subagent per handoff, giving it exactly that sentence as its whole task, and wait for it. Do not read the brief or write its answer yourself.";
+
 /// The one sentence a subagent is given for the brief at absolute `path`, the same for every
 /// role and every command that writes a brief: the path in a single-backtick code span, which
 /// `check_root` keeps whole (no backtick, line break, or hidden character can end or hide it).
@@ -329,7 +338,7 @@ fn render(
         );
     }
     let mut out = format!(
-        "{HEADER_START}{header_json}{HEADER_END}\n{role_line}\nTask: {task}\n\nRules:\n{rules}\n\n\
+        "{HEADER_START}{header_json}{HEADER_END}\n{FOR_SUBAGENT}\n\n{role_line}\nTask: {task}\n\nRules:\n{rules}\n\n\
          Pack budget: {budget} bytes; this pack is {bytes} bytes. You start with the pack below. \
          Open more only by anchor, and list every anchor you opened in `pulled_anchors`.\n\n\
          {role_text}\n\n\
@@ -634,6 +643,7 @@ struct Written {
     path: PathBuf,
     bytes: usize,
     handoff: String,
+    then: &'static str,
 }
 
 impl Written {
@@ -642,6 +652,7 @@ impl Written {
             handoff: handoff(&path)?,
             path,
             bytes,
+            then: THEN,
         })
     }
 }
@@ -649,7 +660,7 @@ impl Written {
 impl Human for Written {
     fn render(&self) -> String {
         format!(
-            "Wrote `{}` ({} bytes).\nHandoff: {}",
+            "Wrote `{}` ({} bytes).\nHandoff: {}\nThen: {THEN}",
             self.path.display(),
             self.bytes,
             one_line(&self.handoff)
@@ -671,6 +682,7 @@ impl Human for BriefText {
 #[derive(Serialize)]
 struct Jobs {
     jobs: Vec<Job>,
+    then: &'static str,
 }
 
 #[derive(Serialize)]
@@ -696,7 +708,7 @@ impl Human for Jobs {
                 )
             })
             .collect();
-        lines.join("\n")
+        format!("{}\nThen: {THEN}", lines.join("\n"))
     }
 }
 
@@ -756,7 +768,7 @@ fn developer(
     for rel in files_past(&repo.root, Some(unit), Role::Developer, tasks.len())? {
         repo.remove(&rel)?;
     }
-    emit(&Jobs { jobs }, g.human);
+    emit(&Jobs { jobs, then: THEN }, g.human);
     Ok(ExitCode::SUCCESS)
 }
 

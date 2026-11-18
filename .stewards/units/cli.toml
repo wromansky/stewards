@@ -1,11 +1,11 @@
 unit = "cli"
 
 [reviewed]
-commit = "7f0dcb538e81f430289b537528d6eab648c6851a"
-fingerprint = "sha256:352c6fbaa96e68be92bd35c9ff0f8c06b23509e3cadfd3412f6b523aa9db689c"
-tree = "ceae01517666c8672eab384f79f8123c5b64daa1"
-tester = "ceae01517666c8672eab384f79f8123c5b64daa1"
-documenter = "ceae01517666c8672eab384f79f8123c5b64daa1"
+commit = "46e7b7c551e1232a19b647e110bc6f4d2f6b0c16"
+fingerprint = "sha256:41581b93538e810afaf563f624f6981c1887f301e186ee9f5b579254446f72f4"
+tree = "2b8d47f031848fa2ff14ff193800293e8d347f68"
+tester = "2b8d47f031848fa2ff14ff193800293e8d347f68"
+documenter = "2b8d47f031848fa2ff14ff193800293e8d347f68"
 
 [[interface]]
 id = "json-envelope"

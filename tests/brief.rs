@@ -194,6 +194,23 @@ fn card_text_cannot_leave_the_data_section() {
     assert!(opens[0] < sentence && sentence < closes[0]);
 }
 
+/// The session that ran `brief` is told to hand the brief off, in the command's output and in
+/// the brief's own first line after the header, before the role text it might otherwise follow.
+#[test]
+fn a_brief_and_the_command_that_wrote_it_tell_the_caller_to_hand_it_off() {
+    let (dir, home) = setup();
+    let args = ["brief", "api", "--role", "maintainer", "--task", "q"];
+    let (code, v) = run(dir.path(), home.path(), &args);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["then"], stewards::brief::THEN);
+    let text = fs::read_to_string(dir.path().join(v["path"].as_str().unwrap())).unwrap();
+    let mut lines = text.lines();
+    assert!(lines.next().unwrap().starts_with("<!-- stewards-job "));
+    assert_eq!(lines.next(), Some(stewards::brief::FOR_SUBAGENT));
+    assert!(stewards::brief::FOR_SUBAGENT.contains("do not follow this brief"));
+    assert!(text.find(stewards::brief::FOR_SUBAGENT) < text.find("Role: maintainer"));
+}
+
 #[test]
 fn answer_path_and_submit_command_are_exact() {
     let (dir, home) = setup();

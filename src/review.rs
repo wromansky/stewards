@@ -526,7 +526,7 @@ pub fn run(
         ),
         Some(r) if !r.jobs.is_empty() => {
             let mut then = format!(
-                "Start one subagent per handoff below, giving it exactly that sentence as its whole task (you can start them together); when they have finished, run stewards {command} again."
+                "Start one subagent per handoff below, giving it exactly that sentence as its whole task (you can start them together); when they have finished, run stewards {command} again. Do not read a brief or write its answer yourself: your review of your own change is not a review."
             );
             if r.jobs.iter().any(|j| j.waiting) {
                 then += " A waiting job's brief has no submit yet: if its subagent already replied, it did not finish; start a new one with the same handoff.";

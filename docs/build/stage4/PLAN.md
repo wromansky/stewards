@@ -43,20 +43,18 @@ unless a task says otherwise.
 What is known today, all from Haiku 5.5, which is stronger than the target: with thinking off,
 adoption stalls after the first `review --roles` round (2 of 2 on Pi); the main agent asked for an
 agent type the harness lacks; one session stopped to ask instead of acting. Nothing has been run on
-a local model. `--direct` knows three hosted providers and no local endpoint. The review brief
+a local model. The normal path needs nothing new for one: the harness runs the model and calls
+`stewards` as a command. Only the optional `--direct` mode (stewards calling a model itself)
+knows hosted providers alone. The review brief
 budget is a constant 48,000 bytes; a role pack's budget is set per role in `[budgets]`.
 
 **W1. Fix the target and make it runnable.** Name the model, its server (Ollama, llama.cpp,
 LM Studio), its context window as served, and the harness that will drive it. Then:
 - the eval runner accepts that model through the chosen harness (Pi with a local provider is the
   likely first; check whether its subagents work with a local model at all);
-- `--direct` gains an OpenAI-compatible endpoint (`[models.direct] <role> = "local/<model>"` with a
-  base URL in the user config), so stewards can run a role itself where the harness cannot
-  delegate;
 - the summary records the context window and tokens per second beside the model.
 Done when: `stewards eval --suite fixture --task 1 --arm bare` completes on the local model.
 Needs from the user: the model and server; the machine it runs on.
-Extra review: security review of the new endpoint setting (a URL the tool sends repo content to).
 
 **W2. Baseline, and a list of how it fails.** Run adoption alone, then the fixture suite at one
 run, on the local model. Read every transcript and sort each failure into one of: tool call
@@ -76,8 +74,10 @@ Candidates known now, cheapest first:
   the harness.
 - *Answers a weak model can produce.* When `submit` refuses a typed answer, the error names the
   field and shows the smallest valid example for that role; count refusals per role in telemetry.
-- *No delegation at all.* Where the harness or model cannot start a subagent, `review --direct`
-  runs each brief through the local endpoint itself and the session only reads the findings.
+- *No delegation at all.* Only if W2 shows the model cannot start or wait for a subagent in the
+  harness: `--direct` gains an OpenAI-compatible local endpoint (a base URL in the user config) so
+  `review --direct` runs each brief itself and the session only reads the findings. This sends
+  repository content to a configured URL, so it gets a security review.
 - *Smaller rounds.* Adoption does documenter and validator jobs one unit at a time when the
   window is small.
 Done when: adoption completes 3 of 3 and the fixture gate passes on at least 3 of the 4 edit

@@ -274,7 +274,14 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   mode, the snapshot it was packed from, the pack's bytes and anchor count,
   the bug title for a validator job, and the units a reviewer job covers;
   `submit` reads it, and refuses (`no_brief`) a header whose snapshot is
-  not the one in the brief's name. `submit` finds the brief by the answer
+  not the one in the brief's name. The line after it tells whoever ran the
+  command that printed the handoff not to follow the brief or write its
+  answer, but to start a subagent with the sentence (`brief` prints the
+  same as `then`): in the r10 baseline a weaker model wrote and submitted
+  every role's answer itself, its own review included. This is asked, not
+  checked: a subagent's command has the same parent process and
+  environment as the main session's in Claude Code, so `submit` cannot
+  tell who runs it. `submit` finds the brief by the answer
   file's name when it is the job's `<same>.answer.json` (a developer's
   must be, as it carries the task number), so an answer to an older
   snapshot's brief finds none; an answer named otherwise takes the job's
@@ -1020,7 +1027,9 @@ starts a session and never waits for one.
   link is.
 - **Then.** With jobs listed: `Start one subagent per handoff below,
   giving it exactly that sentence as its whole task (you can start them
-  together); when they have finished, run stewards review again.`, plus, when a job is waiting,
+  together); when they have finished, run stewards review again. Do not
+  read a brief or write its answer yourself: your review of your own
+  change is not a review.`, plus, when a job is waiting,
   that a subagent which replied without submitting did not finish and a
   new one gets the same handoff. With a `check` failure and no job: `Fix
   the check failures listed under next.check, then run stewards review
@@ -1969,7 +1978,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   in plain words; those names, and the driver's context file, become the
   adopted copy's `unowned_ok`), each with its own test command on its test card from
   `[source.test_commands]` in `evals/suites/fixture.toml` (`python3 -m
-  unittest discover -s api`, `node --test client/`, `cargo test
+  unittest discover -s api`, `node --test client/client.test.ts`, `cargo test
   --manifest-path cli/Cargo.toml`; the root has no toolchain, so no
   `commands.test`), then an adoption session on the same model told to run
   `stewards init --draft`, start one subagent per handoff it prints, then
@@ -2655,7 +2664,7 @@ left out below. Shapes and key names are what the commands print on
   next: { jobs: [ { unit: "", role: reviewer, brief_path: "/work/repo/.stewards/briefs/review-1-3f9a1c2e.md",
                     handoff: "Read `/work/repo/.stewards/briefs/review-1-3f9a1c2e.md` and follow it.",
                     units: ["api"], reasons: ["api: stale", "api: interface changed: api/items.py::list_items"] } ], ... },
-  then: "Start one subagent per handoff below, giving it exactly that sentence as its whole task (you can start them together); when they have finished, run stewards review again." }   exit 1
+  then: "Start one subagent per handoff below, giving it exactly that sentence as its whole task (you can start them together); when they have finished, run stewards review again. Do not read a brief or write its answer yourself: your review of your own change is not a review." }   exit 1
 [Agent] starts a subagent with the task "Read `/work/repo/.stewards/briefs/review-1-3f9a1c2e.md` and follow it."
   └ subagent: reads the hunks, runs `python -m unittest` in api, writes the answer,
     runs `stewards submit --role reviewer --file ...`, replies with what it printed

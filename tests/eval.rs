@@ -1519,7 +1519,7 @@ fn full_arm_sets_the_hand_drawn_units_and_stops_when_adoption_is_not_clean() {
     assert_eq!(loaded.repo.unowned_ok, [".gitignore", "AGENTS.md"]);
     for (unit, cmd) in [
         ("api", "python3 -m unittest discover -s api"),
-        ("client", "node --test client/"),
+        ("client", "node --test client/client.test.ts"),
         ("cli", "cargo test --manifest-path cli/Cargo.toml"),
     ] {
         assert_eq!(loaded.tests[unit].test_command.as_deref(), Some(cmd));
@@ -1634,7 +1634,7 @@ fn the_fixture_manifest_reproduces_the_old_hard_coded_facts() {
         [
             ("api", "python3 -m unittest discover -s api"),
             ("cli", "cargo test --manifest-path cli/Cargo.toml"),
-            ("client", "node --test client/"),
+            ("client", "node --test client/client.test.ts"),
         ]
     );
     assert_eq!(s.commit(), None);

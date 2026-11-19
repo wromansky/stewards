@@ -916,7 +916,7 @@ fn a_unit_still_over_the_budget_has_its_fenced_bodies_cut_and_says_so_once() {
     );
 }
 
-const START: &str = "Start one subagent per handoff below, giving it exactly that sentence as its whole task (you can start them together); when they have finished, run stewards review again.";
+const START: &str = "Start one subagent per handoff below, giving it exactly that sentence as its whole task (you can start them together); when they have finished, run stewards review again. Do not read a brief or write its answer yourself: your review of your own change is not a review.";
 
 /// `stewards review` with `args`, its exit code, and its output.
 fn review(d: &Path, args: &[&str]) -> (i32, Value) {

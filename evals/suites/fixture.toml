@@ -15,7 +15,7 @@ tests = ["api/test_*.py", "client/*.test.ts", "cli/tests/**"]
 # only cli's (its Cargo manifest), and the root has no toolchain, so no repo-wide command.
 [source.test_commands]
 api = "python3 -m unittest discover -s api"
-client = "node --test client/"
+client = "node --test client/client.test.ts"
 cli = "cargo test --manifest-path cli/Cargo.toml"
 
 [[task]]

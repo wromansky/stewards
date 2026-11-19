@@ -1,11 +1,11 @@
 unit = "setup"
 
 [reviewed]
-commit = "30400aa4c64785af428b26b980edd556a1f8e653"
-fingerprint = "sha256:0e139addc69d46008a1f9afa01b19f8a89258497b8f6d285c5aeddf4903dc4f6"
-tree = "57ddae98c91fb53c5ada17ff9e87ad4c24072864"
-tester = "57ddae98c91fb53c5ada17ff9e87ad4c24072864"
-documenter = "57ddae98c91fb53c5ada17ff9e87ad4c24072864"
+commit = "5519e1259bc3f2f7896e34b44cc7c78e8e64ca77"
+fingerprint = "sha256:cb6513d4894c9e9153872b5a020213dfed0c2582ca57e961e3d85a2591338752"
+tree = "9a27076ad2bc2acc581845c0c7560479907e4d62"
+tester = "9a27076ad2bc2acc581845c0c7560479907e4d62"
+documenter = "9a27076ad2bc2acc581845c0c7560479907e4d62"
 
 [[interface]]
 id = "init"

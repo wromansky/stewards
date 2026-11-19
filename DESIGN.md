@@ -1978,7 +1978,7 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   in plain words; those names, and the driver's context file, become the
   adopted copy's `unowned_ok`), each with its own test command on its test card from
   `[source.test_commands]` in `evals/suites/fixture.toml` (`python3 -m
-  unittest discover -s api`, `node --test client/`, `cargo test
+  unittest discover -s api`, `node --test client/client.test.ts`, `cargo test
   --manifest-path cli/Cargo.toml`; the root has no toolchain, so no
   `commands.test`), then an adoption session on the same model told to run
   `stewards init --draft`, start one subagent per handoff it prints, then

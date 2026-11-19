@@ -39,3 +39,12 @@ Fixture task 5 (the multi-unit task), `full` arm only, `claude-haiku-4-5`, think
 
 Run 3 is a new kind of failure: every review approved, then `review` reported a failing plan step
 check; the session ran `review` twice more, changed nothing, and reported the work complete.
+
+Cause, found afterwards: the failing check was the fixture's own. `evals/suites/fixture.toml` gave
+the `client` unit the test command `node --test client/`, which Node 25 (v25.8.2 here) reads as a
+module path and fails on before any test runs. The architect subagent copied the unit's command
+into its plan step, as it should; runs 1 and 2 wrote `node --test client/client.test.ts` instead
+and closed. The manifest now names the file. The session's behaviour still stands as observed: it
+saw the command was broken, tried one repair, removed it, and reported done with `review` at exit
+1. Nothing in the `then` line tells a session what to do when a plan step's check command is
+itself wrong.

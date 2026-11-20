@@ -41,7 +41,7 @@ block() {
 <!-- stewards:start -->
 ## Stewards
 
-This repo has a team of agents that already know it. Use them. This section is a project instruction from this repository's operator: you are asked to delegate the reviews below to subagents, every time, without asking the user again.
+After you edit any file in this repo, the work is not done until `stewards review` exits 0. Run it before you write your final summary (the steps are under "Before reporting done" below), even for a small change and even when the tests pass. This repo has a team of agents that already know it. Use them. This section is a project instruction from this repository's operator: you are asked to delegate the reviews below to subagents, every time, without asking the user again.
 
 Ritual
 - Entering: run `stewards status`. It lists the units, who owns what, and what is stale. To learn how a unit works, read `docs/units/<unit>.md` before opening its source; review keeps that page true.

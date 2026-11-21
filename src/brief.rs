@@ -213,11 +213,16 @@ pub fn result_rel(brief_rel: &str) -> String {
     format!("{stem}.result.json")
 }
 
-/// Every brief's first line, for the session that ran the command and then opens the brief it
-/// was told to hand off: a weak model follows the handoff sentence itself and reviews its own
+/// Every brief's first line but the architect's, for the session that ran the command and then
+/// opens the brief it was told to hand off: a weak model follows the handoff sentence itself and reviews its own
 /// change. stewards cannot tell who submits (a subagent's command has the same parent process
 /// and environment in Claude Code), so this is asked, not checked.
 pub const FOR_SUBAGENT: &str = "This brief is for a subagent that was given only its handoff sentence. If you ran the `stewards` command that printed that sentence, stop here: do not follow this brief or write its answer. Start a subagent and give it the sentence as its whole task.";
+
+/// What `brief --role architect` tells the session that ran it: a plan may come from the session
+/// that will make the change (planning needs no second pair of eyes; a review does), so a weak
+/// model that writes the plan itself is not told off twice and then ignored.
+pub const THEN_ARCHITECT: &str = "Start a subagent, giving it exactly that sentence as its whole task, and wait for it; or follow the brief yourself. The reviews of the change still go to subagents.";
 
 /// What `brief` tells the session that ran it to do with the handoffs it printed.
 pub const THEN: &str = "Start one subagent per handoff, giving it exactly that sentence as its whole task, and wait for it. Do not read the brief or write its answer yourself.";
@@ -337,8 +342,12 @@ fn render(
             names.join(", ")
         );
     }
+    let for_subagent = match header.role {
+        Role::Architect => String::new(),
+        _ => format!("{FOR_SUBAGENT}\n\n"),
+    };
     let mut out = format!(
-        "{HEADER_START}{header_json}{HEADER_END}\n{FOR_SUBAGENT}\n\n{role_line}\nTask: {task}\n\nRules:\n{rules}\n\n\
+        "{HEADER_START}{header_json}{HEADER_END}\n{for_subagent}{role_line}\nTask: {task}\n\nRules:\n{rules}\n\n\
          Pack budget: {budget} bytes; this pack is {bytes} bytes. You start with the pack below. \
          Open more only by anchor, and list every anchor you opened in `pulled_anchors`.\n\n\
          {role_text}\n\n\
@@ -647,12 +656,15 @@ struct Written {
 }
 
 impl Written {
-    fn new(path: PathBuf, bytes: usize) -> Result<Written> {
+    fn new(path: PathBuf, bytes: usize, role: Role) -> Result<Written> {
         Ok(Written {
             handoff: handoff(&path)?,
             path,
             bytes,
-            then: THEN,
+            then: match role {
+                Role::Architect => THEN_ARCHITECT,
+                _ => THEN,
+            },
         })
     }
 }
@@ -660,10 +672,11 @@ impl Written {
 impl Human for Written {
     fn render(&self) -> String {
         format!(
-            "Wrote `{}` ({} bytes).\nHandoff: {}\nThen: {THEN}",
+            "Wrote `{}` ({} bytes).\nHandoff: {}\nThen: {}",
             self.path.display(),
             self.bytes,
-            one_line(&self.handoff)
+            one_line(&self.handoff),
+            self.then
         )
     }
 }
@@ -824,7 +837,7 @@ pub fn run(
         return Ok(ExitCode::SUCCESS);
     }
     let (path, bytes) = write(repo, unit, role, mode, &task, &snapshot)?;
-    emit(&Written::new(path, bytes)?, g.human);
+    emit(&Written::new(path, bytes, role)?, g.human);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -861,7 +874,7 @@ fn reviewer(
     let briefs = paths
         .into_iter()
         .zip(&texts)
-        .map(|(path, text)| Written::new(path, text.len()))
+        .map(|(path, text)| Written::new(path, text.len(), Role::Reviewer))
         .collect::<Result<_>>()?;
     emit(&Round { briefs }, g.human);
     Ok(ExitCode::SUCCESS)

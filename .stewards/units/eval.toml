@@ -1,11 +1,11 @@
 unit = "eval"
 
 [reviewed]
-commit = "5519e1259bc3f2f7896e34b44cc7c78e8e64ca77"
-fingerprint = "sha256:1e9fc4a2abf180c3ec6565ac9cb5daf19b1366cabd00a8ddb32df45569463397"
-tree = "9a27076ad2bc2acc581845c0c7560479907e4d62"
-tester = "9a27076ad2bc2acc581845c0c7560479907e4d62"
-documenter = "9a27076ad2bc2acc581845c0c7560479907e4d62"
+commit = "ad176f8b68ce873088e97141c50ed7cb2d065ca1"
+fingerprint = "sha256:25a3fec19ec9f1dafe572448c7298914d522031d54a5e8b024311ce81550aa5f"
+tree = "f4556735757097edce27f2ac0f0faf4d07380726"
+tester = "f4556735757097edce27f2ac0f0faf4d07380726"
+documenter = "f4556735757097edce27f2ac0f0faf4d07380726"
 
 [[interface]]
 id = "eval_run"
@@ -25,7 +25,7 @@ contract = "A harness: `start` runs one session in a fresh environment and waits
 [[interface]]
 id = "pi_parse"
 anchor = "src/eval/pi.rs::parse"
-contract = "One Pi session tree to a Run: main vs total tokens, cost, files opened per cwd, models, thinking, child reviewer submits, plan_stored (child architect submit printed `plan <id> stored`), failed child stops; >1 top-level file is an error."
+contract = "One Pi session tree to a Run: main vs total tokens, cost, files opened per cwd, models, thinking, child reviewer submits, plan_stored (an architect submit in any session, the main one included, printed `plan <id> stored`), failed child stops; >1 top-level file is an error."
 
 [[interface]]
 id = "pi_agent_dir"

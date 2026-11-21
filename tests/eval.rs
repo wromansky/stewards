@@ -3812,13 +3812,25 @@ const NOT_STORED: &str = r#"{"summary":"architect: 0 purposes set; 0 unit propos
 /// `sample` copied, with its child's one shell command replaced by `command` and that command's
 /// output by `output`; the copy's main transcript file.
 fn child_ran(driver: &str, sample: &Path, tmp: &Path, command: &str, output: &str) -> PathBuf {
+    session_ran(true, driver, sample, tmp, command, output)
+}
+
+/// The sample with `command` and its `output` put in a child's session, or in the main one.
+fn session_ran(
+    child: bool,
+    driver: &str,
+    sample: &Path,
+    tmp: &Path,
+    command: &str,
+    output: &str,
+) -> PathBuf {
     let dir = tmp.join(format!("{driver}-child"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     copy_dir(sample, &dir);
     let main = main_file(&dir);
     let file = match driver {
-        "pi" => main
+        "pi" if child => main
             .with_extension("")
             .join("b5d51927-cb55-4247-a969-9448b23c2c26/run-0/session.jsonl"),
         _ => main.clone(),
@@ -3838,9 +3850,11 @@ fn child_ran(driver: &str, sample: &Path, tmp: &Path, command: &str, output: &st
                     }
                 }
             }
-            "hermes" if v["source"] == "subagent" => {
+            "hermes" if (v["source"] == "subagent") == child => {
                 for m in v["messages"].as_array_mut().into_iter().flatten() {
                     if let Some(c) = m["tool_calls"].get_mut(0) {
+                        // the main session's first call is not a shell command
+                        c["function"]["name"] = "terminal".into();
                         c["function"]["arguments"] =
                             serde_json::json!({ "command": command }).to_string().into();
                     }
@@ -3890,6 +3904,55 @@ fn a_childs_architect_submit_that_printed_plan_stored_is_seen_on_every_driver() 
         assert!(stored(ARCHITECT_CMD, STORED), "{driver}");
         assert!(!stored(ARCHITECT_CMD, NOT_STORED), "{driver}: no plan");
         assert!(!stored("echo child", STORED), "{driver}: not a submit");
+    }
+}
+
+/// The main session may write its own plan (`brief --role architect` says so), so its submit
+/// counts as a stored plan too, on every driver.
+#[test]
+fn the_main_sessions_architect_submit_that_printed_plan_stored_is_seen_on_every_driver() {
+    let tmp = TempDir::new().unwrap();
+    for (driver, sample) in [
+        ("pi", sample("subagent")),
+        ("claude", claude_sample("subagent")),
+        ("hermes", hermes_sample("subagent")),
+    ] {
+        let stored = |output: &str| {
+            // the recorded claude main session ran no shell command: its child's records
+            // become its own
+            let t = session_ran(
+                driver == "claude",
+                driver,
+                &sample,
+                tmp.path(),
+                ARCHITECT_CMD,
+                output,
+            );
+            if driver == "claude" {
+                let lines: Vec<String> = std::fs::read_to_string(&t)
+                    .unwrap()
+                    .lines()
+                    .map(|l| {
+                        let mut v: serde_json::Value = serde_json::from_str(l).unwrap();
+                        if v["isSidechain"] == true {
+                            v["isSidechain"] = false.into();
+                            v.as_object_mut().unwrap().remove("agentId");
+                        }
+                        v.to_string()
+                    })
+                    .collect();
+                std::fs::write(&t, lines.join("\n") + "\n").unwrap();
+            }
+            match driver {
+                "pi" => parse(&t, 1.0, false),
+                "claude" => claude_parse(&t, 1.0, false),
+                _ => hermes_parse(&t, 1.0, false),
+            }
+            .unwrap()
+            .plan_stored
+        };
+        assert!(stored(STORED), "{driver}");
+        assert!(!stored(NOT_STORED), "{driver}: no plan");
     }
 }
 

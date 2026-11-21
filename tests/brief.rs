@@ -209,6 +209,15 @@ fn a_brief_and_the_command_that_wrote_it_tell_the_caller_to_hand_it_off() {
     assert_eq!(lines.next(), Some(stewards::brief::FOR_SUBAGENT));
     assert!(stewards::brief::FOR_SUBAGENT.contains("do not follow this brief"));
     assert!(text.find(stewards::brief::FOR_SUBAGENT) < text.find("Role: maintainer"));
+    // the architect's brief may be followed by the session that asked for it: a plan needs no
+    // second pair of eyes
+    let args = ["brief", "--role", "architect", "--task", "q"];
+    let (code, v) = run(dir.path(), home.path(), &args);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["then"], stewards::brief::THEN_ARCHITECT);
+    let text = fs::read_to_string(dir.path().join(v["path"].as_str().unwrap())).unwrap();
+    assert!(!text.contains(stewards::brief::FOR_SUBAGENT));
+    assert!(text.lines().nth(1).unwrap().starts_with("Role: architect"));
 }
 
 #[test]

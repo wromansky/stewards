@@ -187,7 +187,7 @@ pub struct Run {
     pub uncounted_sessions: Vec<String>,
     /// Each successful `stewards submit --role reviewer` a child ran, in order.
     pub reviews: Vec<ReviewSubmit>,
-    /// A child's `stewards submit --role architect` printed a summary with `plan <id> stored`.
+    /// A `stewards submit --role architect` in any session, the main one included, printed a summary with `plan <id> stored`.
     pub plan_stored: bool,
     /// Shell commands anywhere in the tree that read git history (see `reads_git_history`).
     pub git_history_commands: Vec<String>,

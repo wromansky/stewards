@@ -135,3 +135,11 @@ given = "a claude-code session whose parent launches a child with the Agent tool
 expect = "handoff and reviewer_submit are true and subagent_sessions is 1"
 level = "integration"
 command = "cargo test --test eval a_claude_agent_launch_is_a_handoff_and_agent_id_records_are_one_child"
+
+[[scenario]]
+id = "eval-main-session-plan-stored"
+interface = "eval_plan_outcome"
+given = "a session on each driver whose main (non-sidechain) records run stewards submit --role architect and print plan <id> stored, and one that prints no plan"
+expect = "plan_stored is true for the stored output and false for the other, on pi, claude-code and hermes"
+level = "integration"
+command = "cargo test --test eval the_main_sessions_architect_submit_that_printed_plan_stored_is_seen_on_every_driver"

@@ -327,3 +327,11 @@ given = "a unit card with an unjudged bug whose repro fails, then the same throu
 expect = "the written validator brief carries repro_result with reproduced true; a bug with no repro runs nothing"
 level = "integration"
 command = "cargo test --test validate next_roles_runs_the_repro_into_the_brief_and_no_brief_runs_nothing"
+
+[[scenario]]
+id = "architect-brief-may-be-followed"
+interface = "brief-handoff"
+given = "brief --role architect, then a brief for another role"
+expect = "the architect brief has no FOR_SUBAGENT line and its then is THEN_ARCHITECT; other roles keep FOR_SUBAGENT and THEN"
+level = "integration"
+command = "cargo test --test brief a_brief_and_the_command_that_wrote_it_tell_the_caller_to_hand_it_off"

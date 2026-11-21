@@ -21,7 +21,7 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers, the 
 | eval\_run | \`stewards eval\`\: pi, claude-code and hermes (others not\_implemented); claude-code runs at thinking off; --max-cost refused for every harness but pi; hermes needs --model provider/model; arms default to bare, block-only, full; unknown arm, suite, task\: usage error; exit 0 only on pass. | [src/eval/mod.rs\:\:run](../../src/eval/mod.rs#L949) |
 | execute | Reads every task prompt first, then runs sequentially per task, run and arm in a fresh copy; a timed-out or interrupted run's tokens are null; a SIGINT/SIGTERM stops the session, records it failed (interrupted), writes the summary and returns an interrupted error. | [src/eval/mod.rs\:\:execute](../../src/eval/mod.rs#L1287) |
 | driver | A harness\: \`start\` runs one session in a fresh environment and waits; \`parse\` turns its transcript into a Run; \`context\_file\` names a file committed beside AGENTS.md; \`credential\_files\` names linked credentials the runner redacts. | [src/eval/mod.rs\:\:Driver](../../src/eval/mod.rs#L667) |
-| pi\_parse | One Pi session tree to a Run\: main vs total tokens, cost, files opened per cwd, models, thinking, child reviewer submits, plan\_stored (child architect submit printed \`plan \<id\> stored\`), failed child stops; \>1 top-level file is an error. | [src/eval/pi.rs\:\:parse](../../src/eval/pi.rs#L188) |
+| pi\_parse | One Pi session tree to a Run\: main vs total tokens, cost, files opened per cwd, models, thinking, child reviewer submits, plan\_stored (an architect submit in any session, the main one included, printed \`plan \<id\> stored\`), failed child stops; \>1 top-level file is an error. | [src/eval/pi.rs\:\:parse](../../src/eval/pi.rs#L188) |
 | pi\_agent\_dir | Writes an isolated Pi agent dir\: settings with only npm\:pi-subagents and every child at the given thinking level, auth.json linked, models-store.json copied, npm/ linked; never writes the user's dir; error when pi-subagents is not installed. | [src/eval/pi.rs\:\:agent\_dir](../../src/eval/pi.rs#L24) |
 | suite\_load | Loads evals/suites/\<name\>.toml (sources, absent probes, tasks with read\_only, setup, files\_opened\_vs\_bare, repro, expects\_plan); a repro with no repro.sh or an unknown name is a usage error; unknown fields rejected. | [src/eval/suite.rs\:\:load](../../src/eval/suite.rs#L94) |
 | grade\_task | A compared run not ok, without transcript, or never started\: incomplete; else read-only is n/a and an edit task passes only when every full run has no gate\_misses; overhead, bug\_fixed and plan counts are report-only. | [src/eval/grade.rs\:\:grade\_task](../../src/eval/grade.rs#L184) |
@@ -69,6 +69,7 @@ Start in src/eval/mod.rs for the command, the plan, shared session helpers, the 
 | eval-report-only-graders | grade\_task | runs with bug\_fixed and plan outcomes varying | the summary reports bug fixed and plan counts and no verdict changes | integration |
 | eval-claude-shared-config-dir | claude\_config\_dir | a ClaudeCode with shared true and a fake claude binary | args hold --setting-sources project,local --strict-mcp-config, CLAUDE\_CONFIG\_DIR is not set, the transcript is kept | integration |
 | eval-claude-agent-launch-handoff | claude\_parse | a claude-code session whose parent launches a child with the Agent tool and whose child records carry agentId, one linked through an attachment record | handoff and reviewer\_submit are true and subagent\_sessions is 1 | integration |
+| eval-main-session-plan-stored | eval\_plan\_outcome | a session on each driver whose main (non-sidechain) records run stewards submit --role architect and print plan \<id\> stored, and one that prints no plan | plan\_stored is true for the stored output and false for the other, on pi, claude-code and hermes | integration |
 
 ## Flows
 
@@ -91,4 +92,4 @@ _None._
 
 ## Last reviewed
 
-5519e1259bc3f2f7896e34b44cc7c78e8e64ca77
+ad176f8b68ce873088e97141c50ed7cb2d065ca1

@@ -703,9 +703,9 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
             }),
         }
         all_actions.extend(actions(rows, i > 0));
+        plan_stored |= architect_stored(rows);
         if i > 0 {
             reviews.extend(review_submits(rows));
-            plan_stored |= architect_stored(rows);
             if let Some(stop) = last_stop(rows).filter(|r| FAILED_STOPS.contains(&r.as_str())) {
                 failed.push(format!("{} stopped with `{stop}`", id(rows[0])));
             }

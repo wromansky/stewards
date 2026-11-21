@@ -281,7 +281,11 @@ expected behavior, with scenarios), and judgment (gaps, shortcuts, decisions).
   every role's answer itself, its own review included. This is asked, not
   checked: a subagent's command has the same parent process and
   environment as the main session's in Claude Code, so `submit` cannot
-  tell who runs it. `submit` finds the brief by the answer
+  tell who runs it. The architect's brief has no such line, and `brief
+  --role architect` says the session may follow the brief itself: in r11
+  the same model handed every review off and still wrote its own plan
+  after being told twice not to, and a plan from the session that will
+  make the change loses nothing a review would. `submit` finds the brief by the answer
   file's name when it is the job's `<same>.answer.json` (a developer's
   must be, as it carries the task number), so an answer to an older
   snapshot's brief finds none; an answer named otherwise takes the job's
@@ -2080,8 +2084,9 @@ one line per unit with a link, flows as ordered unit chains, decisions list.
   checkout with `FIXTURE_ROOT=<run dir>` and a 60 s timeout; `bug_fixed` is
   true when it exits 0, and the summary shows `k/n` per arm. Plan
   (report-only, `full` runs of a task with `expects_plan = true`, fixture
-  task 5): `plan: {stored, closed}`, `stored` when a child's `stewards
-  submit --role architect` printed `plan <id> stored`, `closed` when stored
+  task 5): `plan: {stored, closed}`, `stored` when a `stewards
+  submit --role architect` in any session (the main one may write its own plan)
+  printed `plan <id> stored`, `closed` when stored
   and no `.stewards/plans/*.toml` is left after the session; the summary
   shows `plan stored k/n, closed k/n`. Neither changes a verdict. The suite fails when any task fails, is
   incomplete when any task is, and passes otherwise: every edit task's

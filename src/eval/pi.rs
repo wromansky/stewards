@@ -490,9 +490,9 @@ pub fn parse(transcript: &Path, duration_s: f64, truncation_ok: bool) -> Result<
     let mut failed_children = vec![];
     for (i, (name, recs)) in sessions.enumerate() {
         all.extend(actions(recs, i > 0));
+        plan_stored |= architect_stored(recs);
         if i > 0 {
             reviews.extend(review_submits(recs));
-            plan_stored |= architect_stored(recs);
         }
         git_history_commands.extend(
             bash_commands(recs)
